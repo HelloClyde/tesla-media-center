@@ -7,25 +7,37 @@ tesla-media-center是一个开源解决方案，将更强大的多媒体功能�
 用户在驾驶或操作任何形式的车辆时，应始终保持全神贯注于行驶安全，严格遵守所有适用的交通安全规定和法律要求。用户明确同意，任何因驾驶或操作车辆时使用或误用本解决方案而导致的直接或间接后果、损害、事故或责任，均由用户个人承担全部责任，解决方案的开发者、分发者或任何关联方不承担任何责任。
 
 使用本解决方案即表示用户已经理解并同意：
+
 （1）本解决方案不应在任何可能会干扰驾驶或车辆操作安全的情况下使用；
+
 （2）用户完全理解并接受使用本解决方案产生的所有风险；
+
 （3）用户对自身安全及他人安全负有最终责任。
 
 
 ### 功能说明
 #### 主页3D车模
 ![home](shot/img_001.png)
-通过
+通过config中的home_page_iframe可以配置不同的主页，可以去sketchfab找些带动画的3D模型作为主页https://sketchfab.com/search?features=animated&type=models
+
 
 #### h265 mp4播放
 ![home](shot/img_002.png)
 
 由于网络视频是流式播放的，所以需要将moov box前置
-使用如下命令对视频进行转码
+使用如下ffmpeg命令对视频进行转码。
+ffmpeg命令可以从ffmpeg官网下载：https://ffmpeg.org/download.html
 ```
 ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r 25 -movflags faststart  output.mp4
 ```
-目前本播放器仅支持h265的mp4视频，时长不能超过1小时
+已支持：
+1. h265视频播放
+
+已知问题：
+1. 视频需要moov box前置，基本上都需要使用ffmpeg转换后才能使用
+2. 目前本播放器仅支持h265的mp4视频，并且时长不能超过1小时
+3. 视频播放完毕后，进度条仍然会继续
+4. 弱网环境下，可能会音画不同步，通过手动指定播放时间可以再次让音画同步
 
 原始播放器地址：https://github.com/sonysuqin/WasmVideoPlayer
 
@@ -34,6 +46,17 @@ ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 
 ![map](shot/img_004.png)
 高德地图的api key需要自己去高德开发者平台申请：https://console.amap.com/dev/key/app
 如需获得tesla浏览器的GPS地址，需要https协议访问，相关域名申请和证书申请请自行百度谷歌
+
+已支持:
+1. 支持目的地搜索和路线规划
+2. 支持实时路况
+3. 支持GPS信号低提醒
+4. 支持地图移动、拖拽、视角调整，支持车头朝上
+
+已知问题：
+1. 走错路不会重新规划
+2. 切换tab后，原规划的目的地、路线消失
+3. 没有限速信息等额外信息
 
 
 ### 运行说明
@@ -75,7 +98,7 @@ cd ..
 文件内容如下
 ```json
 {
-    "home_page_iframe": "https://sketchfab.com/models/b083d9e8def44d878db35299160f2556/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
+    "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
     "video_path": "./video",
     "amap_key": "xxx"
 }

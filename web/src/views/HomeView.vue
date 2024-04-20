@@ -25,7 +25,7 @@ onMounted(() => {
 
 
 <template>
-  <iframe class="home-iframe" :src="state.iframeUrl"></iframe>
+  <iframe class="home-iframe" :src="state.iframeUrl" scrolling="no"></iframe>
 </template>
 
 
