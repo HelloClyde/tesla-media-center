@@ -32,7 +32,7 @@ async def video_list(request):
                 ret.append({
                     'fileType': 'FILE',
                     'fileName': f,
-                    'url': f'/api/video/files/{path}/{f}'
+                    'url': os.path.normpath(f'/api/video/files/{path}/{f}')
                 })
         
         
@@ -42,7 +42,8 @@ async def video_list(request):
 async def video_files(request):
     prefix = config['video_path']
     path = request.match_info['path']
-    abs_path = f'{prefix}/{path}'
+    abs_path = os.path.normpath(f'{prefix}/{path}')
+    logger.info(f'play path: {abs_path}')
     return web.FileResponse(path = abs_path)
 
 @routes.get(r'/')

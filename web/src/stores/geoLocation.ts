@@ -1,7 +1,5 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import axios from 'axios';
-import AMapLoader from '@amap/amap-jsapi-loader';
 
 export class GeoLocation {
   accuracy: number = 0;
@@ -90,21 +88,6 @@ export const useGeoLocationStore = defineStore('geoLocation', () => {
   function init() {
     // 初始化 
     if (!initState.value) {
-
-      axios.get(`/api/config`)
-        .then(response => {
-          const amap_config = {
-            "key": response.data['amap_key'],              // 申请好的Web端开发者Key，首次调用 load 时必填
-            "version": "2.1Beta",   // 指定要加载的 JSAPI 的版本，缺省时默认为 1.4.15
-            "plugins": ['AMap.Scale', 'AMap.ToolBar', 'AMap.ControlBar', 'AMap.MoveAnimation', 'AMap.Driving', 'AMap.AutoComplete'],           // 需要使用的的插件列表，如比例尺'AMap.Scale'等
-            "Loca": {                // 是否加载 Loca， 缺省不加载
-              "version": '2.0.0'  // Loca 版本，缺省 1.3.2
-            }
-          };
-
-          AMapLoader.load(amap_config)
-        });
-
       console.info('start fix rate to get position');
       setInterval(() => {
         console.debug('position start to refresh.');

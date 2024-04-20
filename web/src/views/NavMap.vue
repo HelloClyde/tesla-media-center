@@ -4,12 +4,11 @@
 import { reactive } from 'vue'
 import { onMounted, onUnmounted, computed } from 'vue'
 import { GeoLocation, useGeoLocationStore } from '@/stores/geoLocation';
+import getAMap from '@/functions/amapConfig';
 import carImg from '@/assets/car.png';
-import AMapLoader from '@amap/amap-jsapi-loader';
+import { ElMessage } from 'element-plus';
 // import { AMapConfig } from '@/config/AMapConfig';
-import { Calendar, Search } from '@element-plus/icons-vue'
 import { ref, shallowRef } from '@vue/reactivity';
-import axios from 'axios';
 
 const postionState = useGeoLocationStore();
 
@@ -95,150 +94,138 @@ onMounted(() => {
         }
     }
 
-    axios.get(`/api/config`)
-        .then(response => {
-            const amap_config = {
-                "key": response.data['amap_key'],              // 申请好的Web端开发者Key，首次调用 load 时必填
-                "version": "2.1Beta",   // 指定要加载的 JSAPI 的版本，缺省时默认为 1.4.15
-                "plugins": ['AMap.Scale', 'AMap.ToolBar', 'AMap.ControlBar', 'AMap.MoveAnimation', 'AMap.Driving', 'AMap.AutoComplete'],           // 需要使用的的插件列表，如比例尺'AMap.Scale'等
-                "Loca": {                // 是否加载 Loca， 缺省不加载
-                    "version": '2.0.0'  // Loca 版本，缺省 1.3.2
-                }
-            };
+    getAMap().then((AMap) => {
+        gAMap = AMap;
+        const map = new AMap.Map('container', {
+            rotateEnable: true,
+            pitchEnable: true,
+            zoom: 17,
+            pitch: 25,
+            rotation: 0,
+            viewMode: '3D', //开启3D视图,默认为关闭
+            terrain: false,
+            zooms: [2, 20],
+            center: [curGeo.longitude, curGeo.latitude],
+            mapStyle: "amap://styles/whitesmoke",
+            showBuildingBlock: true,
+            features: ['bg', 'point', 'road', 'building'],
+            skyColor: '#ffffff',
+        });
+        myMap = map;
+        console.log('map', map);
 
-            const AMap = (window as any).AMap;
-            gAMap = AMap;
-            const map = new AMap.Map('container', {
-                rotateEnable: true,
-                pitchEnable: true,
-                zoom: 17,
-                pitch: 25,
-                rotation: 0,
-                viewMode: '3D', //开启3D视图,默认为关闭
-                terrain: false,
-                zooms: [2, 20],
-                center: [curGeo.longitude, curGeo.latitude],
-                mapStyle: "amap://styles/whitesmoke",
-                showBuildingBlock: true,
-                features: ['bg', 'point', 'road', 'building'],
-                skyColor: '#ffffff',
-            });
-            myMap = map;
-
-            var loca = new Loca.Container({
-                map: map
-            });
-
-            map.on('click', (e: any) => {
-                console.log('map click', e);
-                state.search.focus = false;
-
-                // postionState.switchMode('mock');
-                const mockGeo = {
-                    longitude: e.lnglat.lng,
-                    latitude: e.lnglat.lat,
-                    timestamp: new Date().getTime(),
-                    accuracy: 1
-                } as GeoLocation;
-                postionState.addMockPos(mockGeo);
-            });
-            map.on('touchstart', (e: any) => {
-                console.log('touchstart', e);
-                state.enableFollow = false;
-            });
-
-            //实时路况图层
-            trafficLayer = new AMap.TileLayer.Traffic({
-                zIndex: 10,
-                zooms: [2, 20],
-                map: map,
-            });
-
-            const controlBar = new AMap.ControlBar({
-                visible: true,
-                position: {
-                    top: '10px',
-                    right: '10px'
-                },
-            });
-            map.addControl(controlBar);
-
-
-            // 车辆位置
-            const carMarker = new AMap.Marker({
-                position: new AMap.LngLat(curGeo.longitude, curGeo.latitude),
-                icon: carImg,
-                offset: new AMap.Pixel(-64, -64),
-                map: map,
-            });
-
-            carMarker.on('moving', (e: any) => {
-                if (state.enableFollow) {
-                    console.log(e.target.getOrientation())
-                    map.setCenter(e.target.getPosition());
-                    map.setRotation(-e.target.getOrientation());
-                }
-            })
-
-            // 监听位置变更
-            postionState.addListener('nav', pos => {
-                console.debug('pos changed', pos);
-
-                // 信号强度
-                if (pos.accuracy == null || pos.accuracy > 10) {
-                    state.lowSignal = true;
-                } else {
-                    state.lowSignal = false;
-                }
-
-                if (state.lastPos !== null) {
-                    const posList = [];
-                    let ts = pos.timestamp - state.lastPos.timestamp;
-                    ts = ts < 200 ? 200 : ts;
-                    console.log(ts)
-
-                    posList.push({
-                        position: [state.lastPos.longitude, state.lastPos.latitude],
-                        duration: 0,
-                    });
-                    posList.push({
-                        position: [pos.longitude, pos.latitude],
-                        duration: ts,
-                    });
-
-                    carMarker.moveAlong(posList);
-                } else {
-                    carMarker.setPosition([pos.longitude, pos.latitude]);
-                    map.setCenter([pos.longitude, pos.latitude]);
-                }
-
-                state.lastPos = pos;
-            })
-
-            // 实例化Autocomplete
-            geoSearch = new AMap.Autocomplete({
-                city: '全国'
-            });
-
-            // 规划
-            driving = new AMap.Driving({
-                // 驾车路线规划策略，AMap.DrivingPolicy.LEAST_TIME是最快捷模式
-                policy: AMap.DrivingPolicy.LEAST_TIME,
-                // map 指定将路线规划方案绘制到对应的AMap.Map对象上
-                map: map,
-                // panel 指定将结构化的路线详情数据显示的对应的DOM上，传入值需是DOM的ID
-                // panel: 'panel'
-            });
-        })
-        .catch(function (error) { // 请求失败处理
-            console.log(error);
+        const loca = new Loca.Container({
+            map: map
         });
 
+        map.on('click', (e: any) => {
+            console.log('map click', e);
+            state.search.focus = false;
+
+            // postionState.switchMode('mock');
+            const mockGeo = {
+                longitude: e.lnglat.lng,
+                latitude: e.lnglat.lat,
+                timestamp: new Date().getTime(),
+                accuracy: 1
+            } as GeoLocation;
+            postionState.addMockPos(mockGeo);
+        });
+        map.on('touchstart', (e: any) => {
+            console.log('touchstart', e);
+            state.enableFollow = false;
+        });
+
+        //实时路况图层
+        trafficLayer = new AMap.TileLayer.Traffic({
+            zIndex: 10,
+            zooms: [2, 20],
+            map: map,
+        });
+
+        const controlBar = new AMap.ControlBar({
+            visible: true,
+            position: {
+                top: '10px',
+                right: '10px'
+            },
+        });
+        map.addControl(controlBar);
 
 
+        // 车辆位置
+        const carMarker = new AMap.Marker({
+            position: new AMap.LngLat(curGeo.longitude, curGeo.latitude),
+            icon: carImg,
+            offset: new AMap.Pixel(-64, -64),
+            map: map,
+        });
 
+        carMarker.on('moving', (e: any) => {
+            if (state.enableFollow) {
+                console.log(e.target.getOrientation())
+                map.setCenter(e.target.getPosition());
+                map.setRotation(-e.target.getOrientation());
+            }
+        })
 
-})
+        // 监听位置变更
+        postionState.addListener('nav', pos => {
+            console.debug('pos changed', pos);
+
+            // 信号强度
+            if (pos.accuracy == null || pos.accuracy > 10) {
+                state.lowSignal = true;
+            } else {
+                state.lowSignal = false;
+            }
+
+            if (state.lastPos !== null) {
+                const posList = [];
+                let ts = pos.timestamp - state.lastPos.timestamp;
+                ts = ts < 200 ? 200 : ts;
+                console.log(ts)
+
+                posList.push({
+                    position: [state.lastPos.longitude, state.lastPos.latitude],
+                    duration: 0,
+                });
+                posList.push({
+                    position: [pos.longitude, pos.latitude],
+                    duration: ts,
+                });
+
+                carMarker.moveAlong(posList);
+            } else {
+                carMarker.setPosition([pos.longitude, pos.latitude]);
+                map.setCenter([pos.longitude, pos.latitude]);
+            }
+
+            state.lastPos = pos;
+        })
+
+        // 实例化Autocomplete
+        geoSearch = new AMap.Autocomplete({
+            city: '全国'
+        });
+
+        // 规划
+        driving = new AMap.Driving({
+            // 驾车路线规划策略，AMap.DrivingPolicy.LEAST_TIME是最快捷模式
+            policy: AMap.DrivingPolicy.LEAST_TIME,
+            // map 指定将路线规划方案绘制到对应的AMap.Map对象上
+            map: map,
+            // panel 指定将结构化的路线详情数据显示的对应的DOM上，传入值需是DOM的ID
+            // panel: 'panel'
+        });
+        return Promise.resolve();
+    })
+    // .catch(e => {
+    //     console.log(e);
+    //     ElMessage.error('初始化高德地图模块失败，检查key');
+    // })
+});
+
 
 
 onUnmounted(() => {

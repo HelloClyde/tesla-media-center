@@ -6,7 +6,7 @@ import { tsUnknownKeyword } from '@babel/types';
 
 console.info('origin ua:', navigator.userAgent);
 Object.defineProperty(navigator, 'userAgent', {
-  value: navigator.userAgent + 'Android 6.0;Linux x86_64',
+  value: navigator.userAgent + ';Android 6.0;Linux x86_64',
   writable: true
 })
 console.info('amap ua:', navigator.userAgent);
