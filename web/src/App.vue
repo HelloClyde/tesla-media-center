@@ -18,6 +18,7 @@ const state = reactive({
   isTesla: true,
   menuTopItems: [{icon: House, route:'/'}],
   menuItems: [
+    {icon: MapLocation, route: 'login'},
     {icon: MapLocation, route: 'nav'},
     // {icon: Headset, route: 'music'},
     {icon: VideoPlay, route: 'video'},

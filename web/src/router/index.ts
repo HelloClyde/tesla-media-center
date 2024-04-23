@@ -1,16 +1,22 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHashHistory } from 'vue-router'
 import HomeView from '../views/HomeView.vue'
 import SystemInfoDebug from '../views/SystemInfoDebug.vue'
 import NavMap from '@/views/NavMap.vue';
 import VideoPlayerViewVue from '@/views/VideoPlayerView.vue';
+import LoginViewVue from '@/views/LoginView.vue';
 
 const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
+  history: createWebHashHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',
       name: 'home',
       component: HomeView
+    },
+    {
+      path: '/login',
+      name: 'login',
+      component: LoginViewVue
     },
     {
       path: '/nav',
