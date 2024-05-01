@@ -3,3 +3,4 @@ aiodns
 loguru
 bilibili-api-python
 aiohttp_session
+cryptography
