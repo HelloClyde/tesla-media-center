@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
-import axios from 'axios';
+import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 
 
@@ -85,13 +85,10 @@ function backLastFolder() {
 }
 
 function fetchFileList(path: string) {
-    axios.get(`/api/video/list?path=${path}`)
-        .then(response => {
-            state.curFiles = response.data;
+    get(`/api/video/list?path=${path}`, '获取文件列表失败')
+        .then(data => {
+            state.curFiles = data;
             state.path = path;
-        })
-        .catch(function (error) { // 请求失败处理
-            console.log(error);
         });
 }
 

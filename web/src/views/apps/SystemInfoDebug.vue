@@ -5,7 +5,13 @@ import SimpleView from '@/components/SimpleView.vue';
 import { reactive } from 'vue'
 import { onMounted, computed } from 'vue'
 import { useGeoLocationStore } from '@/stores/geoLocation';
-import AMapLoader from '@amap/amap-jsapi-loader';
+import getAMap from '@/functions/amapConfig';
+import { get } from '@/functions/requests'
+import { ElMessage } from 'element-plus';
+import { RouterView,useRouter, useRoute } from 'vue-router';
+
+
+const router = useRouter();
 
 const state = reactive({
     screenInfo: {
@@ -79,11 +85,21 @@ function stopRec() {
     }
 }
 
+function logout() {
+    get('/api/logout').then(data => {
+        console.log('logout', data);
+        ElMessage.success('已退出登陆');
+        router.push('/login');
+    })
+}
+
 
 onMounted(() => {
     refresh();
     postionState.init();
-    state.browser = JSON.stringify((window as any).AMap.Browser, null, '\t');
+    getAMap().then(amap => {
+        state.browser = JSON.stringify(amap?.Browser, null, '\t');
+    })
 })
 </script>
 
@@ -116,6 +132,9 @@ onMounted(() => {
             <el-descriptions-item label="TTS">
                 <el-button type="default" round @click="h5TTS('你好，特斯拉！')">H5TTS播放“你好特斯拉”</el-button>
                 <el-button type="default" round @click="h5TTS('hello tesla!')">H5TTS播放“hello tesla”</el-button>
+            </el-descriptions-item>
+            <el-descriptions-item label="账号">
+                <el-button type="default" round @click="logout()">退出登陆</el-button>
             </el-descriptions-item>
         </el-descriptions>
     </SimpleView>
