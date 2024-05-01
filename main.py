@@ -88,7 +88,7 @@ async def video_list(request):
         
     return json_ok(ret)
 
-@routes.get('/api/video/files/{path}')
+@routes.get('/api/video/files/{path:[^{}]+}')
 @login_check
 async def video_files(request):
     prefix = get_config_by_key('video_path')
