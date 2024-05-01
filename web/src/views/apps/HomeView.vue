@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
-import axios from 'axios';
+import { get } from '@/functions/requests'
 
 const state = reactive({
   iframeUrl: '',
@@ -9,13 +9,10 @@ const state = reactive({
 
 
 function fetchConfig() {
-    axios.get(`/api/config`)
-        .then(response => {
-          state.iframeUrl = response.data['home_page_iframe']
-        })
-        .catch(function (error) { // 请求失败处理
-            console.log(error);
-        });
+  get(`/api/config`, '读取配置失败')
+    .then(data => {
+      state.iframeUrl = data['home_page_iframe']
+    });
 }
 
 onMounted(() => {

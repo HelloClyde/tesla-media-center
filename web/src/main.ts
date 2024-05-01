@@ -11,8 +11,9 @@ import 'element-plus/dist/index.css'
 import './assets/main.css'
 const vConsole = new Vconsole();
 
-const app = createApp(App)
+const app = createApp(App);
 
+(window as any).$router = router;
 app.use(ElementPlus)
 app.use(createPinia())
 app.use(router)
@@ -24,3 +25,11 @@ app.config.globalProperties.$ELEMENT = {
 };
 
 app.mount('#app')
+
+
+console.info('origin ua:', navigator.userAgent);
+Object.defineProperty(navigator, 'userAgent', {
+  value: navigator.userAgent + ';Android 6.0;Linux x86_64',
+  writable: true
+})
+console.info('amap ua:', navigator.userAgent);
