@@ -100,7 +100,8 @@ cd ..
 {
     "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
     "video_path": "./video",
-    "amap_key": "xxx"
+    "amap_key": "xxx",
+    "password": "abc"
 }
 ```
 其中amap_key是高德开发者key，用于高德地图相关api调用，如果没有，地图部分无法使用
