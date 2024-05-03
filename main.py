@@ -70,7 +70,7 @@ async def video_list(request):
     abs_path = f'{prefix}/{path}'
     files = os.listdir(abs_path)
     ret = []
-    for f in files:
+    for f in files.sort():
         abs_f = f'{abs_path}/{f}'
         if os.path.isdir(abs_f):
             ret.append({
