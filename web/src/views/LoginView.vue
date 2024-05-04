@@ -30,7 +30,7 @@ onMounted(() => {
 
 
 <template>
-  <img src="/logo.png" style="position: fixed; top: 0; width: 100%; height: 100%;" />
+  <img src="/logo.jpg" style="position: fixed; top: 0; width: 100%; height: 100%;" />
   <el-row justify="center">
     <el-col :span="6"></el-col>
     <el-col :span="8" className="login-form">
