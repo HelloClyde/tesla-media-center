@@ -36,7 +36,7 @@ onMounted(() => {
     <el-col :span="8" className="login-form">
       <el-form :model="form" label-width="auto" style="max-width: 600px" size="large">
         <el-form-item label="密码">
-          <el-input v-model="form.pwd" />
+          <el-input v-model="form.pwd" type="password" placeholder="请输入密码" show-password />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="onSubmit" style="width: 295px">登陆</el-button>
