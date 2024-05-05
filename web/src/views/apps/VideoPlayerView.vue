@@ -16,7 +16,9 @@ const state = reactive({
     path: '',
     isPlay: false,
     curUrl: null as string | null,
-    isLongVideo: false
+    isLongVideo: false,
+    isAutoContinue: true,
+    showScreen: true
 })
 
 function playOrPause() {
@@ -113,6 +115,7 @@ onUnmounted(() => {
     <!-- player -->
     <div ref="videoWrapper" class="player">
         <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
+        <div v-show="!state.showScreen" class="screenCap" ></div>
         <div class="video-float" @click="playOrPause">
             <div class="loadEffect" id="loading" ref="videoLoading" style="display:none;">
                 <span></span>
@@ -138,6 +141,8 @@ onUnmounted(() => {
         <div class="controller-btn">
             <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
             <el-switch class="long-video-switch" v-model="state.isLongVideo" size="large" active-text="长视频" inactive-text="短视频" />
+            <el-switch class="long-video-switch" v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
+            <el-switch class="long-video-switch" v-model="state.showScreen" size="large" active-text="视频" inactive-text="仅音频" />
             <el-icon :size="35" class="right" @click="fullscreen">
                 <FullScreen />
             </el-icon>
@@ -169,9 +174,23 @@ onUnmounted(() => {
 
 
 <style>
+.screenCap {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    background-image: url('/screen-cap.jpg');
+}
+
 .long-video-switch {
-    top: -3px;
-    margin-left: 10px;
+    font-size: 14px;
+    line-height: 24px;
+    height: 40px;
+    border: 1px solid #ccc;
+    border-radius: 10px;
+    padding-left: 10px;
+    padding-right: 10px;
+    margin-right: 10px;
 }
 
 .right {
