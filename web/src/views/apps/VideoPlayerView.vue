@@ -176,7 +176,7 @@ onUnmounted(() => {
             <div class="playlist-item-title">返回上一级</div>
         </div>
         <div v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)">
-            <div class="playlist-item-icon">
+            <div class="playlist-item-icon"  :class="{'playlist-active': item === state.playFile}">
                 <el-icon v-if="item.fileType == 'DIR'">
                     <Folder />
                 </el-icon>
@@ -184,7 +184,7 @@ onUnmounted(() => {
                     <Film />
                 </el-icon>
             </div>
-            <div class="playlist-item-title">{{ item.fileName }}</div>
+            <div class="playlist-item-title"  :class="{'playlist-active': item === state.playFile}">{{ item.fileName }}</div>
         </div>
     </div>
 </template>
@@ -260,6 +260,10 @@ onUnmounted(() => {
     height: 196px;
     border-bottom: 3px solid #ccc;
     overflow: auto;
+}
+
+.playlist-active {
+    color: rgb(64, 158, 255) !important;
 }
 
 .playlist-item {
