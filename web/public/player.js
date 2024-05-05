@@ -73,6 +73,7 @@ function Player() {
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
+    this.finishCallback     = null;
 }
 
 Player.prototype.initDownloadWorker = function () {
@@ -499,6 +500,10 @@ Player.prototype.setTrack = function (timeTrack, timeLabel) {
     }
 };
 
+Player.prototype.setFinishCallback = function (callback) {
+    this.finishCallback = callback;
+};
+
 Player.prototype.onGetFileInfo = function (info) {
     if (this.playerState == playerStateIdle) {
         return;
@@ -901,6 +906,9 @@ Player.prototype.displayLoop = function() {
         if (this.decoderState == decoderStateFinished) {
             this.reportPlayError(1, 0, "Finished");
             this.stop();
+            if (this.finishCallback){
+                this.finishCallback();
+            }
         } else {
             this.startBuffering();
         }
@@ -993,6 +1001,9 @@ Player.prototype.updateTrackTime = function () {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
         if (currentPlayTime * 1000 > this.duration){
             this.stop();
+            if (this.finishCallback){
+                this.finishCallback();
+            }
         }
         if (this.timeTrack) {
             this.timeTrack.value = 1000 * currentPlayTime;

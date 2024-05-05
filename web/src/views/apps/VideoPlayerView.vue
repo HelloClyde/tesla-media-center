@@ -13,6 +13,7 @@ let videoPlayer = shallowRef<any>(null);
 
 const state = reactive({
     curFiles: [] as any[],
+    playFile: null,
     path: '',
     isPlay: false,
     curUrl: null as string | null,
@@ -70,6 +71,7 @@ function fileAction(file: any) {
 
         const playUrl = file.url;
         playVideo(playUrl);
+        state.playFile = file;
     }
 }
 
@@ -99,7 +101,22 @@ onMounted(() => {
     fetchFileList(state.path);
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
-
+    videoPlayer.setFinishCallback(() => {
+        if (state.isAutoContinue){
+            const fromIdx = state.curFiles.lastIndexOf(state.playFile);
+            for (let i = fromIdx + 1;i < state.curFiles.length; i ++){
+                const file = state.curFiles[i];
+                const fName = file.fileName as string;
+                if (!fName.endsWith(".mp4")) {
+                    continue;
+                }
+                
+                const playUrl = file.url;
+                playVideo(playUrl);
+                return;
+            }
+        }
+    });
 })
 
 onUnmounted(() => {
