@@ -111,8 +111,8 @@ onMounted(() => {
                     continue;
                 }
                 
-                const playUrl = file.url;
-                playVideo(playUrl);
+                ElMessage.info(`自动播放下一集:${fName}`);
+                fileAction(file)
                 return;
             }
         }
@@ -157,9 +157,9 @@ onUnmounted(() => {
         </div>
         <div class="controller-btn">
             <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
-            <el-switch class="long-video-switch" v-model="state.isLongVideo" size="large" active-text="长视频" inactive-text="短视频" />
-            <el-switch class="long-video-switch" v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
-            <el-switch class="long-video-switch" v-model="state.showScreen" size="large" active-text="视频" inactive-text="仅音频" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频" inactive-text="短视频" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频" inactive-text="仅音频" />
             <el-icon :size="35" class="right" @click="fullscreen">
                 <FullScreen />
             </el-icon>
@@ -203,10 +203,7 @@ onUnmounted(() => {
     font-size: 14px;
     line-height: 24px;
     height: 40px;
-    border: 1px solid #ccc;
-    border-radius: 10px;
-    padding-left: 10px;
-    padding-right: 10px;
+    margin-left: 10px;
     margin-right: 10px;
 }
 
@@ -277,11 +274,12 @@ onUnmounted(() => {
     height: 80px;
     font-size: 60px;
     text-align: center;
+    color: rgb(80, 77, 77);
 }
 
 .playlist-item-title {
     font-size: 24px;
-    color: black;
+    color: rgb(80, 77, 77);
     text-align: center;
     line-height: 24px;
     margin-top: -15px;
