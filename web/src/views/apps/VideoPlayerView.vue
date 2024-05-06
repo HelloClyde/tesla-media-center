@@ -102,15 +102,15 @@ onMounted(() => {
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
     videoPlayer.setFinishCallback(() => {
-        if (state.isAutoContinue){
+        if (state.isAutoContinue) {
             const fromIdx = state.curFiles.lastIndexOf(state.playFile);
-            for (let i = fromIdx + 1;i < state.curFiles.length; i ++){
+            for (let i = fromIdx + 1; i < state.curFiles.length; i++) {
                 const file = state.curFiles[i];
                 const fName = file.fileName as string;
                 if (!fName.endsWith(".mp4")) {
                     continue;
                 }
-                
+
                 ElMessage.info(`自动播放下一集:${fName}`);
                 fileAction(file)
                 return;
@@ -132,7 +132,7 @@ onUnmounted(() => {
     <!-- player -->
     <div ref="videoWrapper" class="player">
         <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
-        <div v-show="!state.showScreen" class="screenCap" ></div>
+        <div v-show="!state.showScreen" class="screenCap"></div>
         <div class="video-float" @click="playOrPause">
             <div class="loadEffect" id="loading" ref="videoLoading" style="display:none;">
                 <span></span>
@@ -157,9 +157,12 @@ onUnmounted(() => {
         </div>
         <div class="controller-btn">
             <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
-            <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频" inactive-text="短视频" />
-            <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
-            <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频" inactive-text="仅音频" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频"
+                inactive-text="短视频" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
+                inactive-text="单播" />
+            <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
+                inactive-text="仅音频" />
             <el-icon :size="35" class="right" @click="fullscreen">
                 <FullScreen />
             </el-icon>
@@ -167,16 +170,47 @@ onUnmounted(() => {
     </div>
     <!-- video menu -->
     <div class="playlist">
-        <div class="playlist-item" @click="backLastFolder">
+        <!-- <div class="playlist-item" @click="backLastFolder">
             <div class="playlist-item-icon">
                 <el-icon>
                     <ArrowLeftBold />
                 </el-icon>
             </div>
             <div class="playlist-item-title">返回上一级</div>
-        </div>
-        <div v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)">
-            <div class="playlist-item-icon"  :class="{'playlist-active': item === state.playFile}">
+        </div> -->
+        <!-- <div v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)"> -->
+        <el-space wrap>
+            <el-card class="playlist-item" @click="backLastFolder">
+                <template #header>
+                    <div class="playlist-item-icon">
+                        <el-icon>
+                            <ArrowLeftBold />
+                        </el-icon>
+                    </div>
+                </template>
+                <el-text size="large" class="playlist-back">返回上一级</el-text>
+                <!-- <div class="playlist-item-title" :class="{ 'playlist-active': item === state.playFile }">{{ item.fileName }} -->
+                <!-- </div> -->
+            </el-card>
+            <el-card v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)">
+                <template #header>
+                    <div class="playlist-item-icon" :class="{ 'playlist-active': item === state.playFile }">
+                        <el-icon v-if="item.fileType == 'DIR'">
+                            <Folder />
+                        </el-icon>
+                        <el-icon v-else>
+                            <Film />
+                        </el-icon>
+                    </div>
+                </template>
+                <el-text line-clamp="2" size="large" :class="{ 'playlist-active': item === state.playFile }">
+                    {{ item.fileName }}
+                </el-text>
+                <!-- <div class="playlist-item-title" :class="{ 'playlist-active': item === state.playFile }">{{ item.fileName }} -->
+                <!-- </div> -->
+            </el-card>
+        </el-space>
+        <!-- <div class="playlist-item-icon"  :class="{'playlist-active': item === state.playFile}">
                 <el-icon v-if="item.fileType == 'DIR'">
                     <Folder />
                 </el-icon>
@@ -184,8 +218,8 @@ onUnmounted(() => {
                     <Film />
                 </el-icon>
             </div>
-            <div class="playlist-item-title"  :class="{'playlist-active': item === state.playFile}">{{ item.fileName }}</div>
-        </div>
+            <div class="playlist-item-title"  :class="{'playlist-active': item === state.playFile}">{{ item.fileName }}</div> -->
+        <!-- </div> -->
     </div>
 </template>
 
@@ -260,10 +294,16 @@ onUnmounted(() => {
     height: 196px;
     border-bottom: 3px solid #ccc;
     overflow: auto;
+    padding: 0 0 0 30px;
 }
 
 .playlist-active {
     color: rgb(64, 158, 255) !important;
+}
+
+.playlist-back {
+    display: inline-block;
+    text-align: center;
 }
 
 .playlist-item {
@@ -273,10 +313,23 @@ onUnmounted(() => {
     height: 120px;
 }
 
+.playlist-item .el-text {
+    width: 100%;
+}
+
+.playlist-item .el-card__header {
+    padding: 4px;
+}
+
+.playlist-item .el-card__body {
+    padding: 4px;
+}
+
 .playlist-item-icon {
-    width: 200px;
-    height: 80px;
-    font-size: 60px;
+    /* width: 200px; */
+    /* height: 80px; */
+    font-size: 50px;
+    line-height: 50px;
     text-align: center;
     color: rgb(80, 77, 77);
 }

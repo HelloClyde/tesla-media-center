@@ -14,9 +14,9 @@
   "dependencies": {
     "@amap/amap-jsapi-loader": "^1.0.1",
     "@cycjimmy/jsmpeg-player": "^6.0.5",
-    "@element-plus/icons-vue": "^2.0.10",
+    "@element-plus/icons-vue": "^2.3.0",
     "axios": "^1.2.5",
-    "element-plus": "^2.2.28",
+    "element-plus": "^2.3.0",
     "pinia": "^2.0.28",
     "vconsole": "^3.15.0",
     "vue": "^3.2.45",
