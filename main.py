@@ -7,7 +7,7 @@ import time
 from cryptography import fernet
 from aiohttp_session import setup, get_session, session_middleware
 from aiohttp_session.cookie_storage import EncryptedCookieStorage
-from bilibili_api import homepage, sync
+from bilibili_api import homepage, sync, hot
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 from functools import wraps
 
@@ -113,6 +113,13 @@ async def static_web(request):
         # return web.HTTPFound("/index.html")
         return web.HTTPNotFound()
 
+
+
+@routes.get('/api/bilibili/hot')
+@login_check
+async def bl_hot(request):
+    resp = await hot.get_hot_videos()
+    return json_ok(resp)
 
 
 if __name__ == '__main__':

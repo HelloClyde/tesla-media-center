@@ -5,6 +5,7 @@ import NavMap from '@/views/apps/NavMap.vue';
 import VideoPlayerViewVue from '@/views/apps/VideoPlayerView.vue';
 import LoginViewVue from '@/views/LoginView.vue';
 import AppViewVue from '@/views/AppView.vue';
+import BilibiliVue from '@/views/apps/Bilibili.vue';
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -33,6 +34,11 @@ const router = createRouter({
           path: 'video',
           name: 'video',
           component: VideoPlayerViewVue
+        },
+        {
+          path: 'bilibili',
+          name: 'bilibili',
+          component: BilibiliVue
         },
         {
           path: 'about',

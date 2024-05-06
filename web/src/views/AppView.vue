@@ -20,24 +20,20 @@ const state = reactive({
   menuItems: [
     {icon: MapLocation, route: '/apps/nav'},
     // {icon: Headset, route: 'music'},
+    {icon: '/icon/BILIBILI_LOGO.svg', route: '/apps/bilibili'},
     {icon: VideoPlay, route: '/apps/video'},
     // {icon: SwitchFilled, route: 'game'},
     {icon: Monitor, route: '/apps/debug'},
     // {icon: Setting, route: 'setting'},
     // {icon: Compass, route: 'brower'},
   ],
-  curMenu: router.currentRoute.value.name
+  curMenu: router.currentRoute.value.path
 })
 
-watch(
-      () => router.currentRoute.value.name,
-      async name => {
-        state.curMenu = name;
-      }
-    );
 
 function routeTo(name: string){
   router.push(name);
+  state.curMenu = name;
 }
 
 onMounted(() => {
@@ -57,7 +53,10 @@ onMounted(() => {
       </div>
       <div class="menu-bottom">
         <div class="menu-item" :class="{ 'menu-item-active': item.route == state.curMenu }" v-for="item of state.menuItems">
-          <el-icon @click="routeTo(item.route)">
+          <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'">
+            <img :src="item.icon" class="icon-svg" />
+          </el-icon>
+          <el-icon @click="routeTo(item.route)" v-else>
             <component :is="item.icon"></component>
           </el-icon>
         </div>
@@ -74,6 +73,19 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.icon-svg {
+  width: 100%;
+  filter: drop-shadow(1000px 0 0 rgb(80, 77, 77));
+  transform: translate(-1000px);
+}
+
+.menu-item-active .icon-svg
+{
+  filter: drop-shadow(1000px 0 0 #10aeff);
+  transform: translate(-1000px);
+}
+
+
 .menu {
   width: 80px;
   top: 0;
