@@ -170,15 +170,6 @@ onUnmounted(() => {
     </div>
     <!-- video menu -->
     <div class="playlist">
-        <!-- <div class="playlist-item" @click="backLastFolder">
-            <div class="playlist-item-icon">
-                <el-icon>
-                    <ArrowLeftBold />
-                </el-icon>
-            </div>
-            <div class="playlist-item-title">返回上一级</div>
-        </div> -->
-        <!-- <div v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)"> -->
         <el-space wrap>
             <el-card class="playlist-item" @click="backLastFolder">
                 <template #header>
@@ -189,8 +180,6 @@ onUnmounted(() => {
                     </div>
                 </template>
                 <el-text size="large" class="playlist-back">返回上一级</el-text>
-                <!-- <div class="playlist-item-title" :class="{ 'playlist-active': item === state.playFile }">{{ item.fileName }} -->
-                <!-- </div> -->
             </el-card>
             <el-card v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)">
                 <template #header>
@@ -206,20 +195,8 @@ onUnmounted(() => {
                 <el-text line-clamp="2" size="large" :class="{ 'playlist-active': item === state.playFile }">
                     {{ item.fileName }}
                 </el-text>
-                <!-- <div class="playlist-item-title" :class="{ 'playlist-active': item === state.playFile }">{{ item.fileName }} -->
-                <!-- </div> -->
             </el-card>
         </el-space>
-        <!-- <div class="playlist-item-icon"  :class="{'playlist-active': item === state.playFile}">
-                <el-icon v-if="item.fileType == 'DIR'">
-                    <Folder />
-                </el-icon>
-                <el-icon v-else>
-                    <Film />
-                </el-icon>
-            </div>
-            <div class="playlist-item-title"  :class="{'playlist-active': item === state.playFile}">{{ item.fileName }}</div> -->
-        <!-- </div> -->
     </div>
 </template>
 
