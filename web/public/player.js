@@ -1057,13 +1057,13 @@ Player.prototype.setLoadingDiv = function (loadingDiv) {
 
 Player.prototype.hideLoading = function () {
     if (this.loadingDiv != null) {
-        loading.style.display = "none";
+        this.loadingDiv.style.display = "none";
     }
 };
 
 Player.prototype.showLoading = function () {
     if (this.loadingDiv != null) {
-        loading.style.display = "block";
+        this.loadingDiv.style.display = "block";
     }
 };
 

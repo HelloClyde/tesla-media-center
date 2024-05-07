@@ -124,6 +124,7 @@ onUnmounted(() => {
     //     console.log(videoPlayer);
     //     videoPlayer.value.destroy();
     // }
+    videoPlayer.stop();
 })
 
 </script>
