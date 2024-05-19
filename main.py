@@ -7,7 +7,7 @@ import time
 from cryptography import fernet
 from aiohttp_session import setup, get_session, session_middleware
 from aiohttp_session.cookie_storage import EncryptedCookieStorage
-from bilibili_api import hot
+from bilibili_api import hot, homepage, rank
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 from functools import wraps
 import asyncio  
@@ -168,6 +168,17 @@ async def bl_hot(request):
     resp = await hot.get_hot_videos()
     return json_ok(resp)
 
+@routes.get('/api/bilibili/rank')
+@login_check
+async def bl_rank(request):
+    resp = await rank.get_rank()
+    return json_ok(resp)
+
+@routes.get('/api/bilibili/home')
+@login_check
+async def bl_home(request):
+    resp = await homepage.get_videos()
+    return json_ok(resp)
 
 if __name__ == '__main__':
     app = web.Application()

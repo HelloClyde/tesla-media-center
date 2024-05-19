@@ -5,20 +5,43 @@ import VideoPlayer from '@/components/VideoPlayer.vue';
 
 const state = reactive({
   videoConfig: null as any,
-  videoList: [] as any[],
-  curTab: "hot"
+  homeVideoList: [] as any[],
+  hotVideoList: [] as any[],
+  rankVideoList: [] as any[],
+  curTab: "homepage"
 })
-
-const tabName = ref('hot')
 
 const loadHot = () => {
   get('/api/bilibili/hot').then(data => {
-    state.videoList = data.list;
+    state.hotVideoList = data.list;
   });
 }
 
-const tabChange = (tab: any, event: Event) => {
-  console.log(tab, event);
+const loadHomeVideos = () => {
+  get('/api/bilibili/home').then(data => {
+    state.homeVideoList = data.item;
+  });
+}
+
+const loadRankVideos = () => {
+  get('/api/bilibili/rank').then(data => {
+    state.rankVideoList = data.list;
+  });
+}
+
+const tabChange = (name: string) => {
+  console.log(name);
+  switch (name){
+    case 'homepage':
+      loadHomeVideos();
+      break;
+    case 'hot':
+      loadHot();
+      break;
+    case 'rank':
+      loadRankVideos();
+      break;
+  }
 }
 
 const videoSelect = (video: any) => {
@@ -28,7 +51,7 @@ const videoSelect = (video: any) => {
 
 
 onMounted(() => {
-  loadHot();
+  loadHomeVideos();
 })
 </script>
 
@@ -38,11 +61,56 @@ onMounted(() => {
     <VideoPlayer  type="bv" :on-close="() => state.videoConfig = null"  :video-config="state.videoConfig" />
   </div>
   
-  <el-tabs v-show="state.videoConfig == null" v-model="state.curTab" @tab-click="tabChange" class="tabs">
-    <el-tab-pane label="推荐" name="recommend">推荐</el-tab-pane>
+  <el-tabs v-show="state.videoConfig == null" v-model="state.curTab" @tab-change="tabChange" class="tabs">
+    <el-tab-pane label="首页" name="homepage">
+      <el-space wrap>
+        <el-card class="video-card" v-for="video of state.homeVideoList" :key="video.aid" @click="videoSelect(video)">
+          <template #header>
+            <div class="video-cover">
+              <img :src="video.pic" />
+            </div>
+          </template>
+          <el-text line-clamp="2" class="video-title">
+            {{ video.title }}
+          </el-text>
+          <el-row>
+            <el-text truncated class="video-author">
+              <el-icon>
+                <User />
+              </el-icon>
+              {{ video.owner.name }}
+            </el-text>
+          </el-row>
+        </el-card>
+      </el-space>
+    </el-tab-pane>
     <el-tab-pane label="热门" name="hot">
       <el-space wrap>
-        <el-card class="video-card" v-for="video of state.videoList" :key="video.aid" @click="videoSelect(video)">
+        <el-card class="video-card" v-for="video of state.hotVideoList" :key="video.aid" @click="videoSelect(video)">
+          <template #header>
+            <div class="video-cover">
+              <img :src="video.pic" />
+            </div>
+          </template>
+          <el-text line-clamp="2" class="video-title">
+            {{ video.title }}
+          </el-text>
+          <el-row>
+            <el-text truncated class="video-author">
+              <el-icon>
+                <User />
+                
+              </el-icon>
+              {{ video.owner.name }}
+            </el-text>
+          </el-row>
+        </el-card>
+      </el-space>
+    </el-tab-pane>
+    
+    <el-tab-pane label="排行榜" name="rank">
+      <el-space wrap>
+        <el-card class="video-card" v-for="video of state.rankVideoList" :key="video.aid" @click="videoSelect(video)">
           <template #header>
             <div class="video-cover">
               <img :src="video.pic" />
