@@ -23,7 +23,7 @@ FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 # 1100x624
 FFMPEG_VF_ARG = '-vf "scale=1100:624:force_original_aspect_ratio=decrease,pad=1100:624:(ow-iw)/2:(oh-ih)/2"'
 chunk_size = 10240
-video_bitrate = '8000k'
+video_bitrate = '2m'
 
 
 # context
