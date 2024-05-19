@@ -31,9 +31,14 @@ onMounted(() => {
 
     var hostname = document.location.hostname;
     var port = document.location.port;
+    var schema = window.location.protocol;
+    var wsSchema = 'ws:'
+    if (schema == 'https:'){
+        wsSchema = 'wss:'
+    }
 
-    state.streamWsUrl = `ws://${hostname}:${port}/api/ws`
-    state.ctlWs = new WebSocket(`ws://${hostname}:${port}/api/ws/ctl`);
+    state.streamWsUrl = `${wsSchema}//${hostname}:${port}/api/ws`
+    state.ctlWs = new WebSocket(`${wsSchema}//${hostname}:${port}/api/ws/ctl`);
     const videoConfig = props.videoConfig;
     videoConfig['type'] = props.type;
 

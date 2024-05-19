@@ -23,6 +23,8 @@ FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 # 1100x624
 FFMPEG_VF_ARG = '-vf "scale=1100:624:force_original_aspect_ratio=decrease,pad=1100:624:(ow-iw)/2:(oh-ih)/2"'
 chunk_size = 10240
+video_bitrate = '8000k'
+
 
 # context
 cur_video_config = None
@@ -36,7 +38,7 @@ class LocalVideo:
         self.path = path
         
     async def start(self):
-        cmd = f'{FFMPEG_PATH} -re -i {self.path} -codec:v mpeg1video -b:v 16000k -r 25 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+        cmd = f'{FFMPEG_PATH} -re -i {self.path} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
         self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         
     async def seek(self, ts):
@@ -87,13 +89,13 @@ class BiliVideo:
             ]
             for task in self.tasks:
                 task.start()
-            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video -b:v 16000k -r 25 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
             self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         else:
             self.tasks = [
                 threading.Thread(target=self.download_stream, args=(streams[0].url, self.input_video_pipe)),
             ]
-            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -codec:v mpeg1video -b:v 16000k -r 25 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
             self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         
     async def seek(self, ts):
