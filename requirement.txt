@@ -4,3 +4,4 @@ loguru
 bilibili-api-python
 aiohttp_session
 cryptography
+imageio-ffmpeg

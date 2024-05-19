@@ -40,7 +40,7 @@ function fullscreen() {
     videoPlayer.fullscreen();
 }
 
-function playVideo(url: string) {
+function playVideo(url: string, isStream=false) {
     videoPlayer.stop();
     console.log(playerCanvas);
     const waitHeaderLength = state.isLongVideo ? 8 * 1024 * 1024 : 512 * 1024;
@@ -51,7 +51,7 @@ function playVideo(url: string) {
         if (e.error == 1) {
             console.info("Finished.");
         }
-    }, waitHeaderLength, false);
+    }, waitHeaderLength, isStream);
     state.curUrl = url;
     state.isPlay = true;
 
@@ -64,7 +64,7 @@ function fileAction(file: any) {
         fetchFileList(state.path + '/' + file.fileName);
     } else {
         const fName = file.fileName as string;
-        if (!fName.endsWith(".mp4")) {
+        if (!fName.endsWith(".mp4") && !fName.endsWith('.flv')) {
             ElMessage.error('不支持的视频格式');
             return;
         }
@@ -107,7 +107,7 @@ onMounted(() => {
             for (let i = fromIdx + 1; i < state.curFiles.length; i++) {
                 const file = state.curFiles[i];
                 const fName = file.fileName as string;
-                if (!fName.endsWith(".mp4")) {
+                if (!fName.endsWith(".mp4") && !fName.endsWith(".flv")) {
                     continue;
                 }
 

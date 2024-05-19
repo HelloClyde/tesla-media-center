@@ -7,9 +7,14 @@ import time
 from cryptography import fernet
 from aiohttp_session import setup, get_session, session_middleware
 from aiohttp_session.cookie_storage import EncryptedCookieStorage
-from bilibili_api import homepage, sync, hot
+from bilibili_api import hot
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 from functools import wraps
+import asyncio  
+import ffvideo
+
+
+routes = web.RouteTableDef()
 
 
 def json_ok(data):
@@ -35,8 +40,6 @@ def login_check(req_handler):
         return data
     return wrapTheFunction
 
-routes = web.RouteTableDef()
-
 @routes.post('/api/login')
 async def login(request):
     data = await request.json()
@@ -55,6 +58,50 @@ async def logout(request):
     if 'last_visit' in session:
         del session['last_visit']
     return json_ok({})
+
+
+@routes.get('/api/ws/ctl')
+async def video_control_ws(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    async for msg in ws:
+        if msg.type == web.WSMsgType.TEXT:
+            logger.info(f'ws receive msg:{msg.data}')
+            payload = json.loads(msg.data)
+            type = payload['type']
+            args = payload['args']
+            if type == 'init':
+                ffvideo.set_video_config(args)
+                await ws.send_str('init_ok')
+            elif type == 'pause':
+                ffvideo.set_play_state('pause')
+            elif type == 'play':
+                ffvideo.set_play_state('playing')
+            else:
+                raise Exception('not support')
+        if msg.type == web.WSMsgType.ERROR:
+            logger.error('ws connection closed with exception %s' % ws.exception())  
+    logger.info('websocket connection closed')
+    return ws
+
+@routes.get('/api/ws')
+async def websocket_handler(request):
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
+    # 启动，后台线程处理
+    task = asyncio.create_task(ffvideo.sync_to_ws(ws))
+    logger.info(f'start sync_to_ws task')
+    
+    async for msg in ws:
+        if msg.type == web.WSMsgType.ERROR:
+            logger.error('ws connection closed with exception %s' % ws.exception())  
+    logger.info('websocket connection closed')
+    task.cancel()
+    logger.info(f'sync_to_ws task cancel')
+  
+    return ws
 
 
 @routes.get('/api/config')

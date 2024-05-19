@@ -999,7 +999,7 @@ Player.prototype.stopTrackTimer = function () {
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
-        if (currentPlayTime * 1000 > this.duration){
+        if (!this.isStream && currentPlayTime * 1000 > this.duration){
             this.stop();
             if (this.finishCallback){
                 this.finishCallback();

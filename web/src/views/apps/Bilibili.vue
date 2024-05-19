@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
 import { get } from '@/functions/requests'
-import type { TabsPaneContext } from 'element-plus/es/tokens/tabs';
+import VideoPlayer from '@/components/VideoPlayer.vue';
 
 const state = reactive({
+  videoConfig: null as any,
   videoList: [] as any[],
   curTab: "hot"
 })
@@ -16,8 +17,13 @@ const loadHot = () => {
   });
 }
 
-const tabChange = (tab: TabsPaneContext, event: Event) => {
+const tabChange = (tab: any, event: Event) => {
   console.log(tab, event);
+}
+
+const videoSelect = (video: any) => {
+  console.log(video);
+  state.videoConfig = { 'type': 'bv', 'bvid': video?.bvid}
 }
 
 
@@ -28,11 +34,15 @@ onMounted(() => {
 
 
 <template>
-  <el-tabs v-model="state.curTab" @tab-click="tabChange" class="tabs">
+  <div v-if="state.videoConfig" class="video-view">
+    <VideoPlayer  type="bv" :on-close="() => state.videoConfig = null"  :video-config="state.videoConfig" />
+  </div>
+  
+  <el-tabs v-show="state.videoConfig == null" v-model="state.curTab" @tab-click="tabChange" class="tabs">
     <el-tab-pane label="推荐" name="recommend">推荐</el-tab-pane>
     <el-tab-pane label="热门" name="hot">
       <el-space wrap>
-        <el-card class="video-card" v-for="video of state.videoList" :key="video.aid">
+        <el-card class="video-card" v-for="video of state.videoList" :key="video.aid" @click="videoSelect(video)">
           <template #header>
             <div class="video-cover">
               <img :src="video.pic" />
@@ -45,6 +55,7 @@ onMounted(() => {
             <el-text truncated class="video-author">
               <el-icon>
                 <User />
+                
               </el-icon>
               {{ video.owner.name }}
             </el-text>
@@ -59,6 +70,12 @@ onMounted(() => {
 
 
 <style>
+.video-view {
+  position: absolute;
+  top: 0px;
+  z-index: 99999;
+}
+
 .tabs {
   margin-left: 10px;
   font-weight: 600;

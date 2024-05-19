@@ -30,6 +30,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8080/api/',
         changeOrigin: true,
+        ws: true,
         rewrite: (path) => path.replace(/^\/api/, '') // 不可以省略rewrite
       }
     }
