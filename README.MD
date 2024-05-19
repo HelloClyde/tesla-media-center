@@ -20,9 +20,19 @@ tesla-media-center是一个开源解决方案，将更强大的多媒体功能�
 ![home](shot/img_001.png)
 通过config中的home_page_iframe可以配置不同的主页，可以去sketchfab找些带动画的3D模型作为主页https://sketchfab.com/search?features=animated&type=models
 
+### bilibili在线播放
+![bl](shot/img_005.png)
+![bl](shot/img_006.png)
 
-#### h265 mp4播放
-![home](shot/img_002.png)
+提供bilibili在线播放功能。
+使用服务端转码，前端使用jsmpeg
+已知问题：
+1. 由于mp1编码压缩率不高，在3M小水管下画质不佳，后续考虑换h264
+2. 功能缺失，完全复刻bilibili客户端是巨大的工作量，后续可能仅做几个核心功能
+3. 由于目前方案是服务端实时转码，暂不支持seek跳转，暂停/恢复
+
+#### h264/h265 mp4/flv 点播视频播放
+![video](shot/img_002.png)
 
 由于网络视频是流式播放的，所以需要将moov box前置
 使用如下ffmpeg命令对视频进行转码。
@@ -31,11 +41,11 @@ ffmpeg命令可以从ffmpeg官网下载：https://ffmpeg.org/download.html
 ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r 25 -movflags faststart  output.mp4
 ```
 已支持：
-1. h265视频播放
+1. h264/h265视频播放
 
 已知问题：
 1. 视频需要moov box前置，基本上都需要使用ffmpeg转换后才能使用
-2. 目前本播放器仅支持h265的mp4视频，并且时长不能超过1小时
+2. 目前本播放器仅支持h264/h265的flv/mp4视频，并且时长不能超过1小时
 3. 视频播放完毕后，进度条仍然会继续
 4. 弱网环境下，可能会音画不同步，通过手动指定播放时间可以再次让音画同步
 
