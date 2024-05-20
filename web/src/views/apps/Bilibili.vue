@@ -149,13 +149,18 @@ onMounted(() => {
   font-weight: 600;
 }
 
+.el-tabs__nav {
+  height: 60px;
+}
+
 .tabs .el-tabs__item {
-  font-size: 20px;
+  font-size: 32px;
+  height: 60px;
 }
 
 .video-card {
-  width: 250px;
-  height: 230px;
+  width: 350px;
+  height: 322px;
 }
 
 .video-card .el-card__body {
@@ -163,21 +168,23 @@ onMounted(() => {
 }
 
 .video-title {
-  height: 45px;
+  height: 63px;
   width: 100%;
+  font-size: 20px !important;
 }
 
 .video-author {
+  font-size: 20px !important;
 }
 
 .video-card .el-card__header {
   padding: 0;
-  width: 250px;
-  height: 140px;
+  width: 350px;
+  height: 196px;
 }
 
 .video-cover>img {
-  width: 250px;
-  height: 140px;
+  width: 350px;
+  height: 196px;
 }
 </style>
