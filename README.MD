@@ -25,17 +25,23 @@ tesla-media-center是一个开源解决方案，将更强大的多媒体功能�
 ![bl](shot/img_006.png)
 
 提供bilibili在线播放功能。
+
 使用服务端转码，前端使用jsmpeg
+
 已知问题：
-1. 由于mp1编码压缩率不高，在3M小水管下画质不佳，后续考虑换h264
+1. ~~由于mp1编码压缩率不高，在3M小水管下画质不佳，后续考虑换h264~~ 通过调节ffmpeg质量参数解决
 2. 功能缺失，完全复刻bilibili客户端是巨大的工作量，后续可能仅做几个核心功能
 3. 由于目前方案是服务端实时转码，暂不支持seek跳转，暂停/恢复
+4. ~~下载线程中断会导致死锁~~ 已经修复
+5. 由于实时转码，下载线程被堵住，会导致下载失败
 
 #### h264/h265 mp4/flv 点播视频播放
 ![video](shot/img_002.png)
 
 由于网络视频是流式播放的，所以需要将moov box前置
+
 使用如下ffmpeg命令对视频进行转码。
+
 ffmpeg命令可以从ffmpeg官网下载：https://ffmpeg.org/download.html
 ```
 ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r 25 -movflags faststart  output.mp4
