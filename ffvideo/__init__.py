@@ -23,7 +23,7 @@ FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 # 1100x624
 FFMPEG_VF_ARG = '-vf "scale=1100:624:force_original_aspect_ratio=decrease,pad=1100:624:(ow-iw)/2:(oh-ih)/2"'
 chunk_size = 10240
-video_bitrate = '2m'
+video_q = '-q 10'
 
 
 # context
@@ -38,7 +38,7 @@ class LocalVideo:
         self.path = path
         
     async def start(self):
-        cmd = f'{FFMPEG_PATH} -re -i {self.path} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+        cmd = f'{FFMPEG_PATH} -re -i {self.path} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
         self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         
     async def seek(self, ts):
@@ -61,18 +61,22 @@ class BiliVideo:
         os.mkfifo(self.input_audio_pipe)
         
     def download_stream(self, url, pipe_path):
-        logger.info(f'url:{url}, pipe_path:{pipe_path}')
-        response = requests.get(url, stream=True, headers=HEADERS)
-        response.raise_for_status()
+        try:
+            logger.info(f'url:{url}, pipe_path:{pipe_path}')
+            response = requests.get(url, stream=True, headers=HEADERS)
+            response.raise_for_status()
 
-        logger.info(f'start download..')
-        fifo_fd = os.open(pipe_path, os.O_WRONLY)
-        for chunk in response.iter_content(chunk_size=chunk_size):
-            # logger.info(f'chunk, pipe:{pipe_path}')
-            if chunk:
-                os.write(fifo_fd, chunk)
-        os.close(fifo_fd)
-        logger.info(f'download finished, url:{url}')
+            logger.info(f'start download..')
+            fifo_fd = os.open(pipe_path, os.O_WRONLY)
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                # logger.info(f'chunk, pipe:{pipe_path}')
+                if chunk:
+                    os.write(fifo_fd, chunk)
+            os.close(fifo_fd)
+            logger.info(f'download finished, url:{url}')
+        except Exception as e:
+            logger.exception("download fail.")
+            self.close()
 
     
     async def start(self):
@@ -89,13 +93,13 @@ class BiliVideo:
             ]
             for task in self.tasks:
                 task.start()
-            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
             self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         else:
             self.tasks = [
                 threading.Thread(target=self.download_stream, args=(streams[0].url, self.input_video_pipe)),
             ]
-            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -codec:v mpeg1video -b:v {video_bitrate} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+            cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
             self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         
     async def seek(self, ts):
