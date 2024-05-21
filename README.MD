@@ -78,7 +78,7 @@ ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 
 
 ### docker运行说明
 ```
-docker run -it -p 8080:8080 -v ./config.json:/root/tesla-media-center/config.json -v ./video:/root/tesla-media-center/video  registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:1.0.0
+docker run -it -p 8080:8080 -v ./config.json:/root/tesla-media-center/config.json -v ./video:/root/tesla-media-center/video  registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:latest
 ```
 其中./config.json是自己的config配置文件; ./video是自己的本地视频目录文件夹
 
