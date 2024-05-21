@@ -6,18 +6,18 @@ import vueJsx from '@vitejs/plugin-vue-jsx'
 
 import compresssionBuild from "rollup-plugin-compression";
 import type { ICompressionOptions } from "rollup-plugin-compression";
-const option: ICompressionOptions = {
-  sourceName: `dist`,
-  type: "zip",
-  targetName: `dist-name`
-};
+// const option: ICompressionOptions = {
+//   sourceName: `dist`,
+//   type: "zip",
+//   targetName: `dist-name`
+// };
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [
     vue(),
     vueJsx(),
-    compresssionBuild(option)
+    // compresssionBuild(option)
   ],
   resolve: {
     alias: {

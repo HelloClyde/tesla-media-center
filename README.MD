@@ -76,7 +76,33 @@ ffmpeg -i .\test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 
 3. 没有限速信息等额外信息
 
 
-### 运行说明
+### docker运行说明
+```
+docker run -it -p 8080:8080 -v ./config.json:/root/tesla-media-center/config.json -v ./video:/root/tesla-media-center/video  registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:1.0.0
+```
+其中./config.json是自己的config配置文件; ./video是自己的本地视频目录文件夹
+
+config.json配置文件内容如下：
+```json
+{
+    "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
+    "video_path": "./video",
+    "amap_key": "xxx",
+    "password": "abc"
+}
+```
+其中amap_key是高德开发者key，用于高德地图相关api调用，如果没有，就随便写个，只是地图部分无法使用
+
+video_path是本地视频目录存放地址，无需更改
+
+home_page_iframe是主页展示的url，不知道写什么就用样例默认即可
+
+password就是该web服务的密码，自己设置一个
+
+
+
+
+### 开发环境build
 这里以centos系统举例，windonws系统请自己查询对应依赖的安装方法
 1.  下载代码
 ```
