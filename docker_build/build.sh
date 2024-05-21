@@ -10,7 +10,7 @@ cp ../*.py ./
 cp ../requirement.txt ./
 cp -r ../ffvideo ./
 
-docker build . -t registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:1.0.0
+docker build . -t registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:latest
 
-docker push
+docker push registry.cn-hangzhou.aliyuncs.com/helloclyde/tesla-media-center:latest
 echo 'build success'
