@@ -67,12 +67,11 @@ class BiliVideo:
             response.raise_for_status()
 
             logger.info(f'start download..')
-            fifo_fd = os.open(pipe_path, os.O_WRONLY)
-            for chunk in response.iter_content(chunk_size=chunk_size):
-                # logger.info(f'chunk, pipe:{pipe_path}')
-                if chunk:
-                    os.write(fifo_fd, chunk)
-            os.close(fifo_fd)
+            with open(pipe_path, 'wb') as wf:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # logger.info(f'chunk, pipe:{pipe_path}')
+                    if chunk:
+                        wf.write(chunk)
             logger.info(f'download finished, url:{url}')
         except Exception as e:
             logger.exception("download fail.")
