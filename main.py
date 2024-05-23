@@ -179,7 +179,9 @@ async def bl_search(request):
 @routes.get('/api/bilibili/rank')
 @login_check
 async def bl_rank(request):
-    resp = await rank.get_rank()
+    type = request.query["type"]
+    logger.info(f'rank type:{type}')
+    resp = await rank.get_rank(rank.RankType[type])
     return json_ok(resp)
 
 @routes.get('/api/bilibili/home')

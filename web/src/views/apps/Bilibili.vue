@@ -3,16 +3,47 @@ import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue
 import { get } from '@/functions/requests'
 import VideoPlayer from '@/components/VideoPlayer.vue';
 import { Search } from '@element-plus/icons-vue'
+import BiliCover from '@/components/BiliCover.vue';
 
 const state = reactive({
   videoConfig: null as any,
   homeVideoList: [] as any[],
   hotVideoList: [] as any[],
   rankVideoList: [] as any[],
+  rankType: 'All',
   curTab: "homepage",
   searchText: '',
   searchVideoResult: [] as any[],
 })
+
+
+const rankTypes= [
+  {'label': '全部', value:'All'},
+  {'label': '番剧', value:'Bangumi'},
+  {'label': '国产动画', value:'GuochuangAnime'},
+  {'label': '纪录片', value:'Documentary'},
+  {'label': '动画', value:'Douga'},
+  {'label': '音乐', value:'Music'},
+  {'label': '舞蹈', value:'Dance'},
+  {'label': '游戏', value:'Game'},
+  {'label': '知识', value:'Knowledge'},
+  {'label': '科技', value:'Technology'},
+  {'label': '运动', value:'Sports'},
+  {'label': '汽车', value:'Car'},
+  {'label': '生活', value:'Life'},
+  {'label': '美食', value:'Food'},
+  {'label': '动物圈', value:'Animal'},
+  {'label': '鬼畜', value:'Kitchen'},
+  {'label': '时尚', value:'Fashion'},
+  {'label': '娱乐', value:'Ent'},
+  {'label': '影视', value:'Cinephile'},
+  {'label': '电影', value:'Movie'},
+  {'label': '电视剧', value:'TV'},
+  {'label': '综艺', value:'Variety'},
+  {'label': '原创', value:'Original'},
+  {'label': '新人', value:'Rookie'},
+]
+
 
 const loadHot = () => {
   get('/api/bilibili/hot').then(data => {
@@ -27,17 +58,17 @@ const loadHomeVideos = () => {
 }
 
 const loadRankVideos = () => {
-  get('/api/bilibili/rank').then(data => {
+  get(`/api/bilibili/rank?type=${state.rankType}`).then(data => {
     state.rankVideoList = data.list;
   });
 }
 
-const searchByText = ()  => {
+const searchByText = () => {
   get(`/api/bilibili/search?pageNo=${1}&keyword=${state.searchText}`).then(data => {
-      console.log(data);
-      const allReuslt = data.result;
-      state.searchVideoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0].data;
-      console.log(state.searchVideoResult);
+    console.log(data);
+    const allReuslt = data.result;
+    state.searchVideoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0].data;
+    console.log(state.searchVideoResult);
   })
 }
 
@@ -77,71 +108,21 @@ onMounted(() => {
     <el-tabs v-model="state.curTab" @tab-change="tabChange" class="tabs">
       <el-tab-pane label="首页" name="homepage">
         <el-space wrap>
-          <el-card class="video-card" v-for="video of state.homeVideoList" :key="video.aid" @click="videoSelect(video)">
-            <template #header>
-              <div class="video-cover">
-                <img :src="video.pic" />
-              </div>
-            </template>
-            <el-text line-clamp="2" class="video-title">
-              {{ video.title }}
-            </el-text>
-            <el-row>
-              <el-text truncated class="video-author">
-                <el-icon>
-                  <User />
-                </el-icon>
-                {{ video.owner.name }}
-              </el-text>
-            </el-row>
-          </el-card>
+          <BiliCover v-for="video of state.homeVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="热门" name="hot">
         <el-space wrap>
-          <el-card class="video-card" v-for="video of state.hotVideoList" :key="video.aid" @click="videoSelect(video)">
-            <template #header>
-              <div class="video-cover">
-                <img :src="video.pic" />
-              </div>
-            </template>
-            <el-text line-clamp="2" class="video-title">
-              {{ video.title }}
-            </el-text>
-            <el-row>
-              <el-text truncated class="video-author">
-                <el-icon>
-                  <User />
-
-                </el-icon>
-                {{ video.owner.name }}
-              </el-text>
-            </el-row>
-          </el-card>
+          <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
         </el-space>
       </el-tab-pane>
 
       <el-tab-pane label="排行榜" name="rank">
+          <el-radio-group v-model="state.rankType" size="large"  @change="(v: string) => loadRankVideos()" class="rank-type">
+            <el-radio-button v-for="item of rankTypes" :key="item.value" :label="item.label" :value="item.value" />
+          </el-radio-group>
         <el-space wrap>
-          <el-card class="video-card" v-for="video of state.rankVideoList" :key="video.aid" @click="videoSelect(video)">
-            <template #header>
-              <div class="video-cover">
-                <img :src="video.pic" />
-              </div>
-            </template>
-            <el-text line-clamp="2" class="video-title">
-              {{ video.title }}
-            </el-text>
-            <el-row>
-              <el-text truncated class="video-author">
-                <el-icon>
-                  <User />
-
-                </el-icon>
-                {{ video.owner.name }}
-              </el-text>
-            </el-row>
-          </el-card>
+          <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">关注</el-tab-pane>
@@ -149,7 +130,7 @@ onMounted(() => {
     </el-tabs>
     <el-input class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search">
       <template #append>
-        <el-button :icon="Search" @click="searchByText"/>
+        <el-button :icon="Search" @click="searchByText" />
       </template>
     </el-input>
   </div>
@@ -191,33 +172,11 @@ onMounted(() => {
   height: 60px;
 }
 
-.video-card {
-  width: 350px;
-  height: 322px;
+.rank-type{
+  margin: 0 0 10px 0;
 }
 
-.video-card .el-card__body {
-  padding: 4px;
-}
-
-.video-title {
-  height: 63px;
-  width: 100%;
-  font-size: 20px !important;
-}
-
-.video-author {
-  font-size: 20px !important;
-}
-
-.video-card .el-card__header {
-  padding: 0;
-  width: 350px;
-  height: 196px;
-}
-
-.video-cover>img {
-  width: 350px;
-  height: 196px;
+.rank-type span{
+  font-size: 22px !important;
 }
 </style>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, shallowRef, onUnmounted, computed, defineProps } from 'vue';
+import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
 import JSMpeg from '@cycjimmy/jsmpeg-player';
 
 const state = reactive({
