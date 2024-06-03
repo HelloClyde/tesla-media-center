@@ -60,6 +60,7 @@ async def logout(request):
     return json_ok({})
 
 
+@login_check
 @routes.get('/api/ws/ctl')
 async def video_control_ws(request):
     ws = web.WebSocketResponse()
@@ -85,6 +86,7 @@ async def video_control_ws(request):
     logger.info('websocket connection closed')
     return ws
 
+@login_check
 @routes.get('/api/ws')
 async def websocket_handler(request):
     ws = web.WebSocketResponse()

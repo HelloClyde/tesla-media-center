@@ -28,7 +28,6 @@ config.json
 *.njsproj
 *.sln
 *.sw?
-web/package-lock.json
 **/*.pyc
 docker_build/ffvideo
 docker_build/web

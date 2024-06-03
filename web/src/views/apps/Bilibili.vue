@@ -4,6 +4,7 @@ import { get } from '@/functions/requests'
 import VideoPlayer from '@/components/VideoPlayer.vue';
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
+import { ca } from 'element-plus/es/locale';
 
 const state = reactive({
   videoConfig: null as any,
@@ -87,9 +88,17 @@ const tabChange = (name: string) => {
   }
 }
 
-const videoSelect = (video: any) => {
-  console.log(video);
-  state.videoConfig = { 'type': 'bv', 'bvid': video?.bvid }
+const videoSelect = (type: string, id: any) => {
+  console.log(`select video, type:${type}, id:${id}`);
+  switch (type){
+    case 'bv':
+      state.videoConfig = { 'type': type, 'bvid': id }
+      break;
+    case 'bangumi_ss':
+      state.videoConfig = { 'type': type, 'sid': id }
+      break;
+  }
+  
 }
 
 
@@ -101,19 +110,19 @@ onMounted(() => {
 
 <template>
   <div v-if="state.videoConfig" class="video-view">
-    <VideoPlayer type="bv" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" />
+    <VideoPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" />
   </div>
 
   <div class="bv-list">
     <el-tabs v-model="state.curTab" @tab-change="tabChange" class="tabs">
       <el-tab-pane label="首页" name="homepage">
         <el-space wrap>
-          <BiliCover v-for="video of state.homeVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
+          <BiliCover v-for="video of state.homeVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="热门" name="hot">
         <el-space wrap>
-          <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
+          <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
       </el-tab-pane>
 
@@ -122,7 +131,7 @@ onMounted(() => {
             <el-radio-button v-for="item of rankTypes" :key="item.value" :label="item.label" :value="item.value" />
           </el-radio-group>
         <el-space wrap>
-          <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(video)" />
+          <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">关注</el-tab-pane>

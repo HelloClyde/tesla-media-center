@@ -1,6 +1,6 @@
 from loguru import logger
 import os
-from bilibili_api import video, Credential, HEADERS
+from bilibili_api import video, Credential, HEADERS, bangumi
 import imageio_ffmpeg
 import requests
 import asyncio
@@ -144,6 +144,13 @@ async def sync_to_ws(ws):
         video_type = cur_video_config['type']
         if video_type == 'bv':
             cur_video = BiliVideo(bvid=cur_video_config['bvid'])
+        elif video_type == 'bangumi_ss':
+            bgm = bangumi.Bangumi(ssid=cur_video_config['sid'])
+            ep_lst = await bgm.get_episodes()
+            logger.info(f'ep list:{ep_lst}')
+            bv_id = ep_lst[0].get_bvid()
+            logger.info(f'bvid:{bv_id}')
+            cur_video = BiliVideo(bvid=bv_id)
         elif video_type == 'local':
             cur_video = LocalVideo(path=cur_video_config['path'])
         else:
