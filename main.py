@@ -192,6 +192,15 @@ async def bl_home(request):
     resp = await homepage.get_videos()
     return json_ok(resp)
 
+
+@login_check
+@routes.get('/api/bilibili/bv/{bvid}')
+async def bl_bv_video(request):
+    bvid = request.match_info['bvid']
+    vod = ffvideo.BiliDlVideo(bvid)
+    await vod.start()
+    return json_ok({})
+
 if __name__ == '__main__':
     app = web.Application()
     

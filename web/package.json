@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "@amap/amap-jsapi-loader": "^1.0.1",
-    "@cycjimmy/jsmpeg-player": "^6.0.5",
+    "@cycjimmy/awesome-js-funcs": "^4.0.8",
+    "@cycjimmy/sass-lib": "^2.2.1",
     "@element-plus/icons-vue": "^2.3.0",
     "axios": "^1.2.5",
     "element-plus": "^2.3.0",
@@ -38,6 +39,7 @@
     "npm-run-all": "^4.1.5",
     "prettier": "^2.7.1",
     "rollup-plugin-compression": "^1.0.2",
+    "sass": "^1.77.4",
     "typescript": "~4.7.4",
     "unplugin-auto-import": "^0.12.1",
     "unplugin-vue-components": "^0.22.12",

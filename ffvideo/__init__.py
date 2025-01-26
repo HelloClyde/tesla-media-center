@@ -47,6 +47,65 @@ class LocalVideo:
     async def close(self):
         self.ffmgeg_proc.terminate()
 
+class BiliDlVideo:
+    def __init__(self, bvid):
+        self.bvid = bvid
+        self.input_video_pipe = '/tmp/input_video_pipe'
+        self.input_audio_pipe = '/tmp/input_audio_pipe'
+        if os.path.exists(self.input_video_pipe):
+            os.remove(self.input_video_pipe)
+        if os.path.exists(self.input_audio_pipe):
+            os.remove(self.input_audio_pipe)
+        os.mkfifo(self.input_video_pipe)
+        os.mkfifo(self.input_audio_pipe)
+        
+    def download_stream(self, url, pipe_path):
+        try:
+            logger.info(f'url:{url}, pipe_path:{pipe_path}')
+            response = requests.get(url, stream=True, headers=HEADERS)
+            response.raise_for_status()
+
+            logger.info(f'start download..')
+            with open(pipe_path, 'wb') as wf:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # logger.info(f'chunk, pipe:{pipe_path}')
+                    if chunk:
+                        wf.write(chunk)
+            logger.info(f'download finished, url:{url}')
+        except Exception as e:
+            logger.exception("download fail.")
+            self.close()
+
+    
+    async def start(self):
+        # 获取下载链接
+        v = video.Video(bvid=self.bvid)
+        download_url_data = await v.get_download_url(0)
+        detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
+        streams = detecter.detect_best_streams()
+        if detecter.check_video_and_audio_stream():
+            self.tasks = [
+                threading.Thread(target=self.download_stream, args=(streams[0].url, self.input_video_pipe)),
+                threading.Thread(target=self.download_stream, args=(streams[1].url, self.input_audio_pipe))
+            ]
+            for task in self.tasks:
+                task.start()
+            cmd = f'{FFMPEG_PATH} -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} /tmp/{self.bvid}.ts -y'
+            logger.info(f'cmd:{cmd}')
+            self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
+        else:
+            # self.tasks = [
+            #     threading.Thread(target=self.download_stream, args=(streams[0].url, self.input_video_pipe)),
+            # ]
+            # cmd = f'{FFMPEG_PATH} -re -i {self.input_video_pipe} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} {output_pipe} -y'
+            # self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
+            pass
+        
+    async def seek(self, ts):
+        pass
+    
+    async def close(self):
+        self.ffmgeg_proc.terminate()
 
 class BiliVideo:
     def __init__(self, bvid):

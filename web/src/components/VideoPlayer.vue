@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
-import JSMpeg from '@cycjimmy/jsmpeg-player';
+import JSMpeg from '@/components/JsmpegPlayer';
+
+
 
 const state = reactive({
     streamWsUrl: '',
@@ -50,13 +52,18 @@ onMounted(() => {
     state.ctlWs.onmessage = function (event: any) {
         const msg = event.data;
         if (msg == 'init_ok'){
-            state.player = new JSMpeg.VideoElement('#videoWrapper', state.streamWsUrl, {}, {
+            const canvasEl = document.getElementById('videoWrapper');
+            state.player = new JSMpeg.Player(state.streamWsUrl, {
+                canvas: canvasEl,
+                progressive: true,
                 onVideoDecode: (decoder:  any, time: any) => {
                     state.curTime = time;
-                }
+                },
+                videoBufferSize: 512*1024 * 4,
+                audioBufferSize: 128*1024 * 4,
+                maxAudioLag: 0.25 * 4,
             });
         }
-        // console.log("Received from server: " + event.data);  
     };
 })
 
@@ -74,7 +81,7 @@ onUnmounted(() => {
 
 <template>
     <div class="videoPlayView">
-        <div id="videoWrapper"></div>
+        <canvas id="videoWrapper"></canvas>
         <div class="videoCtl">
             <el-row justify="center">
                 <el-col :span="24">

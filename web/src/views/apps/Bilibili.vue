@@ -4,7 +4,6 @@ import { get } from '@/functions/requests'
 import VideoPlayer from '@/components/VideoPlayer.vue';
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
-import { ca } from 'element-plus/es/locale';
 
 const state = reactive({
   videoConfig: null as any,
