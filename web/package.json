@@ -19,11 +19,14 @@
     "axios": "^1.2.5",
     "element-plus": "^2.3.0",
     "pinia": "^2.0.28",
-    "vconsole": "^3.15.0",
+    "vconsole": ">=3.15.1",
     "vue": "^3.2.45",
-    "vue-router": "^4.1.6"
+    "vue-router": "^4.1.6",
+    "braces": ">=3.0.3",
+    "ws": ">=8.17.1"
   },
   "devDependencies": {
+    "@babel/traverse": ">=7.23.2",
     "@rushstack/eslint-patch": "^1.1.4",
     "@types/jsdom": "^20.0.1",
     "@types/node": "^18.11.12",
