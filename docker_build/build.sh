@@ -4,8 +4,10 @@ set -e
 cd ../web
 npm run build
 cd -
+rm -rf web/dist
 mkdir -p web/dist/
 cp -r ../web/dist/* ./web/dist/
+rm -rf *.py ffvideo
 cp ../*.py ./
 cp ../requirement.txt ./
 cp -r ../ffvideo ./

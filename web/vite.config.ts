@@ -19,6 +19,9 @@ export default defineConfig({
     vueJsx(),
     // compresssionBuild(option)
   ],
+  define:{
+    'process.env': {}
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url))
