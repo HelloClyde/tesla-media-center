@@ -65,6 +65,89 @@ function h5TTS(text: string) {
     console.info('tts played');
 }
 
+function audioTest2() {
+    const audio: any = document.getElementById('audioMseTest');
+    const mediaSource = new MediaSource();
+    
+    // 绑定 MediaSource 到 audio 元素
+    audio.src = URL.createObjectURL(mediaSource);
+
+    mediaSource.addEventListener('sourceopen', async () => {
+        try {
+            // 创建 SourceBuffer（注意 MIME 类型必须与实际音频格式匹配）
+            const mimeType = 'audio/mp4; codecs="mp4a.40.2"';
+            const sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+            
+            // 顺序加载音频分片
+            await appendSegment(sourceBuffer, '/api/video/files/output_fragmented.m4a');
+
+            audio.play();
+            // await appendSegment(sourceBuffer, '/path/to/segment2.m4a');
+            
+            // 结束流（如果是实时流则不需要）
+            // mediaSource.endOfStream();
+
+        } catch (error) {
+            console.error('媒体处理错误:', error);
+            mediaSource.endOfStream();
+        }
+    });
+
+    // 使用 fetch 获取音频分片
+    async function fetchAudioSegment(url: string) {
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP 错误! 状态码: ${response.status}`);
+            }
+            return await response.arrayBuffer();
+        } catch (error) {
+            console.error('获取音频失败:', error);
+            throw error;
+        }
+    }
+
+    // 安全追加分片的辅助函数
+    function appendSegment(sourceBuffer: any, url: string) {
+        return new Promise(async (resolve, reject) => {
+            // 确保前一个分片已完成追加
+            const checkUpdate = () => {
+                if (sourceBuffer.updating) {
+                    sourceBuffer.addEventListener('updateend', checkUpdate);
+                } else {
+                    performAppend();
+                }
+            };
+
+            const performAppend = async () => {
+                try {
+                    const data = await fetchAudioSegment(url);
+                    sourceBuffer.appendBuffer(data);
+                    
+                    // 等待当前分片追加完成
+                    sourceBuffer.addEventListener('updateend', resolve);
+                    sourceBuffer.addEventListener('error', reject);
+                } catch (error) {
+                    reject(error);
+                }
+            };
+
+            checkUpdate();
+        });
+    }
+
+    // 错误处理
+    mediaSource.addEventListener('sourceended', () => 
+        console.log('媒体源已结束'));
+    mediaSource.addEventListener('sourceclose', () => 
+        console.log('媒体源已关闭'));
+    audio.addEventListener('error', () => {
+        if (audio.error) {
+            console.error('音频错误:', audio.error.message);
+        }
+    });
+}
+
 function audioTest(){
     var audioCtx = new window.AudioContext();
 
@@ -168,7 +251,9 @@ onMounted(() => {
                 <el-button type="default" round @click="h5TTS('hello tesla!')">H5TTS播放“hello tesla”</el-button>
             </el-descriptions-item>
             <el-descriptions-item label="Audio">
-                <el-button type="default" round @click="audioTest()">AudioTest</el-button>
+                <el-button type="default" round @click="audioTest()">AudioContentTest</el-button>
+                <el-button type="default" round @click="audioTest2()">AudioMSETest</el-button>
+                <audio id="audioMseTest" controls ></audio>
             </el-descriptions-item>
             <el-descriptions-item label="账号">
                 <el-button type="default" round @click="logout()">退出登陆</el-button>
