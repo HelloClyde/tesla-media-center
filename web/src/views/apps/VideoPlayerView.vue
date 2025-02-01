@@ -2,6 +2,7 @@
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
 import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
+import { generateSilentWav } from '@/functions/audioUtils';
 
 
 const playerCanvas = ref(null);
@@ -56,6 +57,16 @@ function playVideo(url: string, isStream=false) {
     state.isPlay = true;
 
     videoPlayer.setTrack(timeTrack.value, timeLabel.value);
+
+    
+    const audio:any = document.getElementById("silentAudio");
+    // 生成1分钟静音音频
+    const base64SilentAudio = generateSilentWav(60);
+    audio.src = 'data:audio/wav;base64,' + base64SilentAudio;
+    // console.log(base64SilentAudio); // 输出完整base64字符串
+    audio.play().catch(() => {
+        document.addEventListener("click", () => audio.play());
+    });
 }
 
 
@@ -167,6 +178,9 @@ onUnmounted(() => {
             <el-icon :size="35" class="right" @click="fullscreen">
                 <FullScreen />
             </el-icon>
+            <audio id="silentAudio" loop controls style="height: 28px;">
+                <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
+            </audio>
         </div>
     </div>
     <!-- video menu -->

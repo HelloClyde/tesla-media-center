@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
 import JSMpeg from '@/components/JsmpegPlayer';
+import { generateSilentWav} from '@/functions/audioUtils';
 
 
 
@@ -65,6 +66,16 @@ onMounted(() => {
             });
         }
     };
+
+    
+    const audio:any = document.getElementById("silentAudio");
+    // 生成1分钟静音音频
+    const base64SilentAudio = generateSilentWav(60);
+    audio.src = 'data:audio/wav;base64,' + base64SilentAudio;
+    // console.log(base64SilentAudio); // 输出完整base64字符串
+    audio.play().catch(() => {
+        document.addEventListener("click", () => audio.play());
+    });
 })
 
 const formatTooltip = (val: number) => {
@@ -84,8 +95,13 @@ onUnmounted(() => {
         <canvas id="videoWrapper"></canvas>
         <div class="videoCtl">
             <el-row justify="center">
-                <el-col :span="24">
+                <el-col :span="18">
                     <el-slider v-model="state.curTime" :format-tooltip="formatTooltip" :disabled="true" />
+                </el-col>
+                <el-col :span="6">
+                    <audio id="silentAudio" loop controls style="height: 28px;">
+                        <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
+                    </audio>
                 </el-col>
             </el-row>
             <el-row justify="start">
