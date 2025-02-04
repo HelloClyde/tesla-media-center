@@ -9,9 +9,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # Install pip requirements
-COPY . /root/tesla-media-center/
+COPY ./requirement.txt /root/tesla-media-center/
 RUN python -m pip install --no-cache-dir --upgrade -r /root/tesla-media-center/requirement.txt -i https://mirrors.aliyun.com/pypi/simple/
+COPY . /root/tesla-media-center/
 
 WORKDIR /root/tesla-media-center
 
-CMD ["python", "/root/tesla-media-center/main.py"]
+CMD ["python", "/root/tesla-media-center/flask_app.py"]

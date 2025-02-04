@@ -4,6 +4,7 @@ import { get } from '@/functions/requests'
 import VideoPlayer from '@/components/VideoPlayer.vue';
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
+import H264Player from '@/components/H264Player.vue';
 
 const state = reactive({
   videoConfig: null as any,
@@ -91,10 +92,10 @@ const videoSelect = (type: string, id: any) => {
   console.log(`select video, type:${type}, id:${id}`);
   switch (type){
     case 'bv':
-      state.videoConfig = { 'type': type, 'bvid': id }
+      state.videoConfig = { 'type': type, 'bvid': id , url: `/api/bilibili/bv/${id}`}
       break;
     case 'bangumi_ss':
-      state.videoConfig = { 'type': type, 'sid': id }
+      state.videoConfig = { 'type': type, 'sid': id, url: `/api/bilibili/bangumi_ss/${id}` }
       break;
   }
   
@@ -109,7 +110,8 @@ onMounted(() => {
 
 <template>
   <div v-if="state.videoConfig" class="video-view">
-    <VideoPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" />
+    <!-- <VideoPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" /> -->
+      <H264Player :type="'bv'" :on-close="() => state.videoConfig = null" :url="state.videoConfig.url" />
   </div>
 
   <div class="bv-list">
@@ -163,7 +165,7 @@ onMounted(() => {
 .video-view {
   position: absolute;
   top: 0px;
-  z-index: 99999;
+  z-index: 1000;
 }
 
 .tabs {

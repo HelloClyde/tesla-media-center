@@ -1,8 +1,6 @@
-aiohttp
-aiodns
+Flask
 loguru
 bilibili-api-python==16.3.0
-aiohttp_session
 cryptography
 imageio-ffmpeg
 requests

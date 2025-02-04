@@ -97,6 +97,7 @@ Player.prototype.initDecodeWorker = function () {
     this.decodeWorker = new Worker("decoder.js");
     this.decodeWorker.onmessage = function (evt) {
         var objData = evt.data;
+        // console.log('decode frame', objData);
         switch (objData.t) {
             case kInitDecoderRsp:
                 self.onInitDecoder(objData);
@@ -812,7 +813,7 @@ Player.prototype.displayVideoFrame = function (frame) {
     var audioTimestamp = audioCurTs + this.beginTimeOffset;
     var delay = frame.s - audioTimestamp;
 
-    //this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
+    // this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
 
     if (audioTimestamp <= 0 || delay <= 0) {
         var data = new Uint8Array(frame.d);
@@ -875,6 +876,7 @@ Player.prototype.displayLoop = function() {
     // set to 2 now.
     for (i = 0; i < 2; ++i) {
         var frame = this.frameBuffer[0];
+        // console.log('frame', frame);
         switch (frame.t) {
             case kAudioFrame:
                 if (this.displayAudioFrame(frame)) {
@@ -1157,6 +1159,7 @@ Player.prototype.requestStream = function (url) {
                         t: kFeedDataReq,
                         d: data
                     };
+                    // console.log('objData', objData);
                     self.decodeWorker.postMessage(objData, [objData.d]);
                 } while (dataLength > 0)
             } else {
@@ -1164,6 +1167,7 @@ Player.prototype.requestStream = function (url) {
                     t: kFeedDataReq,
                     d: value.buffer
                 };
+                // console.log('objData', objData);
                 self.decodeWorker.postMessage(objData, [objData.d]);
             }
 

@@ -199,7 +199,10 @@ async def bl_bv_video(request):
     bvid = request.match_info['bvid']
     vod = ffvideo.BiliDlVideo(bvid)
     await vod.start()
-    return json_ok({})
+    res = web.StreamResponse(headers={'Content-Type': 'application/octet-stream'})
+    await res.prepare(request)
+    ffvideo.read_output_pipe_to_resp(res)
+    return res
 
 if __name__ == '__main__':
     app = web.Application()

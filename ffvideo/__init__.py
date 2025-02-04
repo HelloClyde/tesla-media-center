@@ -82,7 +82,7 @@ class BiliDlVideo:
         v = video.Video(bvid=self.bvid)
         download_url_data = await v.get_download_url(0)
         detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-        streams = detecter.detect_best_streams()
+        streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
         if detecter.check_video_and_audio_stream():
             self.tasks = [
                 threading.Thread(target=self.download_stream, args=(streams[0].url, self.input_video_pipe)),
@@ -90,7 +90,7 @@ class BiliDlVideo:
             ]
             for task in self.tasks:
                 task.start()
-            cmd = f'{FFMPEG_PATH} -i {self.input_video_pipe} -i {self.input_audio_pipe} -codec:v mpeg1video {video_q} -r 24 -bf 0 -codec:a mp2 -f mpegts {FFMPEG_VF_ARG} /tmp/{self.bvid}.ts -y'
+            cmd = f'{FFMPEG_PATH} -i {self.input_video_pipe} -i {self.input_audio_pipe} -c copy -movflags faststart -f mp4 {output_pipe} -y'
             logger.info(f'cmd:{cmd}')
             self.ffmgeg_proc = await asyncio.create_subprocess_shell(cmd)
         else:
@@ -142,7 +142,7 @@ class BiliVideo:
         v = video.Video(bvid=self.bvid)
         download_url_data = await v.get_download_url(0)
         detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-        streams = detecter.detect_best_streams()
+        streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
         logger.info(f'detecter:{detecter.__dict__}')
         if detecter.check_video_and_audio_stream():
             self.tasks = [
@@ -184,6 +184,14 @@ async def cleanup():
             cur_video = None
     except Exception as e:
         logger.exception('close fail.')
+        
+async def read_output_pipe_to_resp(resp):
+    with open(output_pipe, 'rb') as pipe:  
+        while True:
+            chunk = pipe.read(chunk_size)
+            if not chunk:
+                break
+            await resp.write(chunk)
 
 async def sync_to_ws(ws):
     logger.info(f'sync to ws func')

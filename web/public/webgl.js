@@ -107,10 +107,40 @@ WebGLPlayer.prototype.renderFrame = function (videoFrame, width, height, uOffset
     }
 
     var gl = this.gl;
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.clearColor(0.0, 0.0, 0.0, 0.0);
+    var canvas = gl.canvas;
+    
+    // 计算视频宽高比
+    var videoAspect = width / height;
+    var canvasAspect = canvas.width / canvas.height;
+    // console.log('canvas hw', canvas.width, canvas.height);
+    
+    // 计算保持宽高比的视口尺寸
+    var viewport = { x: 0, y: 0, width: canvas.width, height: canvas.height };
+    
+    if (videoAspect > canvasAspect) {
+        // 视频更宽，固定宽度，调整高度
+        viewport.height = canvas.width / videoAspect;
+        viewport.y = (canvas.height - viewport.height) / 2;
+    } else {
+        // 视频更高，固定高度，调整宽度
+        viewport.width = canvas.height * videoAspect;
+        viewport.x = (canvas.width - viewport.width) / 2;
+    }
+
+    // 设置视口并清除为黑色
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);  // 使用不透明黑色
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    // 设置实际渲染区域（保持宽高比）
+    gl.viewport(
+        Math.round(viewport.x),
+        Math.round(viewport.y),
+        Math.round(viewport.width),
+        Math.round(viewport.height)
+    );
+
+    // 填充纹理数据（保持原始视频分辨率）
     gl.y.fill(width, height, videoFrame.subarray(0, uOffset));
     gl.u.fill(width >> 1, height >> 1, videoFrame.subarray(uOffset, uOffset + vOffset));
     gl.v.fill(width >> 1, height >> 1, videoFrame.subarray(uOffset + vOffset, videoFrame.length));

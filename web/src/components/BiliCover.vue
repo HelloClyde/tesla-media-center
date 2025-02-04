@@ -18,7 +18,7 @@ const props = defineProps<VideoProps>();
 
 
 onMounted(() => {
-    console.log('props', props);
+    // console.log('props', props);
 
 })
 
@@ -37,7 +37,7 @@ onUnmounted(() => {
     <el-card v-if="props.video?.bvid" class="video-card" @click="props?.onClick('bv', props.video.bvid)">
         <template #header>
             <div class="video-cover">
-            <img :src="video.pic" />
+            <img :src="`${video.pic}@350w_196h_1c_!web-home-common-cover`" />
             </div>
         </template>
         <el-text line-clamp="2" class="video-title">
@@ -56,7 +56,7 @@ onUnmounted(() => {
     <el-card v-else-if="props.video?.season_id" class="video-card" @click="props?.onClick('bangumi_ss', props.video.season_id)">
         <template #header>
             <div class="video-cover">
-                <img :src="video.cover" />
+                <img :src="`${video.cover}@350w_196h_1c_!web-home-common-cover`" />
             </div>
         </template>
         <el-text line-clamp="2" class="video-title">
