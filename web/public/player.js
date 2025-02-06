@@ -12,6 +12,7 @@ const playerStatePausing        = 2;
 //Constant.
 const maxBufferTimeLength       = 1.0;
 const downloadSpeedByteRateCoef = 2.0;
+const defaultChunkSize = 65536 * 8;
 
 String.prototype.startWith = function(str) {
     var reg = new RegExp("^" + str);
@@ -22,7 +23,7 @@ function FileInfo(url) {
     this.url = url;
     this.size = 0;
     this.offset = 0;
-    this.chunkSize = 65536 * 8;
+    this.chunkSize = defaultChunkSize;
 }
 
 function Player() {
@@ -48,6 +49,7 @@ function Player() {
     this.chunkInterval      = 200;
     this.downloadSeqNo      = 0;
     this.downloading        = false;
+    this.downloadSwitch     = true;
     this.downloadProto      = kProtoHttp;
     this.timeLabel          = null;
     this.timeTrack          = null;
@@ -86,7 +88,12 @@ Player.prototype.initDownloadWorker = function () {
                 self.onGetFileInfo(objData.i);
                 break;
             case kFileData:
-                self.onFileData(objData.d, objData.s, objData.e, objData.q);
+                if (self.downloadProto == kProtoStream){
+                    self.onFileDataStream(objData.d, objData.s, objData.e, objData.q, objData.size);
+                } else {
+                    self.onFileData(objData.d, objData.s, objData.e, objData.q);
+                }
+                
                 break;
         }
     }
@@ -115,6 +122,7 @@ Player.prototype.initDecodeWorker = function () {
                 self.onDecodeFinished(objData);
                 break;
             case kRequestDataEvt:
+                console.log('request data', evt);
                 self.onRequestData(objData.o, objData.a);
                 break;
             case kSeekToRsp:
@@ -126,6 +134,7 @@ Player.prototype.initDecodeWorker = function () {
 
 Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream) {
     this.logger.logInfo("Play " + url + ".");
+    console.log('waitHeaderLength', waitHeaderLength);
 
     var ret = {
         e: 0,
@@ -185,6 +194,9 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
 
         if (url.startWith("ws://") || url.startWith("wss://")) {
             this.downloadProto = kProtoWebsocket;
+        } else if (url.startWith('stream://')) {
+            url = url.replace('stream://', '')
+            this.downloadProto = kProtoStream;
         } else {
             this.downloadProto = kProtoHttp;
         }
@@ -525,8 +537,76 @@ Player.prototype.onGetFileInfo = function (info) {
     }
 };
 
+Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
+    console.log("Got data bytes=" + start + "-" + end + "." + "newSize:" + newSize);
+    this.downloading = false;
+    var self = this;
+
+    if (this.playerState == playerStateIdle) {
+        return;
+    }
+
+    if (seq != this.downloadSeqNo) {
+        return;  // Old data.
+    }
+
+    if (newSize > 0 && newSize != this.fileInfo.size){
+        console.log('update file size', newSize, 'this.duration', this.duration);
+        this.fileInfo.size = newSize;
+
+        // var byteRate = 1000 * 1000;
+        var byteRate = 1000 * this.fileInfo.size / this.duration;
+        var targetSpeed = downloadSpeedByteRateCoef * byteRate;
+        var chunkPerSecond = targetSpeed / defaultChunkSize;
+        this.chunkInterval = 1000 / chunkPerSecond;
+        this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
+
+        this.stopDownloadTimer();
+
+        // start download timer
+        this.downloadSeqNo++;
+        this.downloadTimer = setInterval(function () {
+            console.log('download timer func');
+            self.downloadOneChunk();
+        }, this.chunkInterval);
+        console.log('startNewDownloadTimer', this.downloadTimer, this.downloadSeqNo);
+    }
+
+    if (this.playerState == playerStatePausing) {
+        if (this.seeking) {
+            this.seekReceivedLen += data.byteLength;
+            let left = this.fileInfo.size - this.fileInfo.offset;
+            let seekWaitLen = Math.min(left, this.seekWaitLen);
+            if (this.seekReceivedLen >= seekWaitLen) {
+                this.logger.logInfo("Resume in seek now");
+                setTimeout(() => {
+                    this.resume(true);
+                }, 0);
+            }
+        } else {
+            return;
+        }
+    }
+
+    var len = end - start + 1;
+    this.fileInfo.offset += len;
+
+    var objData = {
+        t: kFeedDataReq,
+        d: data
+    };
+    console.log('send to decode', objData);
+    this.decodeWorker.postMessage(objData, [objData.d]);
+
+    console.log('this.decoderState', this.decoderState);
+    if (this.decoderState == decoderStateIdle) {
+        this.onStreamDataUnderDecoderIdle(len);
+    }
+    
+}
+
 Player.prototype.onFileData = function (data, start, end, seq) {
-    //this.logger.logInfo("Got data bytes=" + start + "-" + end + ".");
+    console.log("Got data bytes=" + start + "-" + end + ".");
     this.downloading = false;
 
     if (this.playerState == playerStateIdle) {
@@ -560,8 +640,10 @@ Player.prototype.onFileData = function (data, start, end, seq) {
         t: kFeedDataReq,
         d: data
     };
+    console.log('send to decode', objData);
     this.decodeWorker.postMessage(objData, [objData.d]);
 
+    console.log('this.decoderState', this.decoderState);
     switch (this.decoderState) {
         case decoderStateIdle:
             this.onFileDataUnderDecoderIdle();
@@ -582,8 +664,12 @@ Player.prototype.onFileData = function (data, start, end, seq) {
 };
 
 Player.prototype.onFileDataUnderDecoderIdle = function () {
+    console.log('this.waitHeaderLength', this.waitHeaderLength);
+    console.log('this.fileInfo.offset', this.fileInfo.offset);
+    console.log('this.fileInfo.size', this.fileInfo.size);
     if (this.fileInfo.offset >= this.waitHeaderLength || (!this.isStream && this.fileInfo.offset == this.fileInfo.size)) {
         this.logger.logInfo("Opening decoder.");
+        console.log("Opening decoder.");
         this.decoderState = decoderStateInitializing;
         var req = {
             t: kOpenDecoderReq
@@ -640,7 +726,11 @@ Player.prototype.onVideoParam = function (v) {
     }
 
     this.logger.logInfo("Video param duation:" + v.d + " pixFmt:" + v.p + " width:" + v.w + " height:" + v.h + ".");
-    this.duration = v.d;
+    if (this.downloadProto == kProtoStream){
+        // ignore
+    } else {
+        this.duration = v.d;
+    }
     this.pixFmt = v.p;
     //this.canvas.width = v.w;
     //this.canvas.height = v.h;
@@ -663,18 +753,22 @@ Player.prototype.onVideoParam = function (v) {
         this.displayDuration = this.formatTime(this.duration / 1000);
     }
 
-    var byteRate = 1000 * this.fileInfo.size / this.duration;
-    var targetSpeed = downloadSpeedByteRateCoef * byteRate;
-    var chunkPerSecond = targetSpeed / this.fileInfo.chunkSize;
-    this.chunkInterval = 1000 / chunkPerSecond;
-    this.seekWaitLen = byteRate * maxBufferTimeLength * 2;
-    this.logger.logInfo("Seek wait len " + this.seekWaitLen);
+    if (this.downloadProto == kProtoStream){
+        // ignore
+    } else {
+        var byteRate = 1000 * this.fileInfo.size / this.duration;
+        var targetSpeed = downloadSpeedByteRateCoef * byteRate;
+        var chunkPerSecond = targetSpeed / this.fileInfo.chunkSize;
+        this.chunkInterval = 1000 / chunkPerSecond;
+        this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
+        this.seekWaitLen = byteRate * maxBufferTimeLength * 2;
+        this.logger.logInfo("Seek wait len " + this.seekWaitLen);
+    }
 
     if (!this.isStream) {
         this.startDownloadTimer();
     }
 
-    this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
 };
 
 Player.prototype.onAudioParam = function (a) {
@@ -934,9 +1028,19 @@ Player.prototype.renderVideoFrame = function (data) {
 };
 
 Player.prototype.downloadOneChunk = function () {
-    if (this.downloading || this.isStream) {
+    // this.logger.logInfo("trigger downloadOneChunk.");
+    if (!this.downloadSwitch){
         return;
     }
+
+    if (this.downloading) {
+        return;
+    }
+
+    if (this.downloadProto != kProtoStream && this.isStream){
+        return;
+    }
+    
 
     var start = this.fileInfo.offset;
     if (start >= this.fileInfo.size) {
@@ -970,10 +1074,12 @@ Player.prototype.downloadOneChunk = function () {
 
 Player.prototype.startDownloadTimer = function () {
     var self = this;
+    // start download timer
     this.downloadSeqNo++;
     this.downloadTimer = setInterval(function () {
         self.downloadOneChunk();
     }, this.chunkInterval);
+    this.logger.logInfo("startDownloadTimer." + self.downloadTimer + "," + self.downloadSeqNo);
 };
 
 Player.prototype.stopDownloadTimer = function () {
@@ -1018,20 +1124,24 @@ Player.prototype.updateTrackTime = function () {
 };
 
 Player.prototype.startDecoding = function () {
+    this.logger.logInfo("startDecoding.");
     var req = {
         t: kStartDecodingReq,
         i: this.urgent ? 0 : this.decodeInterval,
     };
     this.decodeWorker.postMessage(req);
     this.decoding = true;
+    this.downloadSwitch = true;
 };
 
 Player.prototype.pauseDecoding = function () {
+    this.logger.logInfo("pauseDecoding.");
     var req = {
         t: kPauseDecodingReq
     };
     this.decodeWorker.postMessage(req);
     this.decoding = false;
+    this.downloadSwitch = false;
 };
 
 Player.prototype.formatTime = function (s) {
@@ -1132,51 +1242,102 @@ Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
 
 Player.prototype.requestStream = function (url) {
     var self = this;
-    this.fetchController = new AbortController();
-    const signal = this.fetchController.signal;
+    if (self.downloadProto == kProtoStream){
+        this.logger.logInfo("Getting file size " + url + ".");
+        var size = 0;
+        var duration = 0;
+        var status = 0;
+        var reported = false;
 
-    fetch(url, {signal}).then(async function respond(response) {
-        const reader = response.body.getReader();
-        reader.read().then(function processData({done, value}) {
-            if (done) {
-                self.logger.logInfo("Stream done.");
-                return;
+        var xhr = new XMLHttpRequest();
+        xhr.open('get', url + '/info', true);
+        xhr.onreadystatechange = () => {
+            var len = xhr.getResponseHeader("BV-Content-Length");
+            var dur = xhr.getResponseHeader('BV-Duration');
+            if (len) {
+                size = Number(len);
             }
 
-            if (self.playerState != playerStatePlaying) {
-                return;
+            if (xhr.status) {
+                status = xhr.status;
             }
 
-            var dataLength = value.byteLength;
-            var offset = 0;
-            if (dataLength > self.fileInfo.chunkSize) {
-                do {
-                    let len = Math.min(self.fileInfo.chunkSize, dataLength);
-                    var data = value.buffer.slice(offset, offset + len);
-                    dataLength -= len;
-                    offset += len;
+            if (dur){
+                duration = Number(dur)
+            }
+
+
+            //Completed.
+            if (!reported && ((size > 0 && duration > 0 && status > 0) || xhr.readyState == 4)) {
+                console.log('size', size, 'status', status, 'duration', duration);
+                self.duration = duration;
+
+                // var byteRate = 1000 * 1000;
+                var byteRate = 1000 * size / self.duration;
+                var targetSpeed = downloadSpeedByteRateCoef * byteRate;
+                var chunkPerSecond = targetSpeed / defaultChunkSize;
+                self.chunkInterval = 1000 / chunkPerSecond;
+                // self.chunkInterval = 1;
+                console.log('chunkInterval', self.chunkInterval);
+                self.fileInfo.size = size * 1;
+
+
+                // start download timer
+                self.startDownloadTimer();
+                
+                reported = true;
+                xhr.abort();
+            }
+        };
+        xhr.send();
+    } else {
+        this.fetchController = new AbortController();
+        const signal = this.fetchController.signal;
+    
+        fetch(url, {signal}).then(async function respond(response) {
+            const reader = response.body.getReader();
+            reader.read().then(function processData({done, value}) {
+                if (done) {
+                    self.logger.logInfo("Stream done.");
+                    return;
+                }
+    
+                if (self.playerState != playerStatePlaying) {
+                    return;
+                }
+    
+                var dataLength = value.byteLength;
+                var offset = 0;
+                if (dataLength > self.fileInfo.chunkSize) {
+                    do {
+                        let len = Math.min(self.fileInfo.chunkSize, dataLength);
+                        var data = value.buffer.slice(offset, offset + len);
+                        dataLength -= len;
+                        offset += len;
+                        var objData = {
+                            t: kFeedDataReq,
+                            d: data
+                        };
+                        // console.log('objData', objData);
+                        self.decodeWorker.postMessage(objData, [objData.d]);
+                    } while (dataLength > 0)
+                } else {
                     var objData = {
                         t: kFeedDataReq,
-                        d: data
+                        d: value.buffer
                     };
                     // console.log('objData', objData);
                     self.decodeWorker.postMessage(objData, [objData.d]);
-                } while (dataLength > 0)
-            } else {
-                var objData = {
-                    t: kFeedDataReq,
-                    d: value.buffer
-                };
-                // console.log('objData', objData);
-                self.decodeWorker.postMessage(objData, [objData.d]);
-            }
-
-            if (self.decoderState == decoderStateIdle) {
-                self.onStreamDataUnderDecoderIdle(dataLength);
-            }
-
-            return reader.read().then(processData);
+                }
+    
+                if (self.decoderState == decoderStateIdle) {
+                    self.onStreamDataUnderDecoderIdle(dataLength);
+                }
+    
+                return reader.read().then(processData);
+            });
+        }).catch(err => {
         });
-    }).catch(err => {
-    });
+    }
+    
 };

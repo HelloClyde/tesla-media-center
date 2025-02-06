@@ -22,6 +22,7 @@ const kFileData             = 1;
 //Downloader Protocol.
 const kProtoHttp            = 0;
 const kProtoWebsocket       = 1;
+const kProtoStream          = 2;
 
 //Decoder request.
 const kInitDecoderReq       = 0;

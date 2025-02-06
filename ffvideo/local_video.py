@@ -32,7 +32,7 @@ def add_local_video_route(app):
                     'fileName': f,
                 })
             else:
-                if f.endswith('.mp4'):
+                if f.endswith('.mp4') or f.endswith('.flv'):
                     ret.append({
                         'fileType': 'FILE',
                         'fileName': f,

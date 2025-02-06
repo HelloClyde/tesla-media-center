@@ -46,24 +46,24 @@ interface VideoProps {
 const props = defineProps<VideoProps>();
 
 
-function playVideo() {
-    if (props.type == 'bv'){
-        const waitHeaderLength = 512 * 1024 * 1;
-        // const 
-        console.log('waitHeaderLength', waitHeaderLength);
-        videoPlayer.play(`/api/bilibili/bv/${props.url}`, playerCanvas.value, function (e: any) {
-            console.error(e);
-            console.error("play error " + e.error + " status " + e.status + ".");
-            if (e.error == 1) {
-                console.info("Finished.");
-            }
-        }, waitHeaderLength, true);
-        state.isPlay = true;
+// function playVideo() {
+//     if (props.type == 'bv'){
+//         const waitHeaderLength = 512 * 1024 * 2;
+//         // const 
+//         console.log('waitHeaderLength', waitHeaderLength);
+//         videoPlayer.play(`/api/bilibili/bv/${props.url}`, playerCanvas.value, function (e: any) {
+//             console.error(e);
+//             console.error("play error " + e.error + " status " + e.status + ".");
+//             if (e.error == 1) {
+//                 console.info("Finished.");
+//             }
+//         }, waitHeaderLength, true);
+//         state.isPlay = true;
 
-        videoPlayer.setTrack(timeTrack.value, timeLabel.value);
-    } else if (props.type == 'local'){
+//         videoPlayer.setTrack(timeTrack.value, timeLabel.value);
+//     } else if (props.type == 'local'){
 
-    }
+//     }
     // videoPlayer.stop();
     // console.log(playerCanvas);
     // const waitHeaderLength = state.isLongVideo ? 8 * 1024 * 1024 : 512 * 1024;
@@ -89,7 +89,7 @@ function playVideo() {
     // audio.play().catch(() => {
     //     document.addEventListener("click", () => audio.play());
     // });
-}
+// }
 
 
 onMounted(() => {
@@ -97,7 +97,7 @@ onMounted(() => {
     videoPlayer.setLoadingDiv(videoLoading.value);
     const waitHeaderLength = 512 * 1024 * 1;
     console.log('waitHeaderLength', waitHeaderLength);
-    videoPlayer.play(props.url, playerCanvas.value, function (e: any) {
+    videoPlayer.play(`stream://${props.url}`, playerCanvas.value, function (e: any) {
         console.error(e);
         console.error("play error " + e.error + " status " + e.status + ".");
         if (e.error == 1) {

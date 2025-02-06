@@ -25,13 +25,14 @@ Downloader.prototype.reportFileSize = function (sz, st) {
     self.postMessage(objData);
 };
 
-Downloader.prototype.reportData = function (start, end, seq, data) {
+Downloader.prototype.reportData = function (start, end, seq, data, size=-1) {
     var objData = {
         t: kFileData,
         s: start,
         e: end,
         d: data,
-        q: seq
+        q: seq,
+        size: size,
     };
     self.postMessage(objData, [objData.d]);
 };
@@ -79,6 +80,49 @@ Downloader.prototype.downloadFileByHttp = function (url, start, end, seq) {
     xhr.send();
 };
 
+Downloader.prototype.downloadFileByHttpStream = function (url, start, end, seq) {
+    //this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");
+    var xhr = new XMLHttpRequest;
+    xhr.open('get', url, true);
+    xhr.responseType = 'arraybuffer';
+    xhr.setRequestHeader("Range", "bytes=" + start + "-" + end);
+    var self = this;
+    xhr.onload = function () {
+        var size = xhr.getResponseHeader("BV-Content-Length");
+        self.reportData(start, end, seq, xhr.response, size);
+    };
+    xhr.send();
+};
+
+// http stream implement
+Downloader.prototype.getFileInfoByHttpStream = function (url) {
+    this.logger.logInfo("Getting file size " + url + ".");
+    var size = 0;
+    var status = 0;
+    var reported = false;
+
+    var xhr = new XMLHttpRequest();
+    xhr.open('get', url + '/info', true);
+    var self = this;
+    xhr.onreadystatechange = () => {
+        var len = xhr.getResponseHeader("BV-Content-Length");
+        if (len) {
+            size = len;
+        }
+
+        if (xhr.status) {
+            status = xhr.status;
+        }
+
+        //Completed.
+        if (!reported && ((size > 0 && status > 0) || xhr.readyState == 4)) {
+            self.reportFileSize(size, status);
+            reported = true;
+            xhr.abort();
+        }
+    };
+    xhr.send();
+};
 // Websocket implement, NOTICE MUST call requestWebsocket serially, MUST wait
 // for result of last websocket request(cb called) for there's only one stream
 // exists.
@@ -174,6 +218,9 @@ Downloader.prototype.getFileInfo = function (proto, url) {
         case kProtoWebsocket:
             this.getFileInfoByWebsocket(url);
             break;
+        case kProtoStream:
+            this.getFileInfoByHttpStream(url);
+            break;
         default:
             this.logger.logError("Invalid protocol " + proto);
             break;
@@ -187,6 +234,9 @@ Downloader.prototype.downloadFile = function (proto, url, start, end, seq) {
             break;
         case kProtoWebsocket:
             this.downloadFileByWebsocket(url, start, end, seq);
+            break;
+        case kProtoStream:
+            this.downloadFileByHttpStream(url, start, end, seq);
             break;
         default:
             this.logger.logError("Invalid protocol " + proto);
