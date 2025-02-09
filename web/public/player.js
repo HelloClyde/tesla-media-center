@@ -128,6 +128,13 @@ Player.prototype.initDecodeWorker = function () {
             case kSeekToRsp:
                 self.onSeekToRsp(objData.r);
                 break;
+            case kDataMax:
+                console.log('stop download');
+                self.downloadSwitch = false;
+                break;
+            case kDataNormal:
+                self.downloadSwitch = true;
+                break;
         }
     }
 };
@@ -550,27 +557,27 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
         return;  // Old data.
     }
 
-    if (newSize > 0 && newSize != this.fileInfo.size){
-        console.log('update file size', newSize, 'this.duration', this.duration);
-        this.fileInfo.size = newSize;
+    // if (newSize > 0 && newSize != this.fileInfo.size){
+    //     console.log('update file size', newSize, 'this.duration', this.duration);
+    //     this.fileInfo.size = newSize;
 
-        // var byteRate = 1000 * 1000;
-        var byteRate = 1000 * this.fileInfo.size / this.duration;
-        var targetSpeed = downloadSpeedByteRateCoef * byteRate;
-        var chunkPerSecond = targetSpeed / defaultChunkSize;
-        this.chunkInterval = 1000 / chunkPerSecond;
-        this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
+    //     // var byteRate = 1000 * 1000;
+    //     var byteRate = 1000 * this.fileInfo.size / this.duration;
+    //     var targetSpeed = downloadSpeedByteRateCoef * byteRate;
+    //     var chunkPerSecond = targetSpeed / defaultChunkSize;
+    //     this.chunkInterval = 1000 / chunkPerSecond;
+    //     this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
 
-        this.stopDownloadTimer();
+    //     this.stopDownloadTimer();
 
-        // start download timer
-        this.downloadSeqNo++;
-        this.downloadTimer = setInterval(function () {
-            console.log('download timer func');
-            self.downloadOneChunk();
-        }, this.chunkInterval);
-        console.log('startNewDownloadTimer', this.downloadTimer, this.downloadSeqNo);
-    }
+    //     // start download timer
+    //     this.downloadSeqNo++;
+    //     this.downloadTimer = setInterval(function () {
+    //         console.log('download timer func');
+    //         self.downloadOneChunk();
+    //     }, this.chunkInterval);
+    //     console.log('startNewDownloadTimer', this.downloadTimer, this.downloadSeqNo);
+    // }
 
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
@@ -1028,7 +1035,8 @@ Player.prototype.renderVideoFrame = function (data) {
 };
 
 Player.prototype.downloadOneChunk = function () {
-    // this.logger.logInfo("trigger downloadOneChunk.");
+    this.logger.logInfo("trigger downloadOneChunk.");
+    console.log('this.downloadSwitch', this.downloadSwitch, !this.downloadSwitch)
     if (!this.downloadSwitch){
         return;
     }
@@ -1124,24 +1132,24 @@ Player.prototype.updateTrackTime = function () {
 };
 
 Player.prototype.startDecoding = function () {
-    this.logger.logInfo("startDecoding.");
+    // this.logger.logInfo("startDecoding.");
     var req = {
         t: kStartDecodingReq,
         i: this.urgent ? 0 : this.decodeInterval,
     };
     this.decodeWorker.postMessage(req);
     this.decoding = true;
-    this.downloadSwitch = true;
+    // this.downloadSwitch = true;
 };
 
 Player.prototype.pauseDecoding = function () {
-    this.logger.logInfo("pauseDecoding.");
+    // this.logger.logInfo("pauseDecoding.");
     var req = {
         t: kPauseDecodingReq
     };
     this.decodeWorker.postMessage(req);
     this.decoding = false;
-    this.downloadSwitch = false;
+    // this.downloadSwitch = false;
 };
 
 Player.prototype.formatTime = function (s) {
@@ -1273,10 +1281,10 @@ Player.prototype.requestStream = function (url) {
                 self.duration = duration;
 
                 // var byteRate = 1000 * 1000;
-                var byteRate = 1000 * size / self.duration;
-                var targetSpeed = downloadSpeedByteRateCoef * byteRate;
-                var chunkPerSecond = targetSpeed / defaultChunkSize;
-                self.chunkInterval = 1000 / chunkPerSecond;
+                // var byteRate = 1000 * size / self.duration;
+                // var targetSpeed = downloadSpeedByteRateCoef * byteRate;
+                // var chunkPerSecond = targetSpeed / defaultChunkSize;
+                self.chunkInterval = 1000;
                 // self.chunkInterval = 1;
                 console.log('chunkInterval', self.chunkInterval);
                 self.fileInfo.size = size * 1;

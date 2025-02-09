@@ -46,6 +46,8 @@ const kPauseDecodingRsp     = 7;
 const kDecodeFinishedEvt    = 8;
 const kRequestDataEvt       = 9;
 const kSeekToRsp            = 10;
+const kDataMax              = 11;
+const kDataNormal           = 12;
 
 function Logger(module) {
     this.module = module;

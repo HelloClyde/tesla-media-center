@@ -16,6 +16,7 @@ function Decoder() {
     this.cacheBuffer        = null;
     this.decodeTimer        = null;
     this.videoCallback      = null;
+    this.statusCallback     = null;
     this.audioCallback      = null;
     this.requestCallback    = null;
 }
@@ -45,7 +46,7 @@ Decoder.prototype.uninitDecoder = function () {
 Decoder.prototype.openDecoder = function () {
     var paramCount = 7, paramSize = 4;
     var paramByteBuffer = Module._malloc(paramCount * paramSize);
-    var ret = Module._openDecoder(paramByteBuffer, paramCount, this.videoCallback, this.audioCallback, this.requestCallback);
+    var ret = Module._openDecoder(paramByteBuffer, paramCount, this.videoCallback, this.audioCallback, this.statusCallback, this.requestCallback);
     this.logger.logInfo("openDecoder return " + ret);
 
     if (ret == 0) {
@@ -215,6 +216,21 @@ Decoder.prototype.onWasmLoaded = function () {
         };
         self.postMessage(objData, [objData.d.buffer]);
     }, 'viid');
+
+    
+    this.statusCallback = Module.addFunction(function (status) {
+        console.log('status callback:', status)
+        if (status == 0){
+            var objData = {
+                t: kDataNormal,
+            };
+        } else {
+            var objData = {
+                t: kDataMax,
+            };
+        }
+        self.postMessage(objData);
+    }, 'vi');
 
     this.requestCallback = Module.addFunction(function (offset, availble) {
         var objData = {

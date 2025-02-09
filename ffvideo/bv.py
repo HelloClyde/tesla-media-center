@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify, stream_with_context, redirect, send_from_directory, abort, send_file, make_response
 import requests
-from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search
+from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass
 from loguru import logger
 import imageio_ffmpeg
 import subprocess
@@ -148,16 +148,26 @@ def add_bv_route(app):
             logger.info(f'ret code:{return_code}, write done file')
         else:
             logger.warning(f'ffmpeg error exit, code:{return_code}')
+            
+            
+    @app.route('/api/bilibili/bv/<string:bvid>/dm', methods=['GET'])
+    def get_bilibili_video_dm(bvid):        
+        v = video.Video(bvid=bvid)
+        dms = sync(v.get_danmakus(0))
+        return json_ok({
+            'dm': dms
+        })
     
             
     @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])
     def get_bilibili_video_info(bvid):
         global ffmpeg_jobs
         v = video.Video(bvid=bvid)
-        video_info = sync(v.get_detail())
         download_url_data = sync(v.get_download_url(0))
         duration = download_url_data['timelength']
         output_video_path = f'/tmp/bv_output_{bvid}.flv'
+        
+        
         if ffmpeg_jobs.bv == bvid:
             pass
         else:
