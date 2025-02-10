@@ -202,8 +202,8 @@ onUnmounted(() => {
             </div>
             <el-row justify="start">
                 <el-col :span="4">
-                    <el-button icon="Back" size="large" @click="props.onClose" circle />
-                    <el-button icon="ChatLineRound" size="large" @click="switchDanmu" circle></el-button>
+                    <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
+                    <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
                 </el-col>
             </el-row>
         </div>
@@ -211,6 +211,10 @@ onUnmounted(() => {
 </template>
 
 <style>
+.btn {
+    font-size: 26px !important;
+}
+
 .danmu-container {
     border: 0px solid rgb(0, 0, 0);
     position: absolute;

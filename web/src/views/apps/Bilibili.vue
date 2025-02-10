@@ -15,6 +15,7 @@ const state = reactive({
   curTab: "homepage",
   searchText: '',
   searchVideoResult: [] as any[],
+  searchLoading: false,
 })
 
 
@@ -65,12 +66,16 @@ const loadRankVideos = () => {
 }
 
 const searchByText = () => {
+  state.searchLoading = true;
   get(`/api/bilibili/search?pageNo=${1}&keyword=${state.searchText}`).then(data => {
     console.log(data);
     const allReuslt = data.result;
     state.searchVideoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0].data;
     console.log(state.searchVideoResult);
+  }).finally(() => {
+    state.searchLoading = false;
   })
+
 }
 
 const tabChange = (name: string) => {
@@ -95,7 +100,7 @@ const videoSelect = (type: string, id: any) => {
       state.videoConfig = { 'type': type, 'bvid': id , url: `/api/bilibili/bv/${id}`}
       break;
     case 'bangumi_ss':
-      state.videoConfig = { 'type': type, 'sid': id, url: `/api/bilibili/bangumi_ss/${id}` }
+      state.videoConfig = { 'type': type, 'sid': id, url: `/api/bilibili/bangumi_ss/${id}/0` }
       break;
   }
   
@@ -135,25 +140,29 @@ onMounted(() => {
           <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
       </el-tab-pane>
+      <el-tab-pane label="搜索" name="search">
+        <el-input class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search"  @keyup.enter="searchByText">
+          <template #append>
+            <el-button :icon="Search" @click="searchByText"/>
+          </template>
+        </el-input>
+        <el-space wrap v-loading="state.searchLoading">
+          <BiliCover v-for="video of state.searchVideoResult" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
+        </el-space>
+      </el-tab-pane>
       <el-tab-pane label="关注" name="关注">关注</el-tab-pane>
       <el-tab-pane label="我的" name="my">我的</el-tab-pane>
     </el-tabs>
-    <el-input class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search">
-      <template #append>
-        <el-button :icon="Search" @click="searchByText" />
-      </template>
-    </el-input>
+    
   </div>
 </template>
 
 
 <style>
 .search-input {
-  width: 400px !important;
-  position: absolute !important;
-  top: 4px;
-  right: 40px;
   font-size: 20px !important;
+  margin: 20px;
+  padding-right: 40px;
 }
 
 .bv-list {

@@ -30,7 +30,11 @@ const formatTooltip = (val: number) => {
 onUnmounted(() => {
 })
 
-function formatTime(seconds: number): string {
+function formatTime(seconds: number | string): string {
+    // 如果输入是字符串，直接返回
+    if (typeof seconds === 'string') {
+        return seconds;
+    }
     if (seconds < 60) {
         // 少于一分钟，直接显示秒数
         return `00:${seconds}`;
@@ -63,7 +67,7 @@ function formatTime(seconds: number): string {
             </div>
         </template>
         <el-text line-clamp="2" class="video-title">
-            {{ video.title }}
+            <div v-html="video.title"></div>
         </el-text>
         <el-row>
             <el-col :span="20">
@@ -71,7 +75,7 @@ function formatTime(seconds: number): string {
                 <el-icon>
                     <User />
                 </el-icon>
-                {{ video?.owner?.name }}
+                {{ video?.owner?.name || video?.author }}
                 </el-text>
             </el-col>
             <el-col :span="4">
@@ -98,7 +102,9 @@ function formatTime(seconds: number): string {
 </template>
 
 <style>
-
+.keyword{
+    color: #f00;
+}
 
 .video-card {
   width: 350px;

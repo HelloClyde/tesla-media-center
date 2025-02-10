@@ -158,9 +158,7 @@ def add_bv_route(app):
             'dm': list(map(lambda x: x.__dict__, dms))
         })
     
-            
-    @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])
-    def get_bilibili_video_info(bvid):
+    def return_bv_stream(bvid):
         global ffmpeg_jobs
         v = video.Video(bvid=bvid)
         download_url_data = sync(v.get_download_url(0))
@@ -235,6 +233,19 @@ def add_bv_route(app):
         response.headers['BV-Duration'] = duration
         
         return response
+    
+    @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>/info', methods=['GET'])
+    def get_bilibili_bangumi_info(sid, idx):
+        global ffmpeg_jobs
+        bgm = bangumi.Bangumi(ssid=sid)
+        ep_lst = sync(bgm.get_episodes())
+        logger.info(f'ep list:{ep_lst}')
+        bvid = sync(ep_lst[idx].get_bvid())
+        return return_bv_stream(bvid)
+            
+    @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])
+    def get_bilibili_video_info(bvid):
+        return return_bv_stream(bvid)
 
     @app.route('/api/bilibili/bv/<string:bvid>', methods=['GET'])
     def get_bilibili_video_chunk(bvid):
