@@ -76,6 +76,7 @@ function Player() {
     this.initDownloadWorker();
     this.initDecodeWorker();
     this.finishCallback     = null;
+    this.timeCallback       = null;
 }
 
 Player.prototype.initDownloadWorker = function () {
@@ -524,6 +525,10 @@ Player.prototype.setFinishCallback = function (callback) {
     this.finishCallback = callback;
 };
 
+Player.prototype.setTimeCallback = function (callback) {
+    this.timeCallback = callback;
+};
+
 Player.prototype.onGetFileInfo = function (info) {
     if (this.playerState == playerStateIdle) {
         return;
@@ -557,27 +562,10 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
         return;  // Old data.
     }
 
-    // if (newSize > 0 && newSize != this.fileInfo.size){
-    //     console.log('update file size', newSize, 'this.duration', this.duration);
-    //     this.fileInfo.size = newSize;
-
-    //     // var byteRate = 1000 * 1000;
-    //     var byteRate = 1000 * this.fileInfo.size / this.duration;
-    //     var targetSpeed = downloadSpeedByteRateCoef * byteRate;
-    //     var chunkPerSecond = targetSpeed / defaultChunkSize;
-    //     this.chunkInterval = 1000 / chunkPerSecond;
-    //     this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
-
-    //     this.stopDownloadTimer();
-
-    //     // start download timer
-    //     this.downloadSeqNo++;
-    //     this.downloadTimer = setInterval(function () {
-    //         console.log('download timer func');
-    //         self.downloadOneChunk();
-    //     }, this.chunkInterval);
-    //     console.log('startNewDownloadTimer', this.downloadTimer, this.downloadSeqNo);
-    // }
+    if (newSize > 0 && newSize != this.fileInfo.size){
+        console.log('update file size', newSize, 'this.duration', this.duration);
+        this.fileInfo.size = newSize;
+    }
 
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
@@ -1036,7 +1024,6 @@ Player.prototype.renderVideoFrame = function (data) {
 
 Player.prototype.downloadOneChunk = function () {
     this.logger.logInfo("trigger downloadOneChunk.");
-    console.log('this.downloadSwitch', this.downloadSwitch, !this.downloadSwitch)
     if (!this.downloadSwitch){
         return;
     }
@@ -1115,6 +1102,9 @@ Player.prototype.stopTrackTimer = function () {
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
+        if (this.timeCallback){
+            this.timeCallback(currentPlayTime);
+        }
         if (!this.isStream && currentPlayTime * 1000 > this.duration){
             this.stop();
             if (this.finishCallback){

@@ -150,12 +150,12 @@ def add_bv_route(app):
             logger.warning(f'ffmpeg error exit, code:{return_code}')
             
             
-    @app.route('/api/bilibili/bv/<string:bvid>/dm', methods=['GET'])
-    def get_bilibili_video_dm(bvid):        
+    @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
+    def get_bilibili_video_dm(bvid, seg):        
         v = video.Video(bvid=bvid)
-        dms = sync(v.get_danmakus(0))
+        dms = sync(v.get_danmakus(0, from_seg=seg, to_seg=seg+1))
         return json_ok({
-            'dm': dms
+            'dm': list(map(lambda x: x.__dict__, dms))
         })
     
             

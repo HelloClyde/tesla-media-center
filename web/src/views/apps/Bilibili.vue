@@ -111,7 +111,7 @@ onMounted(() => {
 <template>
   <div v-if="state.videoConfig" class="video-view">
     <!-- <VideoPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" /> -->
-      <H264Player :type="'bv'" :on-close="() => state.videoConfig = null" :url="state.videoConfig.url" />
+      <H264Player :type="'bv'" :on-close="() => state.videoConfig = null" :url="state.videoConfig.url" :id="state.videoConfig.bvid"/>
   </div>
 
   <div class="bv-list">
