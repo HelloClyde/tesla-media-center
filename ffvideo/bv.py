@@ -236,19 +236,66 @@ def add_bv_route(app):
     
     @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>/info', methods=['GET'])
     def get_bilibili_bangumi_info(sid, idx):
-        global ffmpeg_jobs
         bgm = bangumi.Bangumi(ssid=sid)
         ep_lst = sync(bgm.get_episodes())
         logger.info(f'ep list:{ep_lst}')
         bvid = sync(ep_lst[idx].get_bvid())
         return return_bv_stream(bvid)
+    
+    
+    @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>', methods=['GET'])
+    def get_bilibili_bangumi_chunk(sid, idx):
+        bgm = bangumi.Bangumi(ssid=sid)
+        ep_lst = sync(bgm.get_episodes())
+        logger.info(f'ep list:{ep_lst}')
+        bvid = sync(ep_lst[idx].get_bvid())
+        output_video_path = f'/tmp/bv_output_{bvid}.flv'
+        range_header = request.headers.get('range') # bytes=0-524287
+        start, end = range_header.replace('bytes=', '').split('-')
+        logger.info(f'get range, start:{start}, end:{end}')
+
+        # 将 start 和 end 转换为整数
+        start = int(start)
+        end = int(end)
+        length = end - start + 1
+            
+        DONE_FILE = f'{output_video_path}.done'
+        CHECK_INTERVAL = 0.1  # 检查间隔（秒）
+        
+        final_size = -1
+        # wait done or file size > end
+        bitrate = get_video_bitrate(output_video_path)
+        logger.info(f'bitrate:{bitrate} kb/s')
+        while True:
+            size = os.path.getsize(output_video_path)
+            if os.path.exists(DONE_FILE):
+                final_size = size
+                end = min(end, size - 1)
+                length = end - start + 1 if end > start else 0
+                break
+            if size >= end:
+                break
+            time.sleep(CHECK_INTERVAL)
+        
+        def generate():
+            with open(output_video_path, 'rb') as f:
+                f.seek(start)
+                chunk = f.read(length)
+                yield chunk
+        logger.info(f'final_size:{final_size}')
+        resp = Response(stream_with_context(generate()), mimetype='video/mp4', headers={
+            'BV-Content-Length': final_size, 
+            'Content-Length': length,
+            'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
+        })
+        return resp
             
     @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])
     def get_bilibili_video_info(bvid):
         return return_bv_stream(bvid)
 
     @app.route('/api/bilibili/bv/<string:bvid>', methods=['GET'])
-    def get_bilibili_video_chunk(bvid):
+    def get_bilibili_bv_chunk(bvid):
         output_video_path = f'/tmp/bv_output_{bvid}.flv'
         range_header = request.headers.get('range') # bytes=0-524287
         start, end = range_header.replace('bytes=', '').split('-')
