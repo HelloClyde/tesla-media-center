@@ -4,3 +4,4 @@ bilibili-api-python==17.1.0
 cryptography
 imageio-ffmpeg
 requests
+aiohttp
