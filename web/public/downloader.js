@@ -81,7 +81,7 @@ Downloader.prototype.downloadFileByHttp = function (url, start, end, seq) {
 };
 
 Downloader.prototype.downloadFileByHttpStream = function (url, start, end, seq) {
-    //this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");
+    this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");
     var xhr = new XMLHttpRequest;
     xhr.open('get', url, true);
     xhr.responseType = 'arraybuffer';

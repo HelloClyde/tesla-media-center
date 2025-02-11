@@ -70,7 +70,7 @@ def add_bv_route(app):
         
         # FFmpeg的输出会在stderr中，但这里我们合并到了stdout，所以只检查stdout
         output = result.stdout
-        logger.info(f'output:{output}')
+        logger.debug(f'output:{output}')
         
         # 使用正则表达式查找比特率信息
         # 匹配形如 "bitrate: 500 kb/s" 的字符串
@@ -252,6 +252,7 @@ def add_bv_route(app):
         output_video_path = f'/tmp/bv_output_{bvid}.flv'
         range_header = request.headers.get('range') # bytes=0-524287
         start, end = range_header.replace('bytes=', '').split('-')
+        logger.info(f'get range, start:{start}, end:{end}')
 
         # 将 start 和 end 转换为整数
         start = int(start)
@@ -269,6 +270,8 @@ def add_bv_route(app):
             size = os.path.getsize(output_video_path)
             if os.path.exists(DONE_FILE):
                 final_size = size
+                end = min(end, size - 1)
+                length = end - start + 1 if end > start else 0
                 break
             if size >= end:
                 break
@@ -280,5 +283,9 @@ def add_bv_route(app):
                 chunk = f.read(length)
                 yield chunk
         logger.info(f'final_size:{final_size}')
-        resp = Response(stream_with_context(generate()), mimetype='video/mp4', headers={'BV-Content-Length': final_size, 'Content-Length': length})
+        resp = Response(stream_with_context(generate()), mimetype='video/mp4', headers={
+            'BV-Content-Length': final_size, 
+            'Content-Length': length,
+            'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
+        })
         return resp

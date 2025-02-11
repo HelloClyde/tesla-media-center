@@ -554,6 +554,13 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
     this.downloading = false;
     var self = this;
 
+    console.log('data', data, data.byteLength);
+    if (data.byteLength <= 0){
+        self.logger.logError("Reach file end.");
+        self.stopDownloadTimer();
+        return;
+    }
+
     if (this.playerState == playerStateIdle) {
         return;
     }
@@ -563,8 +570,8 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
     }
 
     if (newSize > 0 && newSize != this.fileInfo.size){
-        console.log('update file size', newSize, 'this.duration', this.duration);
-        this.fileInfo.size = newSize;
+        // console.log('update file size', newSize, 'this.duration', this.duration);
+        // this.fileInfo.size = newSize;
     }
 
     if (this.playerState == playerStatePausing) {
@@ -1025,14 +1032,17 @@ Player.prototype.renderVideoFrame = function (data) {
 Player.prototype.downloadOneChunk = function () {
     this.logger.logInfo("trigger downloadOneChunk.");
     if (!this.downloadSwitch){
+        // console.log('disable download, return');
         return;
     }
 
     if (this.downloading) {
+        // console.log('downloading, return');
         return;
     }
 
     if (this.downloadProto != kProtoStream && this.isStream){
+        // console.log('not support proto, return');
         return;
     }
     
@@ -1063,6 +1073,7 @@ Player.prototype.downloadOneChunk = function () {
         q: this.downloadSeqNo,
         p: this.downloadProto
     };
+    console.log('req', req);
     this.downloadWorker.postMessage(req);
     this.downloading = true;
 };
@@ -1078,6 +1089,7 @@ Player.prototype.startDownloadTimer = function () {
 };
 
 Player.prototype.stopDownloadTimer = function () {
+    console.log('stopDownloadTimer');
     if (this.downloadTimer != null) {
         clearInterval(this.downloadTimer);
         this.downloadTimer = null;
@@ -1277,7 +1289,7 @@ Player.prototype.requestStream = function (url) {
                 self.chunkInterval = 1000;
                 // self.chunkInterval = 1;
                 console.log('chunkInterval', self.chunkInterval);
-                self.fileInfo.size = size * 1;
+                self.fileInfo.size = 1024 * 1024 * 1024;
 
 
                 // start download timer
