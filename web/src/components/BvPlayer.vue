@@ -22,9 +22,14 @@ const state = reactive({
     isAutoContinue: true,
     showScreen: true,
     dms: [] as any[],
+    processedDmKeys: new Set() as Set<string>,
     dm_seg: 0,
     dmSwitch: true,
+    epList: [] as any[],
+    bvid: null as string | null,
 })
+
+const getDmKey = (dm: any) => dm.id_str;
 
 function playOrPause() {
     // const currentState = videoPlayer.getState();
@@ -41,8 +46,7 @@ function playOrPause() {
 }
 
 interface VideoProps {
-    type: 'bv' | 'local';
-    url: string;
+    type: 'bv' | 'bangumi_ss';
     id: string;
     onClose?: () => void;
 }
@@ -50,33 +54,65 @@ interface VideoProps {
 const props = defineProps<VideoProps>();
 
 function popDanmu(t: number) {
-    // 创建一个新的数组用于存储需要移除的对象
+    // 使用当前弹幕的副本进行处理
+    const currentDms = [...state.dms];
     const toRemove: any[] = [];
+    const newProcessedKeys = new Set<string>();
 
-    // 遍历原数组，找到所有 dm_time 小于 t 的对象
-    for (let i = 0; i < state.dms.length; i++) {
-        if (state.dms[i].dm_time < t) {
-            toRemove.push(state.dms[i]); // 将符合条件的对象加入到移除列表
+    // 遍历副本，避免处理过程中原数组被修改
+    for (const dm of currentDms) {
+        const key = getDmKey(dm);
+        if (dm.dm_time < t && !state.processedDmKeys.has(key)) {
+            toRemove.push(dm);
+            newProcessedKeys.add(key);
         }
     }
+
+    // 显示弹幕（截断至100条）
+    const showDanmu = toRemove.slice(0, 100);
+    showDanmu.forEach(danmu => 
+        addDanmu(danmu.text, `#${danmu.color}`)
+    );
+
+    // 更新已处理的弹幕键
+    newProcessedKeys.forEach(key => 
+        state.processedDmKeys.add(key)
+    );
+
+    // 从原数组中过滤已处理的弹幕
+    state.dms = state.dms.filter(dm => 
+        !newProcessedKeys.has(getDmKey(dm))
+    );
+}
+
+// function popDanmu(t: number) {
+//     // 创建一个新的数组用于存储需要移除的对象
+//     const toRemove: any[] = [];
+
+//     // 遍历原数组，找到所有 dm_time 小于 t 的对象
+//     for (let i = 0; i < state.dms.length; i++) {
+//         if (state.dms[i].dm_time < t) {
+//             toRemove.push(state.dms[i]); // 将符合条件的对象加入到移除列表
+//         }
+//     }
     
-    let showDanmu = toRemove;
-    if (toRemove.length > 100){
-        console.warn('弹幕数量大于100，截断');
-        showDanmu = toRemove.slice(0, 100);
-    }
+//     let showDanmu = toRemove;
+//     if (toRemove.length > 100){
+//         console.warn('弹幕数量大于100，截断');
+//         showDanmu = toRemove.slice(0, 100);
+//     }
     
-    for (const danmu of showDanmu){
-        addDanmu(danmu.text, `#${danmu.color}`);
-    }
+//     for (const danmu of showDanmu){
+//         addDanmu(danmu.text, `#${danmu.color}`);
+//     }
     
 
-    // 使用 filter 方法创建一个新数组，过滤掉需要移除的对象
-    if (toRemove.length > 0){
-        state.dms = state.dms.filter((item: any) => !toRemove.includes(item));
-    }
+//     // 使用 filter 方法创建一个新数组，过滤掉需要移除的对象
+//     if (toRemove.length > 0){
+//         state.dms = state.dms.filter((item: any) => !toRemove.includes(item));
+//     }
     
-}
+// }
 
 
 
@@ -84,23 +120,51 @@ onMounted(() => {
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
     const waitHeaderLength = 512 * 1024 * 1;
-    console.log('waitHeaderLength', waitHeaderLength);
-    videoPlayer.play(`stream://${props.url}`, playerCanvas.value, function (e: any) {
-        console.error(e);
-        console.error("play error " + e.error + " status " + e.status + ".");
-        if (e.error == 1) {
-            console.info("Finished.");
+
+    new Promise((resolve, reject) => {
+        if (props.type == 'bv'){
+            state.bvid = props.id;
+            resolve(`/api/bilibili/bv/${props.id}` );
+        }else if (props.type == 'bangumi_ss'){
+            return get(`/api/bilibili/bangumi_ss/${props.id}/info`).then(data => {
+                state.epList = data;
+                console.log('ep_list', state.epList);
+                state.bvid = state.epList[0].bvid;
+                resolve(`/api/bilibili/bv/${state.bvid}`);
+            })
         }
-    }, waitHeaderLength, true);
+    }).then(url => {
+        console.log('url', url);
+        videoPlayer.play(`stream://${url}`, playerCanvas.value, function (e: any) {
+            console.error(e);
+            console.error("play error " + e.error + " status " + e.status + ".");
+            if (e.error == 1) {
+                console.info("Finished.");
+            }
+        }, waitHeaderLength, true);
+        
+        // 加载弹幕
+        state.dm_seg = 0;
+        return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`)
+    }).then(data => {
+        console.log('danmu', data);
+        state.dms = data.dm;
+    })
+    ;
+    
     videoPlayer.setTimeCallback((t: number) => {
         popDanmu(t);
-        const seg = t / (6 * 60);
+        // const seg = t / (6 * 60);
+        const seg = t / 30;
         if (state.dm_seg < seg){
             state.dm_seg = state.dm_seg + 1;
+            // 在加载新弹幕的请求中
             get(`/api/bilibili/bv/${props.id}/dm/${state.dm_seg}`).then(data => {
-                console.log('加载下一波弹幕', data);
-                state.dms = [...state.dms, ...data.dm];
-            })
+                const newDms = data.dm.filter((dm: any) => 
+                    !state.processedDmKeys.has(getDmKey(dm))
+                );
+                state.dms = [...state.dms, ...newDms];
+            });
         }
     })
     state.isPlay = true;
@@ -115,12 +179,6 @@ onMounted(() => {
 
     videoPlayer.setTrack(timeTrack.value, timeLabel.value);
 
-    // 加载弹幕
-    state.dm_seg = 0;
-    get(`/api/bilibili/bv/${props.id}/dm/${state.dm_seg}`).then(data => {
-        console.log(data);
-        state.dms = data.dm;
-    })
 })
 
 function addDanmu(danmuText: string, color='#fff') {
@@ -156,6 +214,10 @@ function moveDanmu(elem: any, container: any) {
 
 function switchDanmu(){
     state.dmSwitch = !state.dmSwitch;
+}
+
+function switchEp(ep: any){
+
 }
 
 onUnmounted(() => {
@@ -204,6 +266,9 @@ onUnmounted(() => {
                 <el-col :span="4">
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
+                </el-col>
+                <el-col :span="20">
+                    <el-button v-for="(ep, index) in state.epList" class="ep-item" @click="switchEp(ep)">{{ index + 1 }}</el-button>
                 </el-col>
             </el-row>
         </div>

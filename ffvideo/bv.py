@@ -234,13 +234,23 @@ def add_bv_route(app):
         
         return response
     
-    @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>/info', methods=['GET'])
-    def get_bilibili_bangumi_info(sid, idx):
+    @app.route('/api/bilibili/bangumi_ss/<string:sid>/info', methods=['GET'])
+    def get_bilibili_bangumi_info(sid):
         bgm = bangumi.Bangumi(ssid=sid)
         ep_lst = sync(bgm.get_episodes())
         logger.info(f'ep list:{ep_lst}')
-        bvid = sync(ep_lst[idx].get_bvid())
-        return return_bv_stream(bvid)
+        # ep 转dict
+        ep_dict_lst = []
+        for idx in range(len(ep_lst)):
+            ep = ep_lst[idx]
+            ep_dict_lst.append({
+                'idx': idx,
+                'epid': ep.get_epid(),
+                'bvid': sync(ep.get_bvid()),
+                'aid': sync(ep.get_aid()),
+                # 'info': sync(ep.get_info())
+            })
+        return json_ok(ep_dict_lst)
     
     
     @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>', methods=['GET'])
