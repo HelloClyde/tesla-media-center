@@ -11,6 +11,7 @@ const timeTrack = ref(null);
 const timeLabel = ref(null);
 
 let videoPlayer = shallowRef<any>(null);
+const waitHeaderLength = 512 * 1024 * 1;
 
 const state = reactive({
     curFiles: [] as any[],
@@ -119,7 +120,6 @@ function popDanmu(t: number) {
 onMounted(() => {
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
-    const waitHeaderLength = 512 * 1024 * 1;
 
     new Promise((resolve, reject) => {
         if (props.type == 'bv'){
@@ -159,7 +159,7 @@ onMounted(() => {
         if (state.dm_seg < seg){
             state.dm_seg = state.dm_seg + 1;
             // 在加载新弹幕的请求中
-            get(`/api/bilibili/bv/${props.id}/dm/${state.dm_seg}`).then(data => {
+            get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`).then(data => {
                 const newDms = data.dm.filter((dm: any) => 
                     !state.processedDmKeys.has(getDmKey(dm))
                 );
@@ -189,7 +189,7 @@ function addDanmu(danmuText: string, color='#fff') {
     danmu.className = 'danmu';
     danmu.innerText = danmuText;
     danmu.style.left = `${container.offsetWidth}px`; // 初始位置在右侧外部
-    danmu.style.top = `${Math.random() * (container.offsetHeight - 20)}px`; // 随机高度
+    danmu.style.top = `${Math.random() * (container.offsetHeight * 2 / 3 - 20)}px`; // 随机高度
     danmu.style.color = color
 
     container.appendChild(danmu);
@@ -217,7 +217,29 @@ function switchDanmu(){
 }
 
 function switchEp(ep: any){
-
+    new Promise((resolve, reject) => {
+        state.bvid = ep.bvid;
+        resolve(`/api/bilibili/bv/${ep.bvid}`);
+    }).then(url => {
+        console.log('url', url);
+        videoPlayer.stop();
+        videoPlayer.play(`stream://${url}`, playerCanvas.value, function (e: any) {
+            console.error(e);
+            console.error("play error " + e.error + " status " + e.status + ".");
+            if (e.error == 1) {
+                console.info("Finished.");
+            }
+        }, waitHeaderLength, true);
+        
+        // 加载弹幕
+        state.dm_seg = 0;
+        return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`)
+    }).then(data => {
+        console.log('danmu', data);
+        state.dms = data.dm;
+    })
+    ;
+    
 }
 
 onUnmounted(() => {
@@ -258,7 +280,8 @@ onUnmounted(() => {
                 <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
             <div>
-                <audio id="silentAudio" loop controls style="height: 28px;">
+                <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
+                <audio id="silentAudio" loop controls style="height: 28px;display: none;">
                     <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
                 </audio>
             </div>
@@ -278,6 +301,12 @@ onUnmounted(() => {
 <style>
 .btn {
     font-size: 26px !important;
+}
+
+.ep-item {
+    margin-bottom: 5px;
+    margin-left: 0 !important;
+    margin-right: 5px;
 }
 
 .danmu-container {
