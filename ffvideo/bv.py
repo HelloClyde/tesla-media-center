@@ -70,7 +70,7 @@ def add_bv_route(app):
         
         # FFmpeg的输出会在stderr中，但这里我们合并到了stdout，所以只检查stdout
         output = result.stdout
-        logger.debug(f'output:{output}')
+        # logger.debug(f'output:{output}')
         
         # 使用正则表达式查找比特率信息
         # 匹配形如 "bitrate: 500 kb/s" 的字符串
@@ -161,10 +161,10 @@ def add_bv_route(app):
     def return_bv_stream(bvid):
         global ffmpeg_jobs
         v = video.Video(bvid=bvid)
+        v_detail = sync(v.get_detail())
         download_url_data = sync(v.get_download_url(0))
         duration = download_url_data['timelength']
         output_video_path = f'/tmp/bv_output_{bvid}.flv'
-        
         
         if ffmpeg_jobs.bv == bvid:
             pass
@@ -221,7 +221,8 @@ def add_bv_route(app):
         data = {
             "size": size,
             'merge_size': merge_size,
-            "file": output_video_path
+            "file": output_video_path,
+            'detail': v_detail,
         }
         
         # 创建JSON响应
@@ -234,7 +235,7 @@ def add_bv_route(app):
         
         return response
     
-    @app.route('/api/bilibili/bangumi_ss/<string:sid>/info', methods=['GET'])
+    @app.route('/api/bilibili/bangumi_ss/<string:sid>', methods=['GET'])
     def get_bilibili_bangumi_info(sid):
         bgm = bangumi.Bangumi(ssid=sid)
         ep_lst = sync(bgm.get_episodes())
@@ -245,9 +246,10 @@ def add_bv_route(app):
             ep = ep_lst[idx]
             ep_dict_lst.append({
                 'idx': idx,
-                'epid': ep.get_epid(),
+                # 'epid': ep.get_epid(),
                 'bvid': sync(ep.get_bvid()),
-                'aid': sync(ep.get_aid()),
+                'cid': sync(ep.get_cid()),
+                # 'aid': sync(ep.get_aid()),
                 # 'info': sync(ep.get_info())
             })
         return json_ok(ep_dict_lst)
@@ -274,8 +276,8 @@ def add_bv_route(app):
         
         final_size = -1
         # wait done or file size > end
-        bitrate = get_video_bitrate(output_video_path)
-        logger.info(f'bitrate:{bitrate} kb/s')
+        # bitrate = get_video_bitrate(output_video_path)
+        # logger.info(f'bitrate:{bitrate} kb/s')
         while True:
             size = os.path.getsize(output_video_path)
             if os.path.exists(DONE_FILE):
@@ -300,8 +302,28 @@ def add_bv_route(app):
         })
         return resp
             
-    @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])
+    @app.route('/api/bilibili/video/<string:bvid>', methods=['GET'])
     def get_bilibili_video_info(bvid):
+        v = video.Video(bvid=bvid)
+        v_detail = sync(v.get_detail())
+        epList = []
+        for page in v_detail['View']['pages']:
+            epList.append({
+                'bvid': bvid,
+                'cid': page['cid'],
+                'title': page['part'],
+                'idx': page['page'],
+                'cover': page['first_frame']
+            })
+        
+        return json_ok({
+            'title': v_detail['View']['title'],
+            'desc': v_detail['View']['desc'],
+            'epList': epList
+        })
+    
+    @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])    
+    def get_bilibili_bv_info_stream(bvid):
         return return_bv_stream(bvid)
 
     @app.route('/api/bilibili/bv/<string:bvid>', methods=['GET'])
@@ -321,8 +343,8 @@ def add_bv_route(app):
         
         final_size = -1
         # wait done or file size > end
-        bitrate = get_video_bitrate(output_video_path)
-        logger.info(f'bitrate:{bitrate} kb/s')
+        # bitrate = get_video_bitrate(output_video_path)
+        # logger.info(f'bitrate:{bitrate} kb/s')
         while True:
             size = os.path.getsize(output_video_path)
             if os.path.exists(DONE_FILE):

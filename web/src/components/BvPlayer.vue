@@ -28,6 +28,9 @@ const state = reactive({
     dmSwitch: true,
     epList: [] as any[],
     bvid: null as string | null,
+    cid: null as string | null,
+    title: null as string | null,
+    desc: null as string| null,
 })
 
 const getDmKey = (dm: any) => dm.id_str;
@@ -123,10 +126,17 @@ onMounted(() => {
 
     new Promise((resolve, reject) => {
         if (props.type == 'bv'){
-            state.bvid = props.id;
-            resolve(`/api/bilibili/bv/${props.id}` );
+            return get(`/api/bilibili/video/${props.id}`).then(data => {
+                state.epList = data.epList;
+                state.title = data.title;
+                state.desc = data.desc;
+                console.log('ep_list', state.epList);
+                state.bvid = state.epList[0].bvid;
+                state.cid = state.epList[0].cid;
+                resolve(`/api/bilibili/bv/${state.bvid}`);
+            });
         }else if (props.type == 'bangumi_ss'){
-            return get(`/api/bilibili/bangumi_ss/${props.id}/info`).then(data => {
+            return get(`/api/bilibili/bangumi_ss/${props.id}`).then(data => {
                 state.epList = data;
                 console.log('ep_list', state.epList);
                 state.bvid = state.epList[0].bvid;
@@ -155,11 +165,11 @@ onMounted(() => {
     videoPlayer.setTimeCallback((t: number) => {
         popDanmu(t);
         // const seg = t / (6 * 60);
-        const seg = t / 30;
+        const seg = Math.floor(t / (6 * 60));
         if (state.dm_seg < seg){
-            state.dm_seg = state.dm_seg + 1;
+            state.dm_seg = seg;
             // 在加载新弹幕的请求中
-            get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`).then(data => {
+            get(`/api/bilibili/bv/${state.bvid}/dm/${seg}`).then(data => {
                 const newDms = data.dm.filter((dm: any) => 
                     !state.processedDmKeys.has(getDmKey(dm))
                 );
@@ -286,12 +296,23 @@ onUnmounted(() => {
                 </audio>
             </div>
             <el-row justify="start">
-                <el-col :span="4">
+                <el-col :span="24">
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
+                    <el-text class="bv-title" size="large">{{ state.title }}</el-text>
+                    <!-- <el-text class="bv-desc" truncated size="small">{{ state.desc }}</el-text> -->
                 </el-col>
-                <el-col :span="20">
-                    <el-button v-for="(ep, index) in state.epList" class="ep-item" @click="switchEp(ep)">{{ index + 1 }}</el-button>
+            </el-row>
+            <el-row justify="start">
+                <el-col :span="24">
+                    <div class="ep-list">
+                        <div class="ep-item" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
+                            <img :src="ep.cover"/>
+                            <el-text line-clamp="2" class="ep-title">
+                                {{ ep.title }}
+                            </el-text>
+                        </div>    
+                    </div>
                 </el-col>
             </el-row>
         </div>
@@ -303,10 +324,36 @@ onUnmounted(() => {
     font-size: 26px !important;
 }
 
+.bv-title {
+    font-size: 26px !important;
+    line-height: 28px;
+}
+
+.bv-desc {
+    margin-left: 8px !important;
+}
+
+.ep-list  {
+    margin-top: 4px;
+    display: flex;
+    width: 1100px;
+    height: 140px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
 .ep-item {
     margin-bottom: 5px;
     margin-left: 0 !important;
     margin-right: 5px;
+    width: 150px;
+    height: 100px;
+    display: inline-block;
+}
+
+.ep-item > img {
+    width: 150px;
+    height: 85px;
 }
 
 .danmu-container {
