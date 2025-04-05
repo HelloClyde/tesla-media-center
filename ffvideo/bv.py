@@ -158,15 +158,15 @@ def add_bv_route(app):
             'dm': list(map(lambda x: x.__dict__, dms))
         })
     
-    def return_bv_stream(bvid):
+    def return_bv_stream(bvid, cid):
         global ffmpeg_jobs
         v = video.Video(bvid=bvid)
         v_detail = sync(v.get_detail())
-        download_url_data = sync(v.get_download_url(0))
+        download_url_data = sync(v.get_download_url(cid=cid))
         duration = download_url_data['timelength']
-        output_video_path = f'/tmp/bv_output_{bvid}.flv'
+        output_video_path = f'/tmp/bv_output_{bvid}_{cid}.flv'
         
-        if ffmpeg_jobs.bv == bvid:
+        if ffmpeg_jobs.bv == bvid + '_' + cid:
             pass
         else:
             # stop pre jobs
@@ -181,8 +181,8 @@ def add_bv_route(app):
                 raise Exception(f'can not get video and audio stream by bvid:{bvid}')
             
             # create pipe file
-            input_video_pipe = f'/tmp/bv_video_{bvid}.m4s'
-            input_audio_pipe = f'/tmp/bv_audio_{bvid}.m4s'
+            input_video_pipe = f'/tmp/bv_video_{bvid}_{cid}.m4s'
+            input_audio_pipe = f'/tmp/bv_audio_{bvid}_{cid}.m4s'
             if os.path.exists(input_video_pipe):
                 os.remove(input_video_pipe)
             if os.path.exists(input_audio_pipe):
@@ -190,7 +190,7 @@ def add_bv_route(app):
             os.mkfifo(input_video_pipe)
             os.mkfifo(input_audio_pipe)
             
-            ffmpeg_jobs.bv = bvid
+            ffmpeg_jobs.bv = bvid + '_' + cid
             ffmpeg_jobs.stop_event.clear()
             ffmpeg_jobs.size_map = {}
             ffmpeg_jobs.tasks = [
@@ -322,13 +322,13 @@ def add_bv_route(app):
             'epList': epList
         })
     
-    @app.route('/api/bilibili/bv/<string:bvid>/info', methods=['GET'])    
-    def get_bilibili_bv_info_stream(bvid):
-        return return_bv_stream(bvid)
+    @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>/info', methods=['GET'])    
+    def get_bilibili_bv_info_stream(bvid, cid):
+        return return_bv_stream(bvid, cid)
 
-    @app.route('/api/bilibili/bv/<string:bvid>', methods=['GET'])
-    def get_bilibili_bv_chunk(bvid):
-        output_video_path = f'/tmp/bv_output_{bvid}.flv'
+    @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>', methods=['GET'])
+    def get_bilibili_bv_chunk(bvid, cid):
+        output_video_path = f'/tmp/bv_output_{bvid}_{cid}.flv'
         range_header = request.headers.get('range') # bytes=0-524287
         start, end = range_header.replace('bytes=', '').split('-')
         logger.info(f'get range, start:{start}, end:{end}')

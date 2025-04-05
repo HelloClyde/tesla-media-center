@@ -133,14 +133,15 @@ onMounted(() => {
                 console.log('ep_list', state.epList);
                 state.bvid = state.epList[0].bvid;
                 state.cid = state.epList[0].cid;
-                resolve(`/api/bilibili/bv/${state.bvid}`);
+                resolve(`/api/bilibili/bv/${state.bvid}/${state.cid}`);
             });
         }else if (props.type == 'bangumi_ss'){
             return get(`/api/bilibili/bangumi_ss/${props.id}`).then(data => {
                 state.epList = data;
                 console.log('ep_list', state.epList);
                 state.bvid = state.epList[0].bvid;
-                resolve(`/api/bilibili/bv/${state.bvid}`);
+                state.cid = state.epList[0].cid;
+                resolve(`/api/bilibili/bv/${state.bvid}/${state.cid}`);
             })
         }
     }).then(url => {
@@ -229,7 +230,8 @@ function switchDanmu(){
 function switchEp(ep: any){
     new Promise((resolve, reject) => {
         state.bvid = ep.bvid;
-        resolve(`/api/bilibili/bv/${ep.bvid}`);
+        state.cid = ep.cid;
+        resolve(`/api/bilibili/bv/${ep.bvid}/${ep.cid}`);
     }).then(url => {
         console.log('url', url);
         videoPlayer.stop();
