@@ -249,6 +249,8 @@ def add_bv_route(app):
                 # 'epid': ep.get_epid(),
                 'bvid': sync(ep.get_bvid()),
                 'cid': sync(ep.get_cid()),
+                'title': str(idx + 1),
+                'cover': None,
                 # 'aid': sync(ep.get_aid()),
                 # 'info': sync(ep.get_info())
             })
@@ -313,7 +315,7 @@ def add_bv_route(app):
                 'cid': page['cid'],
                 'title': page['part'],
                 'idx': page['page'],
-                'cover': page['first_frame']
+                'cover': page.get('first_frame')
             })
         
         return json_ok({

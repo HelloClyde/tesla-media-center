@@ -309,7 +309,7 @@ onUnmounted(() => {
                 <el-col :span="24">
                     <div class="ep-list">
                         <div class="ep-item" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
-                            <img :src="ep.cover"/>
+                            <img :src="ep.cover || 'https://i0.hdslb.com/bfs/static/studio/creativecenter-platform/img/article_empty.716e40d2.png'" :fit="'cover'" />
                             <el-text line-clamp="2" class="ep-title">
                                 {{ ep.title }}
                             </el-text>
