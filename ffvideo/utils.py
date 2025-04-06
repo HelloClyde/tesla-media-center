@@ -1,7 +1,9 @@
 from loguru import logger
 import requests
 from bilibili_api import HEADERS
-from flask import jsonify
+from flask import jsonify, session
+from functools import wraps
+
 
 def download_stream( url, pipe_path, headers=HEADERS, chunk_size=10240):
     try:
@@ -31,3 +33,12 @@ def json_fail(status='fail'):
         'status': status,
         'data': None
     })
+
+def login_check(f):
+    @wraps(f)  # 保留原始函数的名称和属性
+    def wrapper(*args, **kwargs):
+        if 'last_visit' not in session:
+            logger.error('need login')
+            return json_fail('need_login')
+        return f(*args, **kwargs)
+    return wrapper

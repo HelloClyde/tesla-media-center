@@ -7,7 +7,7 @@ import subprocess
 import time
 import threading
 from ffvideo import utils as futils
-from ffvideo.utils import json_ok, json_fail
+from ffvideo.utils import json_ok, json_fail, login_check
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
 from werkzeug.exceptions import ClientDisconnected
@@ -39,6 +39,7 @@ ffmpeg_jobs = FFMPEGJobs(**ffmpeg_jobs_dict)
 def add_bv_route(app):
 
     @app.route('/api/bilibili/rank', methods=['GET'])
+    @login_check
     def bl_rank():
         type = request.args.get('type', 'All') 
         logger.info(f'rank type:{type}')
@@ -46,42 +47,25 @@ def add_bv_route(app):
         return json_ok(resp)
 
     @app.route('/api/bilibili/hot', methods=['GET'])
+    @login_check
     def bl_hot():
         resp = sync(hot.get_hot_videos())
         return json_ok(resp)
 
     @app.route('/api/bilibili/home', methods=['GET'])
+    @login_check
     def bl_home():
         resp = sync(homepage.get_videos())
         return json_ok(resp)
 
     @app.route('/api/bilibili/search', methods=['GET'])
+    @login_check
     def bl_search():
         keyword = request.args.get('keyword') 
         page_no = request.args.get('pageNo', '1') 
         resp = sync(search.search(keyword, page_no))
         return json_ok(resp)
-    
-    def get_video_bitrate(video_path):
-        command = [FFMPEG_PATH, "-i", video_path]
-        
-        # 执行命令并捕获输出
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
-        
-        # FFmpeg的输出会在stderr中，但这里我们合并到了stdout，所以只检查stdout
-        output = result.stdout
-        # logger.debug(f'output:{output}')
-        
-        # 使用正则表达式查找比特率信息
-        # 匹配形如 "bitrate: 500 kb/s" 的字符串
-        bitrate_pattern = re.compile(r'bitrate:\s*(\d+)\skb/s')
-        match = bitrate_pattern.search(output)
-        
-        if match:
-            bitrate = match.group(1)
-            return bitrate
-        else:
-            return None
+
     
     def download_stream( url, pipe_path, headers=HEADERS, chunk_size=10240):
         global ffmpeg_jobs
@@ -151,6 +135,7 @@ def add_bv_route(app):
             
             
     @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
+    @login_check
     def get_bilibili_video_dm(bvid, seg):        
         v = video.Video(bvid=bvid)
         dms = sync(v.get_danmakus(0, from_seg=seg, to_seg=seg+1))
@@ -236,6 +221,7 @@ def add_bv_route(app):
         return response
     
     @app.route('/api/bilibili/bangumi_ss/<string:sid>', methods=['GET'])
+    @login_check
     def get_bilibili_bangumi_info(sid):
         bgm = bangumi.Bangumi(ssid=sid)
         ep_lst = sync(bgm.get_episodes())
@@ -257,54 +243,55 @@ def add_bv_route(app):
         return json_ok(ep_dict_lst)
     
     
-    @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>', methods=['GET'])
-    def get_bilibili_bangumi_chunk(sid, idx):
-        bgm = bangumi.Bangumi(ssid=sid)
-        ep_lst = sync(bgm.get_episodes())
-        logger.info(f'ep list:{ep_lst}')
-        bvid = sync(ep_lst[idx].get_bvid())
-        output_video_path = f'/tmp/bv_output_{bvid}.flv'
-        range_header = request.headers.get('range') # bytes=0-524287
-        start, end = range_header.replace('bytes=', '').split('-')
-        logger.info(f'get range, start:{start}, end:{end}')
+    # @app.route('/api/bilibili/bangumi_ss/<string:sid>/<int:idx>', methods=['GET'])
+    # def get_bilibili_bangumi_chunk(sid, idx):
+    #     bgm = bangumi.Bangumi(ssid=sid)
+    #     ep_lst = sync(bgm.get_episodes())
+    #     logger.info(f'ep list:{ep_lst}')
+    #     bvid = sync(ep_lst[idx].get_bvid())
+    #     output_video_path = f'/tmp/bv_output_{bvid}.flv'
+    #     range_header = request.headers.get('range') # bytes=0-524287
+    #     start, end = range_header.replace('bytes=', '').split('-')
+    #     logger.info(f'get range, start:{start}, end:{end}')
 
-        # 将 start 和 end 转换为整数
-        start = int(start)
-        end = int(end)
-        length = end - start + 1
+    #     # 将 start 和 end 转换为整数
+    #     start = int(start)
+    #     end = int(end)
+    #     length = end - start + 1
             
-        DONE_FILE = f'{output_video_path}.done'
-        CHECK_INTERVAL = 0.1  # 检查间隔（秒）
+    #     DONE_FILE = f'{output_video_path}.done'
+    #     CHECK_INTERVAL = 0.1  # 检查间隔（秒）
         
-        final_size = -1
-        # wait done or file size > end
-        # bitrate = get_video_bitrate(output_video_path)
-        # logger.info(f'bitrate:{bitrate} kb/s')
-        while True:
-            size = os.path.getsize(output_video_path)
-            if os.path.exists(DONE_FILE):
-                final_size = size
-                end = min(end, size - 1)
-                length = end - start + 1 if end > start else 0
-                break
-            if size >= end:
-                break
-            time.sleep(CHECK_INTERVAL)
+    #     final_size = -1
+    #     # wait done or file size > end
+    #     # bitrate = get_video_bitrate(output_video_path)
+    #     # logger.info(f'bitrate:{bitrate} kb/s')
+    #     while True:
+    #         size = os.path.getsize(output_video_path)
+    #         if os.path.exists(DONE_FILE):
+    #             final_size = size
+    #             end = min(end, size - 1)
+    #             length = end - start + 1 if end > start else 0
+    #             break
+    #         if size >= end:
+    #             break
+    #         time.sleep(CHECK_INTERVAL)
         
-        def generate():
-            with open(output_video_path, 'rb') as f:
-                f.seek(start)
-                chunk = f.read(length)
-                yield chunk
-        logger.info(f'final_size:{final_size}')
-        resp = Response(stream_with_context(generate()), mimetype='video/mp4', headers={
-            'BV-Content-Length': final_size, 
-            'Content-Length': length,
-            'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
-        })
-        return resp
+    #     def generate():
+    #         with open(output_video_path, 'rb') as f:
+    #             f.seek(start)
+    #             chunk = f.read(length)
+    #             yield chunk
+    #     logger.info(f'final_size:{final_size}')
+    #     resp = Response(stream_with_context(generate()), mimetype='video/mp4', headers={
+    #         'BV-Content-Length': final_size, 
+    #         'Content-Length': length,
+    #         'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
+    #     })
+    #     return resp
             
     @app.route('/api/bilibili/video/<string:bvid>', methods=['GET'])
+    @login_check
     def get_bilibili_video_info(bvid):
         v = video.Video(bvid=bvid)
         v_detail = sync(v.get_detail())
@@ -325,10 +312,12 @@ def add_bv_route(app):
         })
     
     @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>/info', methods=['GET'])    
+    @login_check
     def get_bilibili_bv_info_stream(bvid, cid):
         return return_bv_stream(bvid, cid)
 
     @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>', methods=['GET'])
+    @login_check
     def get_bilibili_bv_chunk(bvid, cid):
         output_video_path = f'/tmp/bv_output_{bvid}_{cid}.flv'
         range_header = request.headers.get('range') # bytes=0-524287
