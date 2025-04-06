@@ -11,6 +11,8 @@ def add_local_video_route(app):
     def video_list():
         prefix = get_config_by_key('video_path')
         path = request.args.get("path", "")
+        if path.startswith('/'):
+            path = path[1:]
         abs_path = os.path.normpath(os.path.join(prefix, path))
         
         # if not abs_path.startswith(prefix):
