@@ -1,21 +1,29 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { get } from '@/functions/requests'
-import VideoPlayer from '@/components/VideoPlayer.vue';
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
 import BvPlayer from '@/components/BvPlayer.vue';
+
+const searchInput = ref<any>(null);
 
 const state = reactive({
   videoConfig: null as any,
   homeVideoList: [] as any[],
   hotVideoList: [] as any[],
+  hotPage: 1,
+  hotPageSize: 20,
+  hotLoading: false,
+  hotFinished: false,
   rankVideoList: [] as any[],
   rankType: 'All',
   curTab: "homepage",
   searchText: '',
   searchVideoResult: [] as any[],
+  searchPage: 1,
+  searchPageSize: 20,
   searchLoading: false,
+  searchFinished: false,
 })
 
 
@@ -47,10 +55,59 @@ const rankTypes= [
 ]
 
 
-const loadHot = () => {
-  get('/api/bilibili/hot').then(data => {
-    state.hotVideoList = data.list;
+const loadHot = (append = false) => {
+  if (state.hotLoading || (append && state.hotFinished)) {
+    return;
+  }
+  state.hotLoading = true;
+  get(`/api/bilibili/hot?pn=${state.hotPage}&ps=${state.hotPageSize}`).then(data => {
+    const incomingList = data.list || [];
+    if (append) {
+      const mergedList = [...state.hotVideoList];
+      const seen = new Set(mergedList.map((video: any) => video.bvid || `${video.aid}-${video.title}`));
+      incomingList.forEach((video: any) => {
+        const key = video.bvid || `${video.aid}-${video.title}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          mergedList.push(video);
+        }
+      });
+      state.hotVideoList = mergedList;
+    } else {
+      state.hotVideoList = incomingList;
+    }
+    state.hotFinished = Boolean(data.no_more) || incomingList.length < state.hotPageSize;
+  }).finally(() => {
+    state.hotLoading = false;
   });
+}
+
+const resetAndLoadHot = () => {
+  state.hotPage = 1;
+  state.hotFinished = false;
+  state.hotVideoList = [];
+  loadHot(false);
+}
+
+const loadMoreHot = () => {
+  if (state.hotLoading || state.hotFinished) {
+    return;
+  }
+  state.hotPage += 1;
+  loadHot(true);
+}
+
+const onListScroll = (event: Event) => {
+  const target = event.target as HTMLElement;
+  const reachBottomThreshold = 220;
+  const remaining = target.scrollHeight - target.scrollTop - target.clientHeight;
+  if (remaining <= reachBottomThreshold) {
+    if (state.curTab === 'hot') {
+      loadMoreHot();
+    } else if (state.curTab === 'search') {
+      loadMoreSearch();
+    }
+  }
 }
 
 const loadHomeVideos = () => {
@@ -65,17 +122,50 @@ const loadRankVideos = () => {
   });
 }
 
-const searchByText = () => {
+const loadSearch = (append = false) => {
+  if (state.searchLoading || !state.searchText.trim() || (append && state.searchFinished)) {
+    return;
+  }
   state.searchLoading = true;
-  get(`/api/bilibili/search?pageNo=${1}&keyword=${state.searchText}`).then(data => {
-    console.log(data);
-    const allReuslt = data.result;
-    state.searchVideoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0].data;
-    console.log(state.searchVideoResult);
+  get(`/api/bilibili/search?pageNo=${state.searchPage}&keyword=${encodeURIComponent(state.searchText)}`).then(data => {
+    const allReuslt = data.result || [];
+    const videoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0];
+    const incomingList = videoResult?.data || [];
+    if (append) {
+      const mergedList = [...state.searchVideoResult];
+      const seen = new Set(mergedList.map((video: any) => video.bvid || `${video.aid}-${video.title}`));
+      incomingList.forEach((video: any) => {
+        const key = video.bvid || `${video.aid}-${video.title}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          mergedList.push(video);
+        }
+      });
+      state.searchVideoResult = mergedList;
+    } else {
+      state.searchVideoResult = incomingList;
+    }
+    state.searchFinished = incomingList.length < state.searchPageSize;
   }).finally(() => {
     state.searchLoading = false;
   })
+}
 
+const searchByText = () => {
+  searchInput.value?.blur?.();
+  searchInput.value?.input?.blur?.();
+  state.searchPage = 1;
+  state.searchFinished = false;
+  state.searchVideoResult = [];
+  loadSearch(false);
+}
+
+const loadMoreSearch = () => {
+  if (state.searchLoading || state.searchFinished || !state.searchText.trim()) {
+    return;
+  }
+  state.searchPage += 1;
+  loadSearch(true);
 }
 
 const tabChange = (name: string) => {
@@ -85,7 +175,9 @@ const tabChange = (name: string) => {
       loadHomeVideos();
       break;
     case 'hot':
-      loadHot();
+      if (state.hotVideoList.length === 0) {
+        resetAndLoadHot();
+      }
       break;
     case 'rank':
       loadRankVideos();
@@ -115,11 +207,10 @@ onMounted(() => {
 
 <template>
   <div v-if="state.videoConfig" class="video-view">
-    <!-- <VideoPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :video-config="state.videoConfig" /> -->
       <BvPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :id="state.videoConfig.id"/>
   </div>
 
-  <div class="bv-list">
+  <div class="bv-list" @scroll.passive="onListScroll">
     <el-tabs v-model="state.curTab" @tab-change="tabChange" class="tabs">
       <el-tab-pane label="首页" name="homepage">
         <el-space wrap>
@@ -127,9 +218,11 @@ onMounted(() => {
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="热门" name="hot">
-        <el-space wrap>
+        <el-space wrap v-loading="state.hotLoading">
           <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
+        <div v-if="state.hotLoading" class="hot-load-state">加载中...</div>
+        <div v-else-if="state.hotFinished && state.hotVideoList.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
 
       <el-tab-pane label="排行榜" name="rank">
@@ -141,7 +234,7 @@ onMounted(() => {
         </el-space>
       </el-tab-pane>
       <el-tab-pane label="搜索" name="search">
-        <el-input class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search"  @keyup.enter="searchByText">
+        <el-input ref="searchInput" class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search"  @keyup.enter="searchByText">
           <template #append>
             <el-button :icon="Search" @click="searchByText"/>
           </template>
@@ -149,6 +242,8 @@ onMounted(() => {
         <el-space wrap v-loading="state.searchLoading">
           <BiliCover v-for="video of state.searchVideoResult" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </el-space>
+        <div v-if="state.searchLoading" class="hot-load-state">加载中...</div>
+        <div v-else-if="state.searchFinished && state.searchVideoResult.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">关注</el-tab-pane>
       <el-tab-pane label="我的" name="my">我的</el-tab-pane>
@@ -197,5 +292,12 @@ onMounted(() => {
 
 .rank-type span{
   font-size: 22px !important;
+}
+
+.hot-load-state {
+  padding: 20px 0 28px;
+  text-align: center;
+  font-size: 22px;
+  color: #64748b;
 }
 </style>

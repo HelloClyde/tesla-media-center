@@ -80,7 +80,9 @@ def add_bv_route(app):
     @app.route('/api/bilibili/hot', methods=['GET'])
     @login_check
     def bl_hot():
-        resp = sync(hot.get_hot_videos())
+        pn = int(request.args.get('pn', '1'))
+        ps = int(request.args.get('ps', '20'))
+        resp = sync(hot.get_hot_videos(pn=pn, ps=ps))
         return json_ok(resp)
 
     @app.route('/api/bilibili/home', methods=['GET'])
