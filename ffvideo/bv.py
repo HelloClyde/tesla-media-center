@@ -36,6 +36,37 @@ ffmpeg_jobs_dict = {
 }
 ffmpeg_jobs = FFMPEGJobs(**ffmpeg_jobs_dict)
 
+
+def get_output_video_path(bvid, cid, start_ms=0):
+    if start_ms > 0:
+        return f'/tmp/bv_output_{bvid}_{cid}_{start_ms}.flv'
+    return f'/tmp/bv_output_{bvid}_{cid}.flv'
+
+
+def wait_for_output_file(output_video_path, timeout=30):
+    start_time = time.time()
+    while True:
+        if os.path.exists(output_video_path):
+            return True
+        if time.time() - start_time > timeout:
+            return False
+        time.sleep(0.1)
+
+
+def stop_current_jobs():
+    global ffmpeg_jobs
+    ffmpeg_jobs.stop_event.set()
+    for task in ffmpeg_jobs.tasks:
+        task.join()
+    ffmpeg_jobs.tasks = []
+
+
+def make_ffmpeg_headers():
+    header_lines = []
+    for key, value in HEADERS.items():
+        header_lines.append(f'{key}: {value}')
+    return '\r\n'.join(header_lines) + '\r\n'
+
 def add_bv_route(app):
 
     @app.route('/api/bilibili/rank', methods=['GET'])
@@ -132,6 +163,58 @@ def add_bv_route(app):
             logger.info(f'ret code:{return_code}, write done file')
         else:
             logger.warning(f'ffmpeg error exit, code:{return_code}')
+
+    def ffmpeg_seek_streams(video_url, audio_url, output_video_path, start_ms):
+        global ffmpeg_jobs
+
+        DONE_FILE = f'{output_video_path}.done'
+        if os.path.exists(DONE_FILE):
+            os.remove(DONE_FILE)
+        if os.path.exists(output_video_path):
+            os.remove(output_video_path)
+
+        start_sec = max(start_ms / 1000.0, 0)
+        ffmpeg_cmd = [
+            FFMPEG_PATH,
+            '-headers', make_ffmpeg_headers(),
+            '-ss', str(start_sec),
+            '-i', video_url,
+            '-headers', make_ffmpeg_headers(),
+            '-ss', str(start_sec),
+            '-i', audio_url,
+            '-c:v', 'libx264',
+            '-x264-params', 'keyint=30:scenecut=0',
+            '-c:a', 'copy',
+            '-f', 'flv',
+            output_video_path,
+            '-y'
+        ]
+
+        logger.info(f'cmd:{ffmpeg_cmd}')
+        process = subprocess.Popen(ffmpeg_cmd)
+
+        while True:
+            if ffmpeg_jobs.stop_event.is_set():
+                logger.info(f"terminate ffmpeg:{ffmpeg_cmd}")
+                process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.info(f"terminate timeout,kill")
+                    process.kill()
+
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        return_code = process.wait()
+        logger.info(f'ret code:{return_code}')
+        if return_code == 0:
+            with open(DONE_FILE, 'w') as f:
+                pass
+            logger.info(f'ret code:{return_code}, write done file')
+        else:
+            logger.warning(f'ffmpeg error exit, code:{return_code}')
             
             
     @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
@@ -143,46 +226,50 @@ def add_bv_route(app):
             'dm': list(map(lambda x: x.__dict__, dms))
         })
     
-    def return_bv_stream(bvid, cid):
+    def return_bv_stream(bvid, cid, start_ms=0):
         global ffmpeg_jobs
         v = video.Video(bvid=bvid)
         v_detail = sync(v.get_detail())
         download_url_data = sync(v.get_download_url(cid=cid))
         duration = download_url_data['timelength']
-        output_video_path = f'/tmp/bv_output_{bvid}_{cid}.flv'
+        output_video_path = get_output_video_path(bvid, cid, start_ms)
+        job_key = f'{bvid}_{cid}_{start_ms}'
         
-        if ffmpeg_jobs.bv == bvid + '_' + cid:
+        if ffmpeg_jobs.bv == job_key:
             pass
         else:
-            # stop pre jobs
-            ffmpeg_jobs.stop_event.set()
-            for task in ffmpeg_jobs.tasks:
-                task.join()
+            stop_current_jobs()
             
             # get bv stream
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
             streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
             if not detecter.check_video_and_audio_stream():
                 raise Exception(f'can not get video and audio stream by bvid:{bvid}')
-            
-            # create pipe file
-            input_video_pipe = f'/tmp/bv_video_{bvid}_{cid}.m4s'
-            input_audio_pipe = f'/tmp/bv_audio_{bvid}_{cid}.m4s'
-            if os.path.exists(input_video_pipe):
-                os.remove(input_video_pipe)
-            if os.path.exists(input_audio_pipe):
-                os.remove(input_audio_pipe)
-            os.mkfifo(input_video_pipe)
-            os.mkfifo(input_audio_pipe)
-            
-            ffmpeg_jobs.bv = bvid + '_' + cid
+
+            ffmpeg_jobs.bv = job_key
             ffmpeg_jobs.stop_event.clear()
             ffmpeg_jobs.size_map = {}
-            ffmpeg_jobs.tasks = [
-                threading.Thread(target=download_stream, args=(streams[0].url, input_video_pipe)),
-                threading.Thread(target=download_stream, args=(streams[1].url, input_audio_pipe)),
-                threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
-            ]
+            if start_ms > 0:
+                ffmpeg_jobs.tasks = [
+                    threading.Thread(
+                        target=ffmpeg_seek_streams,
+                        args=(streams[0].url, streams[1].url, output_video_path, start_ms)
+                    ),
+                ]
+            else:
+                input_video_pipe = f'/tmp/bv_video_{bvid}_{cid}.m4s'
+                input_audio_pipe = f'/tmp/bv_audio_{bvid}_{cid}.m4s'
+                if os.path.exists(input_video_pipe):
+                    os.remove(input_video_pipe)
+                if os.path.exists(input_audio_pipe):
+                    os.remove(input_audio_pipe)
+                os.mkfifo(input_video_pipe)
+                os.mkfifo(input_audio_pipe)
+                ffmpeg_jobs.tasks = [
+                    threading.Thread(target=download_stream, args=(streams[0].url, input_video_pipe)),
+                    threading.Thread(target=download_stream, args=(streams[1].url, input_audio_pipe)),
+                    threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
+                ]
             for task in ffmpeg_jobs.tasks:
                 task.start()
         
@@ -202,7 +289,7 @@ def add_bv_route(app):
             time.sleep(CHECK_INTERVAL)
         time.sleep(5)
         size = os.path.getsize(output_video_path)
-        merge_size = sum(ffmpeg_jobs.size_map.values())
+        merge_size = sum(ffmpeg_jobs.size_map.values()) if ffmpeg_jobs.size_map else size
         data = {
             "size": size,
             'merge_size': merge_size,
@@ -219,7 +306,7 @@ def add_bv_route(app):
         response.headers['BV-Duration'] = duration
         
         return response
-    
+
     @app.route('/api/bilibili/bangumi_ss/<string:sid>', methods=['GET'])
     @login_check
     def get_bilibili_bangumi_info(sid):
@@ -314,12 +401,14 @@ def add_bv_route(app):
     @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>/info', methods=['GET'])    
     @login_check
     def get_bilibili_bv_info_stream(bvid, cid):
-        return return_bv_stream(bvid, cid)
+        start_ms = int(request.args.get('start_ms', '0'))
+        return return_bv_stream(bvid, cid, start_ms)
 
     @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>', methods=['GET'])
     @login_check
     def get_bilibili_bv_chunk(bvid, cid):
-        output_video_path = f'/tmp/bv_output_{bvid}_{cid}.flv'
+        start_ms = int(request.args.get('start_ms', '0'))
+        output_video_path = get_output_video_path(bvid, cid, start_ms)
         range_header = request.headers.get('range') # bytes=0-524287
         start, end = range_header.replace('bytes=', '').split('-')
         logger.info(f'get range, start:{start}, end:{end}')
@@ -331,6 +420,11 @@ def add_bv_route(app):
             
         DONE_FILE = f'{output_video_path}.done'
         CHECK_INTERVAL = 0.1  # 检查间隔（秒）
+
+        if not os.path.exists(output_video_path):
+            return_bv_stream(bvid, cid, start_ms)
+        if not wait_for_output_file(output_video_path):
+            return json_fail('Video generation timeout'), 504
         
         final_size = -1
         # wait done or file size > end

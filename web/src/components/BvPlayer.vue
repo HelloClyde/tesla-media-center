@@ -5,10 +5,10 @@ import { ElMessage } from 'element-plus';
 import { generateSilentWav } from '@/functions/audioUtils';
 
 
-const playerCanvas = ref(null);
-const videoLoading = ref(null);
-const timeTrack = ref(null);
-const timeLabel = ref(null);
+const playerCanvas = ref<HTMLCanvasElement | null>(null);
+const videoLoading = ref<HTMLElement | null>(null);
+const timeTrack = ref<HTMLInputElement | null>(null);
+const timeLabel = ref<HTMLLabelElement | null>(null);
 
 let videoPlayer = shallowRef<any>(null);
 const waitHeaderLength = 512 * 1024 * 1;
@@ -47,6 +47,66 @@ function playOrPause() {
     //     state.isPlay = true;
     //     videoPlayer.resume()
     // }
+}
+
+function getStreamUrl(startMs = 0) {
+    const baseUrl = `/api/bilibili/bv/${state.bvid}/${state.cid}`;
+    if (startMs > 0) {
+        return `${baseUrl}?start_ms=${Math.floor(startMs)}`;
+    }
+    return baseUrl;
+}
+
+function clearDanmuScreen() {
+    const container = document.getElementById('danmu-container');
+    if (container) {
+        container.innerHTML = '';
+    }
+}
+
+function resetDanmuState(startSec = 0) {
+    state.dm_seg = Math.floor(startSec / (6 * 60));
+    state.dms = [];
+    state.processedDmKeys = new Set();
+    clearDanmuScreen();
+}
+
+function loadDanmuForCurrentPosition(startSec = 0) {
+    resetDanmuState(startSec);
+    return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`).then(data => {
+        state.dms = data.dm.filter((dm: any) => dm.dm_time >= startSec);
+    }).catch(() => {
+        state.dms = [];
+    });
+}
+
+function playCurrentVideo(startMs = 0) {
+    const streamUrl = getStreamUrl(startMs);
+    videoPlayer.stop();
+    videoPlayer.play(`stream://${streamUrl}`, playerCanvas.value, function (e: any) {
+        console.error(e);
+        console.error("play error " + e.error + " status " + e.status + ".");
+        if (e.error == 1) {
+            console.info("Finished.");
+        }
+    }, waitHeaderLength, true);
+    videoPlayer.streamBaseOffset = startMs / 1000;
+    videoPlayer.beginTimeOffset = startMs / 1000;
+    if (timeTrack.value) {
+        timeTrack.value.value = String(startMs);
+    }
+    if (timeLabel.value && videoPlayer.displayDuration) {
+        timeLabel.value.innerHTML = `${videoPlayer.formatTime(startMs / 1000)}/${videoPlayer.displayDuration}`;
+    }
+    state.isPlay = true;
+    return loadDanmuForCurrentPosition(startMs / 1000);
+}
+
+function seekVideo(ms: number) {
+    if (!state.bvid || !state.cid) {
+        return;
+    }
+    playCurrentVideo(ms);
 }
 
 interface VideoProps {
@@ -89,37 +149,6 @@ function popDanmu(t: number) {
     );
 }
 
-// function popDanmu(t: number) {
-//     // 创建一个新的数组用于存储需要移除的对象
-//     const toRemove: any[] = [];
-
-//     // 遍历原数组，找到所有 dm_time 小于 t 的对象
-//     for (let i = 0; i < state.dms.length; i++) {
-//         if (state.dms[i].dm_time < t) {
-//             toRemove.push(state.dms[i]); // 将符合条件的对象加入到移除列表
-//         }
-//     }
-    
-//     let showDanmu = toRemove;
-//     if (toRemove.length > 100){
-//         console.warn('弹幕数量大于100，截断');
-//         showDanmu = toRemove.slice(0, 100);
-//     }
-    
-//     for (const danmu of showDanmu){
-//         addDanmu(danmu.text, `#${danmu.color}`);
-//     }
-    
-
-//     // 使用 filter 方法创建一个新数组，过滤掉需要移除的对象
-//     if (toRemove.length > 0){
-//         state.dms = state.dms.filter((item: any) => !toRemove.includes(item));
-//     }
-    
-// }
-
-
-
 onMounted(() => {
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
@@ -146,41 +175,40 @@ onMounted(() => {
         }
     }).then(url => {
         console.log('url', url);
-        videoPlayer.play(`stream://${url}`, playerCanvas.value, function (e: any) {
-            console.error(e);
-            console.error("play error " + e.error + " status " + e.status + ".");
-            if (e.error == 1) {
-                console.info("Finished.");
-            }
-        }, waitHeaderLength, true);
-        
-        // 加载弹幕
-        state.dm_seg = 0;
-        return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`)
-    }).then(data => {
-        console.log('danmu', data);
-        state.dms = data.dm;
+        return playCurrentVideo(0);
+    }).then(() => {
+        if (timeTrack.value) {
+            timeTrack.value.oninput = (event: Event) => {
+                const target = event.target as HTMLInputElement;
+                if (timeLabel.value && videoPlayer.duration > 0) {
+                    timeLabel.value.innerHTML = `${videoPlayer.formatTime(Number(target.value) / 1000)}/${videoPlayer.displayDuration}`;
+                }
+            };
+            timeTrack.value.onchange = (event: Event) => {
+                const target = event.target as HTMLInputElement;
+                seekVideo(Number(target.value));
+            };
+        }
     })
     ;
     
     videoPlayer.setTimeCallback((t: number) => {
         popDanmu(t);
-        // const seg = t / (6 * 60);
         const seg = Math.floor(t / (6 * 60));
         if (state.dm_seg < seg){
             state.dm_seg = seg;
-            // 在加载新弹幕的请求中
             get(`/api/bilibili/bv/${state.bvid}/dm/${seg}`).then(data => {
                 const newDms = data.dm.filter((dm: any) => 
                     !state.processedDmKeys.has(getDmKey(dm))
                 );
                 state.dms = [...state.dms, ...newDms];
+            }).catch(() => {
+                // Ignore transient danmu failures; playback should continue.
             });
         }
     })
     state.isPlay = true;
 
-    // 生成1分钟静音音频
     const audio:any = document.getElementById("silentAudio");
     const base64SilentAudio = generateSilentWav(60);
     audio.src = 'data:audio/wav;base64,' + base64SilentAudio;
@@ -199,8 +227,8 @@ function addDanmu(danmuText: string, color='#fff') {
     const danmu = document.createElement('div');
     danmu.className = 'danmu';
     danmu.innerText = danmuText;
-    danmu.style.left = `${container.offsetWidth}px`; // 初始位置在右侧外部
-    danmu.style.top = `${Math.random() * (container.offsetHeight * 2 / 3 - 20)}px`; // 随机高度
+    danmu.style.left = `${container.offsetWidth}px`;
+    danmu.style.top = `${Math.random() * (container.offsetHeight * 2 / 3 - 20)}px`;
     danmu.style.color = color
 
     container.appendChild(danmu);
@@ -210,14 +238,20 @@ function addDanmu(danmuText: string, color='#fff') {
 
 function moveDanmu(elem: any, container: any) {
     let pos = parseInt(elem.style.left);
-    const id = setInterval(frame, 50); // 每5ms移动一次
+    const id = setInterval(frame, 50);
 
     function frame() {
-        if (pos < -elem.offsetWidth) { // 如果完全离开左侧
+        if (!elem || !elem.parentNode || !container.contains(elem)) {
             clearInterval(id);
-            elem.parentNode.removeChild(elem); // 删除元素
+            return;
+        }
+        if (pos < -elem.offsetWidth) {
+            clearInterval(id);
+            if (elem.parentNode) {
+                elem.parentNode.removeChild(elem);
+            }
         } else {
-            pos -= 5; // 向左移动
+            pos -= 5;
             elem.style.left = `${pos}px`;
         }
     }
@@ -228,30 +262,9 @@ function switchDanmu(){
 }
 
 function switchEp(ep: any){
-    new Promise((resolve, reject) => {
-        state.bvid = ep.bvid;
-        state.cid = ep.cid;
-        resolve(`/api/bilibili/bv/${ep.bvid}/${ep.cid}`);
-    }).then(url => {
-        console.log('url', url);
-        videoPlayer.stop();
-        videoPlayer.play(`stream://${url}`, playerCanvas.value, function (e: any) {
-            console.error(e);
-            console.error("play error " + e.error + " status " + e.status + ".");
-            if (e.error == 1) {
-                console.info("Finished.");
-            }
-        }, waitHeaderLength, true);
-        
-        // 加载弹幕
-        state.dm_seg = 0;
-        return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`)
-    }).then(data => {
-        console.log('danmu', data);
-        state.dms = data.dm;
-    })
-    ;
-    
+    state.bvid = ep.bvid;
+    state.cid = ep.cid;
+    playCurrentVideo(0);
 }
 
 onUnmounted(() => {
@@ -302,7 +315,6 @@ onUnmounted(() => {
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
                     <el-text class="bv-title" size="large">{{ state.title }}</el-text>
-                    <!-- <el-text class="bv-desc" truncated size="small">{{ state.desc }}</el-text> -->
                 </el-col>
             </el-row>
             <el-row justify="start">
