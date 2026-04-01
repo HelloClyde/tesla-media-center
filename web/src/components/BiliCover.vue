@@ -109,6 +109,9 @@ function formatTime(seconds: number | string): string {
 .video-card {
   width: 350px;
   height: 322px;
+  border: 1px solid var(--color-border) !important;
+  background: var(--color-card-gradient) !important;
+  box-shadow: 0 18px 34px var(--color-shadow);
 }
 
 .video-card .el-card__body {
@@ -128,17 +131,19 @@ function formatTime(seconds: number | string): string {
   height: 75px;
   width: 100%;
   font-size: 24px !important;
+  color: var(--color-heading) !important;
 }
 
 .video-author {
   font-size: 20px !important;
+  color: var(--color-text-soft) !important;
 }
 
 .video-duration {
     font-size: 20px !important;
     position: absolute;
     right: 10px;
-    color: #fff;
+    color: var(--color-text-contrast);
 }
 
 .video-card .el-card__header {

@@ -7,9 +7,22 @@ import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import Vconsole from 'vconsole'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import './assets/main.css'
 const vConsole = new Vconsole();
+
+const syncTheme = (isDark: boolean) => {
+  const root = document.documentElement;
+  root.dataset.theme = isDark ? 'dark' : 'light';
+  root.classList.toggle('dark', isDark);
+};
+
+const darkModeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+syncTheme(darkModeMedia.matches);
+darkModeMedia.addEventListener('change', (event) => {
+  syncTheme(event.matches);
+});
 
 const app = createApp(App);
 

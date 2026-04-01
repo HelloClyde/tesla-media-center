@@ -125,7 +125,8 @@ onUnmounted(() => {
     position: absolute;
     top: 0px;
     z-index: 99999;
-    background: #fff;
+    color: var(--color-text);
+    background: var(--color-surface-strong);
 }
 
 .videoCtl {

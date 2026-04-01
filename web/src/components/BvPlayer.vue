@@ -416,7 +416,7 @@ onUnmounted(() => {
     border-radius: 14px;
     padding: 6px;
     box-sizing: border-box;
-    background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+    background: var(--color-card-gradient);
     border: 1px solid rgba(15, 23, 42, 0.08);
     box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
     transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
@@ -437,9 +437,9 @@ onUnmounted(() => {
 }
 
 .ep-item-active {
-    background: linear-gradient(180deg, #ffffff 0%, #eef6ff 100%);
-    border-color: rgba(36, 99, 235, 0.22);
-    box-shadow: 0 18px 34px rgba(37, 99, 235, 0.16);
+    background: linear-gradient(180deg, var(--color-surface-strong) 0%, var(--color-accent-soft) 100%);
+    border-color: var(--color-border-hover);
+    box-shadow: 0 18px 34px var(--color-shadow);
     transform: translateY(-3px);
 }
 
@@ -493,7 +493,8 @@ onUnmounted(() => {
     position: absolute;
     top: 0px;
     /* z-index: 1000; */
-    background: #fff;
+    color: var(--color-text);
+    background: var(--color-surface-strong);
 }
 
 .videoCtl {

@@ -323,7 +323,10 @@ onUnmounted(() => {
 }
 
 .float-controller>.icon {
-    background-color: #ffff;
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    box-shadow: 0 14px 30px var(--color-shadow);
     border-radius: 30px;
     font-size: 40px;
     width: 60px;
@@ -342,7 +345,10 @@ onUnmounted(() => {
 }
 
 .suggest {
-    background-color: #ffffff;
+    background-color: var(--color-surface-strong);
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+    box-shadow: 0 14px 30px var(--color-shadow);
     padding-left: 10px;
     border-radius: 0 0 10px 10px;
     width: 400px;
@@ -351,7 +357,7 @@ onUnmounted(() => {
 }
 
 .suggest-item {
-    border-bottom: solid 1px #cccccc;
+    border-bottom: solid 1px var(--color-border);
     padding-bottom: 5px;
     padding-top: 5px;
 }
@@ -359,6 +365,6 @@ onUnmounted(() => {
 .suggest-item-desc {
     font-size: 13px;
     margin-left: 10px;
-    color: #856767;
+    color: var(--color-text-soft);
 }
 </style>

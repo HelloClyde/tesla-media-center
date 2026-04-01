@@ -75,13 +75,13 @@ onMounted(() => {
 <style scoped>
 .icon-svg {
   width: 100%;
-  filter: drop-shadow(1000px 0 0 rgb(80, 77, 77));
+  filter: drop-shadow(1000px 0 0 var(--color-text-soft));
   transform: translate(-1000px);
 }
 
 .menu-item-active .icon-svg
 {
-  filter: drop-shadow(1000px 0 0 #10aeff);
+  filter: drop-shadow(1000px 0 0 var(--color-accent));
   transform: translate(-1000px);
 }
 
@@ -92,7 +92,9 @@ onMounted(() => {
   bottom: 0;
   left: 0;
   position: fixed;
-  border-right: 1px solid #eee;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+  backdrop-filter: blur(18px);
 }
 
 .menu-bottom {
@@ -113,11 +115,11 @@ onMounted(() => {
   height: 80px;
   line-height: 80px;
   text-align: center;
-  color: #504d4d;
+  color: var(--color-text-soft);
 }
 
 .menu-item-active {
-  color: #10aeff;
+  color: var(--color-accent);
 }
 
 .main-view {
@@ -125,6 +127,7 @@ onMounted(() => {
   width: 1100px;
   height: 899px;
   overflow: auto;
+  color: var(--color-text);
 }
 
 nav {

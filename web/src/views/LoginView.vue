@@ -50,7 +50,10 @@ onMounted(() => {
 
 <style>
 .login-form {
-  background: #fff;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  box-shadow: 0 24px 48px var(--color-shadow);
+  backdrop-filter: blur(14px);
   padding: 20px;
   border-radius: 10px;
   position: relative;
