@@ -40,6 +40,7 @@ function Player() {
     this.yLength            = 0;
     this.uvLength           = 0;
     this.beginTimeOffset    = 0;
+    this.streamBaseOffset   = 0;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -419,6 +420,7 @@ Player.prototype.stop = function () {
     this.yLength            = 0;
     this.uvLength           = 0;
     this.beginTimeOffset    = 0;
+    this.streamBaseOffset   = 0;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -718,6 +720,16 @@ Player.prototype.onOpenDecoder = function (objData) {
         this.logger.logInfo("Decoder ready now.");
         this.startDecoding();
     } else {
+        if (this.isStream) {
+            this.decoderState = decoderStateIdle;
+            this.streamReceivedLen = this.fileInfo ? this.fileInfo.offset : this.streamReceivedLen;
+            this.waitHeaderLength = Math.min(
+                this.streamReceivedLen + this.fileInfo.chunkSize,
+                4 * 1024 * 1024
+            );
+            this.logger.logInfo("Open decoder failed in stream mode, retry with waitHeaderLength " + this.waitHeaderLength + ".");
+            return;
+        }
         this.reportPlayError(objData.e);
     }
 };
@@ -862,7 +874,7 @@ Player.prototype.displayAudioFrame = function (frame) {
 
     if (this.isStream && this.firstAudioFrame) {
         this.firstAudioFrame = false;
-        this.beginTimeOffset = frame.s;
+        this.beginTimeOffset = this.streamBaseOffset + frame.s;
     }
 
     this.pcmPlayer.play(new Uint8Array(frame.d));
@@ -1016,12 +1028,18 @@ Player.prototype.displayLoop = function() {
 Player.prototype.startBuffering = function () {
     this.buffering = true;
     this.showLoading();
+    if (this.isStream) {
+        return;
+    }
     this.pause();
 }
 
 Player.prototype.stopBuffering = function () {
     this.buffering = false;
     this.hideLoading();
+    if (this.isStream) {
+        return;
+    }
     this.resume();
 }
 
@@ -1238,6 +1256,7 @@ Player.prototype.registerVisibilityEvent = function (cb) {
 }
 
 Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
+    this.streamReceivedLen += length;
     if (this.streamReceivedLen >= this.waitHeaderLength) {
         this.logger.logInfo("Opening decoder.");
         this.decoderState = decoderStateInitializing;
@@ -1245,8 +1264,6 @@ Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
             t: kOpenDecoderReq
         };
         this.decodeWorker.postMessage(req);
-    } else {
-        this.streamReceivedLen += length;
     }
 };
 
@@ -1259,8 +1276,16 @@ Player.prototype.requestStream = function (url) {
         var status = 0;
         var reported = false;
 
+        var infoUrl = url;
+        var queryIndex = url.indexOf('?');
+        if (queryIndex >= 0) {
+            infoUrl = url.slice(0, queryIndex) + '/info' + url.slice(queryIndex);
+        } else {
+            infoUrl = url + '/info';
+        }
+
         var xhr = new XMLHttpRequest();
-        xhr.open('get', url + '/info', true);
+        xhr.open('get', infoUrl, true);
         xhr.onreadystatechange = () => {
             var len = xhr.getResponseHeader("BV-Content-Length");
             var dur = xhr.getResponseHeader('BV-Duration');
