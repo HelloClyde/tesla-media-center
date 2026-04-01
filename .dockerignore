@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+node_modules/
+web/node_modules/
+web/dist/
+docker_build/build.sh
+shot/
+

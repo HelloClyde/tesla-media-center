@@ -82,6 +82,24 @@ docker run -it -p 8080:8080 -v ./config.json:/root/tesla-media-center/config.jso
 ```
 其中./config.json是自己的config配置文件; ./video是自己的本地视频目录文件夹
 
+### GitHub Actions 自动构建镜像
+仓库已配置 GitHub Actions，在以下场景会自动构建并推送 Docker 镜像到 GitHub Container Registry:
+1. push 到 `master`
+2. 推送 `v*` tag
+3. 手动触发 `workflow_dispatch`
+
+镜像地址格式:
+```text
+ghcr.io/helloclyde/tesla-media-center:latest
+ghcr.io/helloclyde/tesla-media-center:master
+ghcr.io/helloclyde/tesla-media-center:sha-<commit>
+```
+
+拉取示例:
+```bash
+docker pull ghcr.io/helloclyde/tesla-media-center:latest
+```
+
 config.json配置文件内容如下：
 ```json
 {

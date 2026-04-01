@@ -1,18 +1,28 @@
+FROM node:20-bookworm-slim AS web-builder
+
+WORKDIR /build/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
 FROM python:3.10-slim
 
 EXPOSE 8080
 
-# Keeps Python from generating .pyc files in the container
 ENV PYTHONDONTWRITEBYTECODE=1
-
-# Turns off buffering for easier container logging
 ENV PYTHONUNBUFFERED=1
 
-# Install pip requirements
-COPY ./requirement.txt /root/tesla-media-center/
-RUN python -m pip install --no-cache-dir --upgrade -r /root/tesla-media-center/requirement.txt -i https://mirrors.aliyun.com/pypi/simple/
-COPY . /root/tesla-media-center/
-
 WORKDIR /root/tesla-media-center
+
+COPY requirement.txt ./
+RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt
+
+COPY *.py ./
+COPY ffvideo ./ffvideo
+COPY config.json ./config.json
+COPY video ./video
+COPY web/public ./web/public
+COPY --from=web-builder /build/web/dist ./web/dist
 
 CMD ["python", "/root/tesla-media-center/flask_app.py"]
