@@ -557,8 +557,13 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
     var self = this;
 
     console.log('data', data, data.byteLength);
+    if (newSize > 0) {
+        this.fileInfo.size = Number(newSize);
+    }
+
     if (data.byteLength <= 0){
         self.logger.logError("Reach file end.");
+        this.decoderState = decoderStateFinished;
         self.stopDownloadTimer();
         return;
     }
@@ -569,11 +574,6 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
 
     if (seq != this.downloadSeqNo) {
         return;  // Old data.
-    }
-
-    if (newSize > 0 && newSize != this.fileInfo.size){
-        // console.log('update file size', newSize, 'this.duration', this.duration);
-        // this.fileInfo.size = newSize;
     }
 
     if (this.playerState == playerStatePausing) {
@@ -592,7 +592,7 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
         }
     }
 
-    var len = end - start + 1;
+    var len = data.byteLength;
     this.fileInfo.offset += len;
 
     var objData = {
@@ -605,6 +605,11 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
     console.log('this.decoderState', this.decoderState);
     if (this.decoderState == decoderStateIdle) {
         this.onStreamDataUnderDecoderIdle(len);
+    }
+
+    if (this.fileInfo.offset >= this.fileInfo.size) {
+        this.decoderState = decoderStateFinished;
+        this.stopDownloadTimer();
     }
     
 }
@@ -1012,7 +1017,7 @@ Player.prototype.displayLoop = function() {
         }
     }
 
-    if (this.bufferFrame.length == 0) {
+    if (this.frameBuffer.length == 0) {
         if (this.decoderState == decoderStateFinished) {
             this.reportPlayError(1, 0, "Finished");
             this.stop();
@@ -1132,14 +1137,19 @@ Player.prototype.stopTrackTimer = function () {
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
+        var maxPlayTime = this.duration > 0 ? this.duration / 1000 : 0;
+        if (maxPlayTime > 0 && currentPlayTime > maxPlayTime) {
+            currentPlayTime = maxPlayTime;
+        }
         if (this.timeCallback){
             this.timeCallback(currentPlayTime);
         }
-        if (!this.isStream && currentPlayTime * 1000 > this.duration){
+        if (maxPlayTime > 0 && currentPlayTime * 1000 >= this.duration && this.decoderState == decoderStateFinished){
             this.stop();
             if (this.finishCallback){
                 this.finishCallback();
             }
+            return;
         }
         if (this.timeTrack) {
             this.timeTrack.value = 1000 * currentPlayTime;

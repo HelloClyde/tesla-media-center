@@ -153,5 +153,5 @@ home_page_iframe是主页展示的url
 
 7. 启动web服务
 ```
-python main.py
+python flask_app.py
 ```

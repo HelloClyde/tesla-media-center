@@ -23,6 +23,7 @@ const state = reactive({
     isAutoContinue: true,
     showScreen: true,
     dms: [] as any[],
+    loadedDmKeys: new Set() as Set<string>,
     processedDmKeys: new Set() as Set<string>,
     dm_seg: 0,
     dmSwitch: true,
@@ -34,6 +35,10 @@ const state = reactive({
 })
 
 const getDmKey = (dm: any) => dm.id_str;
+
+const currentEpIndex = computed(() => {
+    return state.epList.findIndex((ep: any) => ep.bvid === state.bvid && String(ep.cid) === String(state.cid));
+});
 
 function playOrPause() {
     // const currentState = videoPlayer.getState();
@@ -67,6 +72,7 @@ function clearDanmuScreen() {
 function resetDanmuState(startSec = 0) {
     state.dm_seg = Math.floor(startSec / (6 * 60));
     state.dms = [];
+    state.loadedDmKeys = new Set();
     state.processedDmKeys = new Set();
     clearDanmuScreen();
 }
@@ -74,7 +80,11 @@ function resetDanmuState(startSec = 0) {
 function loadDanmuForCurrentPosition(startSec = 0) {
     resetDanmuState(startSec);
     return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`).then(data => {
-        state.dms = data.dm.filter((dm: any) => dm.dm_time >= startSec);
+        const initialDms = data.dm.filter((dm: any) => dm.dm_time >= startSec);
+        state.dms = initialDms;
+        initialDms.forEach((dm: any) => {
+            state.loadedDmKeys.add(getDmKey(dm));
+        });
     }).catch(() => {
         state.dms = [];
     });
@@ -107,6 +117,16 @@ function seekVideo(ms: number) {
         return;
     }
     playCurrentVideo(ms);
+}
+
+function playNextEp() {
+    const nextEp = state.epList[currentEpIndex.value + 1];
+    if (!nextEp) {
+        return;
+    }
+
+    ElMessage.info(`自动播放下一集:${nextEp.title}`);
+    switchEp(nextEp);
 }
 
 interface VideoProps {
@@ -147,11 +167,21 @@ function popDanmu(t: number) {
     state.dms = state.dms.filter(dm => 
         !newProcessedKeys.has(getDmKey(dm))
     );
+
+    newProcessedKeys.forEach(key => {
+        state.loadedDmKeys.delete(key);
+    });
 }
 
 onMounted(() => {
     videoPlayer = new Player();
     videoPlayer.setLoadingDiv(videoLoading.value);
+    videoPlayer.setFinishCallback(() => {
+        state.isPlay = false;
+        if (state.isAutoContinue) {
+            playNextEp();
+        }
+    });
 
     new Promise((resolve, reject) => {
         if (props.type == 'bv'){
@@ -198,9 +228,13 @@ onMounted(() => {
         if (state.dm_seg < seg){
             state.dm_seg = seg;
             get(`/api/bilibili/bv/${state.bvid}/dm/${seg}`).then(data => {
-                const newDms = data.dm.filter((dm: any) => 
-                    !state.processedDmKeys.has(getDmKey(dm))
-                );
+                const newDms = data.dm.filter((dm: any) => {
+                    const key = getDmKey(dm);
+                    return !state.processedDmKeys.has(key) && !state.loadedDmKeys.has(key);
+                });
+                newDms.forEach((dm: any) => {
+                    state.loadedDmKeys.add(getDmKey(dm));
+                });
                 state.dms = [...state.dms, ...newDms];
             }).catch(() => {
                 // Ignore transient danmu failures; playback should continue.
@@ -267,6 +301,10 @@ function switchEp(ep: any){
     playCurrentVideo(0);
 }
 
+function isCurrentEp(ep: any) {
+    return ep.bvid === state.bvid && String(ep.cid) === String(state.cid);
+}
+
 onUnmounted(() => {
     videoPlayer.stop();
 })
@@ -306,6 +344,8 @@ onUnmounted(() => {
             </div>
             <div>
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
+                <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
+                    inactive-text="单播" />
                 <audio id="silentAudio" loop controls style="height: 28px;display: none;">
                     <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
                 </audio>
@@ -320,9 +360,9 @@ onUnmounted(() => {
             <el-row justify="start">
                 <el-col :span="24">
                     <div class="ep-list">
-                        <div class="ep-item" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
+                        <div class="ep-item" :class="{ 'ep-item-active': isCurrentEp(ep) }" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
                             <img :src="ep.cover || 'https://i0.hdslb.com/bfs/static/studio/creativecenter-platform/img/article_empty.716e40d2.png'" :fit="'cover'" />
-                            <el-text line-clamp="2" class="ep-title">
+                            <el-text line-clamp="2" class="ep-title" :class="{ 'ep-title-active': isCurrentEp(ep) }">
                                 {{ ep.title }}
                             </el-text>
                         </div>    
@@ -347,27 +387,78 @@ onUnmounted(() => {
     margin-left: 8px !important;
 }
 
+.long-video-switch {
+    font-size: 14px;
+    line-height: 24px;
+    height: 40px;
+    margin-left: 10px;
+    margin-right: 10px;
+}
+
 .ep-list  {
     margin-top: 4px;
     display: flex;
     width: 1100px;
-    height: 140px;
+    height: 164px;
     overflow-x: auto;
     scrollbar-width: none;
+    padding: 6px 0 10px;
 }
 
 .ep-item {
     margin-bottom: 5px;
     margin-left: 0 !important;
-    margin-right: 5px;
+    margin-right: 10px;
     width: 150px;
-    height: 100px;
+    min-width: 150px;
+    height: 134px;
     display: inline-block;
+    border-radius: 14px;
+    padding: 6px;
+    box-sizing: border-box;
+    background: linear-gradient(180deg, #ffffff 0%, #f6f8fb 100%);
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+    transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+    cursor: pointer;
 }
 
 .ep-item > img {
-    width: 150px;
+    width: 138px;
     height: 85px;
+    border-radius: 10px;
+    display: block;
+    object-fit: cover;
+}
+
+.ep-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 30px rgba(15, 23, 42, 0.1);
+}
+
+.ep-item-active {
+    background: linear-gradient(180deg, #ffffff 0%, #eef6ff 100%);
+    border-color: rgba(36, 99, 235, 0.22);
+    box-shadow: 0 18px 34px rgba(37, 99, 235, 0.16);
+    transform: translateY(-3px);
+}
+
+.ep-item-active > img {
+    border-radius: 10px;
+}
+
+.ep-title {
+    display: block;
+    margin-top: 8px;
+    min-height: 36px;
+    line-height: 18px;
+    color: #475569;
+    transition: color 160ms ease;
+}
+
+.ep-title-active {
+    color: #0f172a !important;
+    font-weight: 700;
 }
 
 .danmu-container {
