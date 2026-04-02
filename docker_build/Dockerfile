@@ -20,7 +20,6 @@ RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt
 
 COPY *.py ./
 COPY ffvideo ./ffvideo
-COPY config.json ./config.json
 COPY video ./video
 COPY web/public ./web/public
 COPY --from=web-builder /build/web/dist ./web/dist
