@@ -74,11 +74,25 @@ function Player() {
     this.fetchController    = null;
     this.streamPauseParam   = null;
     this.logger             = new Logger("Player");
+    this.finishNotified     = false;
     this.initDownloadWorker();
     this.initDecodeWorker();
     this.finishCallback     = null;
     this.timeCallback       = null;
 }
+
+Player.prototype.resetWorkers = function () {
+    if (this.downloadWorker) {
+        this.downloadWorker.terminate();
+        this.downloadWorker = null;
+    }
+    if (this.decodeWorker) {
+        this.decodeWorker.terminate();
+        this.decodeWorker = null;
+    }
+    this.initDownloadWorker();
+    this.initDecodeWorker();
+};
 
 Player.prototype.initDownloadWorker = function () {
     var self = this;
@@ -144,6 +158,7 @@ Player.prototype.initDecodeWorker = function () {
 Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream) {
     this.logger.logInfo("Play " + url + ".");
     console.log('waitHeaderLength', waitHeaderLength);
+    this.finishNotified = false;
 
     var ret = {
         e: 0,
@@ -430,6 +445,8 @@ Player.prototype.stop = function () {
     this.firstAudioFrame    = true;
     this.urgent             = false;
     this.seekReceivedLen    = 0;
+    this.downloadSeqNo      = 0;
+    this.finishNotified     = false;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -444,23 +461,25 @@ Player.prototype.stop = function () {
         this.timeLabel.innerHTML = this.formatTime(0) + "/" + this.displayDuration;
     }
 
-    this.logger.logInfo("Closing decoder.");
-    this.decodeWorker.postMessage({
-        t: kCloseDecoderReq
-    });
-
-
-    this.logger.logInfo("Uniniting decoder.");
-    this.decodeWorker.postMessage({
-        t: kUninitDecoderReq
-    });
-
     if (this.fetchController) {
         this.fetchController.abort();
         this.fetchController = null;
     }
 
+    this.resetWorkers();
+
     return ret;
+};
+
+Player.prototype.notifyFinish = function () {
+    if (this.finishNotified) {
+        return;
+    }
+    this.finishNotified = true;
+    this.stop();
+    if (this.finishCallback){
+        this.finishCallback();
+    }
 };
 
 Player.prototype.seekTo = function(ms) {
@@ -605,11 +624,6 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
     console.log('this.decoderState', this.decoderState);
     if (this.decoderState == decoderStateIdle) {
         this.onStreamDataUnderDecoderIdle(len);
-    }
-
-    if (this.fileInfo.offset >= this.fileInfo.size) {
-        this.decoderState = decoderStateFinished;
-        this.stopDownloadTimer();
     }
     
 }
@@ -1020,10 +1034,7 @@ Player.prototype.displayLoop = function() {
     if (this.frameBuffer.length == 0) {
         if (this.decoderState == decoderStateFinished) {
             this.reportPlayError(1, 0, "Finished");
-            this.stop();
-            if (this.finishCallback){
-                this.finishCallback();
-            }
+            this.notifyFinish();
         } else {
             this.startBuffering();
         }
@@ -1144,11 +1155,12 @@ Player.prototype.updateTrackTime = function () {
         if (this.timeCallback){
             this.timeCallback(currentPlayTime);
         }
-        if (maxPlayTime > 0 && currentPlayTime * 1000 >= this.duration && this.decoderState == decoderStateFinished){
-            this.stop();
-            if (this.finishCallback){
-                this.finishCallback();
-            }
+        if (this.isStream && maxPlayTime > 0 && currentPlayTime >= maxPlayTime) {
+            this.notifyFinish();
+            return;
+        }
+        if (!this.isStream && maxPlayTime > 0 && currentPlayTime * 1000 >= this.duration && this.decoderState == decoderStateFinished){
+            this.notifyFinish();
             return;
         }
         if (this.timeTrack) {

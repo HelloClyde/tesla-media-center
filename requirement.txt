@@ -1,6 +1,7 @@
 Flask
 loguru
 bilibili-api-python==17.1.0
+brotlicffi
 cryptography
 imageio-ffmpeg
 requests

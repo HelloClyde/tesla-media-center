@@ -11,7 +11,7 @@ const timeTrack = ref<HTMLInputElement | null>(null);
 const timeLabel = ref<HTMLLabelElement | null>(null);
 
 let videoPlayer = shallowRef<any>(null);
-const waitHeaderLength = 512 * 1024 * 1;
+const waitHeaderLength = 512 * 1024;
 
 const state = reactive({
     curFiles: [] as any[],
