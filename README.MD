@@ -171,12 +171,16 @@ docker run -it \
 ghcr.io/helloclyde/tesla-media-center:latest
 ghcr.io/helloclyde/tesla-media-center:master
 ghcr.io/helloclyde/tesla-media-center:sha-<commit>
+registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:latest
+registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:master
+registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:sha-<commit>
 ```
 
 拉取示例：
 
 ```bash
 docker pull ghcr.io/helloclyde/tesla-media-center:latest
+docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:latest
 ```
 
 ## 配置说明
@@ -261,6 +265,24 @@ python flask_app.py
 1. push 到 `master`
 2. 推送 `v*` tag
 3. 手动触发 `workflow_dispatch`
+
+同时支持在配置好阿里云 ACR 凭据后，同步推送到阿里云镜像仓库。
+
+需要在 GitHub 仓库 Secrets 中配置：
+
+1. `ALIYUN_REGISTRY`
+2. `ALIYUN_REGISTRY_NAMESPACE`
+3. `ALIYUN_REGISTRY_USERNAME`
+4. `ALIYUN_REGISTRY_PASSWORD`
+
+示例：
+
+```text
+ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
+ALIYUN_REGISTRY_NAMESPACE=helloclyde
+```
+
+如果以上 4 个 secrets 未配置，workflow 仍会继续推送到 GHCR，只是不会推送到阿里云 ACR。
 
 ## 已知限制
 
