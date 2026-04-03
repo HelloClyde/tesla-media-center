@@ -45,6 +45,7 @@ qr_login_lock = threading.Lock()
 
 DEFAULT_BILIBILI_CACHE_DIR = '/tmp/tesla-media-center/bilibili-cache'
 DEFAULT_BILIBILI_CACHE_SIZE_MB = 2048
+BILIBILI_DEFAULT_MAX_QUALITY = '_720P'
 BILIBILI_CREDENTIAL_CONFIG_KEYS = {
     'sessdata': 'bilibili_sessdata',
     'bili_jct': 'bilibili_bili_jct',
@@ -58,6 +59,13 @@ def get_bilibili_cache_dir():
     cache_dir = get_config_by_key('bilibili_cache_dir', DEFAULT_BILIBILI_CACHE_DIR)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
+
+
+def get_bilibili_max_quality():
+    quality_name = get_config_by_key('bilibili_max_quality', BILIBILI_DEFAULT_MAX_QUALITY)
+    if not isinstance(quality_name, str):
+        quality_name = BILIBILI_DEFAULT_MAX_QUALITY
+    return getattr(video.VideoQuality, quality_name, video.VideoQuality._720P)
 
 
 def get_bilibili_credential():
@@ -717,7 +725,10 @@ def add_bv_route(app):
             
             # get bv stream
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-            streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
+            streams = detecter.detect_best_streams(
+                video_max_quality=get_bilibili_max_quality(),
+                codecs=[video.VideoCodecs.AVC],
+            )
             if not detecter.check_video_and_audio_stream():
                 raise Exception(f'can not get video and audio stream by bvid:{bvid}')
 
@@ -806,7 +817,10 @@ def add_bv_route(app):
             stop_current_jobs()
 
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-            streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
+            streams = detecter.detect_best_streams(
+                video_max_quality=get_bilibili_max_quality(),
+                codecs=[video.VideoCodecs.AVC],
+            )
 
             ffmpeg_jobs.bv = job_key
             ffmpeg_jobs.stop_event.clear()

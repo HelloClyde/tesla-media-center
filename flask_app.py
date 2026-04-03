@@ -52,6 +52,7 @@ def update_config():
         'home_page_iframe',
         'bilibili_cache_dir',
         'bilibili_cache_size_mb',
+        'bilibili_max_quality',
     }
 
     updated = {}

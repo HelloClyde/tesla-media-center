@@ -34,6 +34,7 @@ const state = reactive({
     },
     mapConfig: {
         amapKey: '',
+        bilibiliMaxQuality: '_720P',
     },
     cacheForm: {
         maxSizeMb: 2048,
@@ -126,8 +127,12 @@ function saveBilibiliCacheSettings() {
     }, '保存缓存配置失败').then((data) => {
         state.bilibiliCache = data;
         state.cacheForm.maxSizeMb = data.maxSizeMb;
-        const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
-        ElMessage.success(deletedSizeMb > 0 ? `缓存上限已保存，并回收了 ${deletedSizeMb} MB` : '缓存上限已保存');
+        return post('/api/config', {
+            bilibili_max_quality: state.mapConfig.bilibiliMaxQuality,
+        }, '保存分辨率配置失败').then(() => {
+            const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
+            ElMessage.success(deletedSizeMb > 0 ? `B站设置已保存，并回收了 ${deletedSizeMb} MB` : 'B站设置已保存');
+        });
     }).finally(() => {
         state.cacheLoading = false;
     });
@@ -149,6 +154,7 @@ function refreshMapConfig() {
     state.mapLoading = true;
     get('/api/config', '读取配置失败').then((data) => {
         state.mapConfig.amapKey = data.amap_key || '';
+        state.mapConfig.bilibiliMaxQuality = data.bilibili_max_quality || '_720P';
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -158,8 +164,9 @@ function saveMapConfig() {
     state.mapLoading = true;
     post('/api/config', {
         amap_key: state.mapConfig.amapKey.trim(),
+        bilibili_max_quality: state.mapConfig.bilibiliMaxQuality,
     }, '保存高德 Key 失败').then(() => {
-        ElMessage.success('高德 Key 已保存');
+        ElMessage.success('地图与 B 站取流配置已保存');
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -231,6 +238,18 @@ onMounted(() => {
                                 <el-input-number v-model="state.cacheForm.maxSizeMb" :min="256" :step="256" :max="102400" />
                                 <span class="unit">MB</span>
                             </div>
+                        </div>
+                        <div class="setting-input">
+                            <span class="setting-label">最高分辨率</span>
+                            <el-select v-model="state.mapConfig.bilibiliMaxQuality" placeholder="选择最高分辨率" style="width: 220px">
+                                <el-option label="360P" value="_360P" />
+                                <el-option label="480P" value="_480P" />
+                                <el-option label="720P" value="_720P" />
+                                <el-option label="1080P" value="_1080P" />
+                                <el-option label="1080P 高码率" value="_1080P_PLUS" />
+                                <el-option label="1080P 60帧" value="_1080P_60" />
+                                <el-option label="4K" value="_4K" />
+                            </el-select>
                         </div>
                         <div class="button-row">
                             <el-button type="primary" round @click="saveBilibiliCacheSettings">保存设置</el-button>
