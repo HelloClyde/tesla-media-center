@@ -6,6 +6,7 @@ import VideoPlayerViewVue from '@/views/apps/VideoPlayerView.vue';
 import LoginViewVue from '@/views/LoginView.vue';
 import AppViewVue from '@/views/AppView.vue';
 import BilibiliVue from '@/views/apps/Bilibili.vue';
+import TeslaView from '@/views/apps/TeslaView.vue';
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -39,6 +40,11 @@ const router = createRouter({
           path: 'bilibili',
           name: 'bilibili',
           component: BilibiliVue
+        },
+        {
+          path: 'tesla',
+          name: 'tesla',
+          component: TeslaView
         },
         {
           path: 'about',

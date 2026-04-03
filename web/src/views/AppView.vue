@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { House, Position, Headset, VideoPlay, SwitchFilled, InfoFilled, Setting, Switch, Film, Compass, Monitor, MapLocation } from '@element-plus/icons-vue';
+import { House, Position, Headset, VideoPlay, SwitchFilled, InfoFilled, Setting, Switch, Film, Monitor, MapLocation } from '@element-plus/icons-vue';
 import { onMounted, reactive, watch } from 'vue';
 import { RouterView,useRouter, useRoute } from 'vue-router';
 import { tsUnknownKeyword } from '@babel/types';
@@ -19,6 +19,7 @@ const state = reactive({
   menuTopItems: [{icon: House, route:'/apps/home'}],
   menuItems: [
     {icon: MapLocation, route: '/apps/nav'},
+    {icon: '/icon/TESLA_LOGO.svg', route: '/apps/tesla'},
     // {icon: Headset, route: 'music'},
     {icon: '/icon/BILIBILI_LOGO.svg', route: '/apps/bilibili'},
     {icon: VideoPlay, route: '/apps/video'},
@@ -54,7 +55,7 @@ onMounted(() => {
         </div>
         <div class="menu-bottom">
           <div class="menu-item" :class="{ 'menu-item-active': item.route == state.curMenu }" v-for="item of state.menuItems">
-            <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'">
+            <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili' }">
               <img :src="item.icon" class="icon-svg" />
             </el-icon>
             <el-icon @click="routeTo(item.route)" v-else>
@@ -92,6 +93,10 @@ onMounted(() => {
 {
   filter: drop-shadow(1000px 0 0 var(--color-accent));
   transform: translate(-1000px);
+}
+
+.menu-icon-bilibili {
+  transform: translateY(-10px);
 }
 
 

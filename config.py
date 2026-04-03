@@ -20,6 +20,9 @@ def get_all_config_safe():
     config.pop('bilibili_buvid3', None)
     config.pop('bilibili_dedeuserid', None)
     config.pop('bilibili_ac_time_value', None)
+    config.pop('tesla_client_secret', None)
+    config.pop('tesla_access_token', None)
+    config.pop('tesla_refresh_token', None)
     return config
 
 def put_config_by_key(key, value):

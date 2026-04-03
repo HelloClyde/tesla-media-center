@@ -1,6 +1,6 @@
 # Tesla Media Center
 
-面向车机浏览器的开源多媒体中心，提供本地视频播放、B 站在线播放、弹幕显示和高德地图路线规划等能力。
+面向车机浏览器的开源多媒体中心，提供本地视频播放、B 站在线播放、Tesla 状态与轨迹查看，以及高德地图路线规划等能力。
 
 ## 目录
 
@@ -24,10 +24,11 @@
 3. 热门和搜索结果滚动到底自动加载更多
 4. 播放结束按 EP 列表自动续播下一集
 5. B 站缓存目录管理、容量限制、自动回收、一键清理
-6. 本地 h264 / h265 的 mp4 / flv 点播播放
-7. 高德地图目的地搜索与路线规划
-8. 跟随系统的白天 / 夜间两套主题
-9. GitHub Actions 自动构建并推送 Docker 镜像到 GHCR
+6. Tesla Owner API 接入、车辆状态、轨迹、行程和设置分 Tab 展示
+7. 本地 h264 / h265 的 mp4 / flv 点播播放
+8. 高德地图目的地搜索与路线规划
+9. 跟随系统的白天 / 夜间两套主题
+10. GitHub Actions 自动构建并推送 Docker 镜像到 GHCR
 
 ## 截图
 
@@ -85,6 +86,25 @@ ffmpeg -i test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r
 原始播放器项目：
 https://github.com/sonysuqin/WasmVideoPlayer
 
+### Tesla 状态与轨迹
+
+当前实现兼容 `TeslaMate` 个人用户常见的 `Owner API` token 使用方式。
+
+已支持：
+
+1. `Access Token / Refresh Token` 保存与回填
+2. 授权状态检查
+3. 车辆状态、轨迹、行程、设置 4 个 Tab
+4. 车辆列表读取与最近状态展示
+5. 轨迹地图展示
+6. 手动同步与自动轮询同步
+
+说明：
+
+1. 当前仍以个人自用的 `Owner API` 链路为主，不是 Tesla 官方 Fleet Telemetry 全栈接入
+2. 中国区 token 需要按对应区域生成
+3. 如果能读到账户但读不到车辆，通常是 token 类型或权限范围不匹配
+
 ### 高德地图
 
 高德地图 API Key 需要自行申请：
@@ -134,7 +154,10 @@ cd ..
   "amap_key": "xxx",
   "password": "abc",
   "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
-  "bilibili_cache_size_mb": 2048
+  "bilibili_cache_size_mb": 2048,
+  "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
+  "tesla_auth_base_url": "https://auth.tesla.com",
+  "tesla_token_path": "/oauth2/v3"
 }
 ```
 
@@ -161,7 +184,7 @@ docker run -it \
   ghcr.io/helloclyde/tesla-media-center:latest
 ```
 
-建议将 `./tmc-cache` 单独挂载出来，避免容器层磁盘被 B 站缓存占满。
+建议将 `./tmc-cache` 单独挂载出来，避免容器层磁盘被 B 站缓存和 Tesla 轨迹缓存占满。
 
 ## Docker 部署
 
@@ -194,7 +217,10 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
   "amap_key": "xxx",
   "password": "abc",
   "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
-  "bilibili_cache_size_mb": 2048
+  "bilibili_cache_size_mb": 2048,
+  "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
+  "tesla_auth_base_url": "https://auth.tesla.com",
+  "tesla_token_path": "/oauth2/v3"
 }
 ```
 
@@ -206,12 +232,15 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 4. `password`：Web 登录密码
 5. `bilibili_cache_dir`：B 站转码缓存目录，默认可直接使用
 6. `bilibili_cache_size_mb`：B 站缓存上限，单位 MB
+7. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
+8. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
+9. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
 
 缓存说明：
 
 1. 服务端会在生成新缓存后自动回收旧缓存
-2. 前端“设置 / Debug”页可以直接查看缓存占用
-3. 前端“设置 / Debug”页可以修改缓存上限并一键清理缓存
+2. 前端 B 站“我的”页可以直接查看缓存占用
+3. 前端 B 站“我的”页可以修改缓存上限并一键清理缓存
 
 ## 开发环境
 

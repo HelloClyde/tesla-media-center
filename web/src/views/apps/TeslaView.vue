@@ -1,0 +1,703 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { ElMessage } from 'element-plus';
+import { get, post } from '@/functions/requests';
+import getAMap from '@/functions/amapConfig';
+
+const mapContainer = ref<HTMLElement | null>(null);
+
+let mapInstance: any = null;
+let polyline: any = null;
+let vehicleMarker: any = null;
+let autoSyncTimer: number | null = null;
+let gAMap: any = null;
+
+const state = reactive({
+  activeTab: 'status',
+  settings: {
+    mode: 'owner_api',
+    clientId: '',
+    apiBaseUrl: '',
+    authBaseUrl: '',
+    tokenPath: '',
+    accessToken: '',
+    refreshToken: '',
+    hasAccessToken: false,
+    hasRefreshToken: false,
+    dbPath: '',
+  },
+  status: {
+    configured: false,
+    authorized: false,
+    profile: null as any,
+    lastSyncAt: 0,
+  },
+  vehicles: [] as any[],
+  selectedVin: '',
+  latestSample: null as any,
+  trackPoints: [] as any[],
+  settingsLoading: false,
+  statusLoading: false,
+  syncLoading: false,
+  mapReady: false,
+  mapError: '',
+});
+
+const selectedVehicle = computed(() => {
+  return state.vehicles.find((item: any) => item.vin === state.selectedVin) || null;
+});
+
+const tripSummary = computed(() => {
+  const latest = state.latestSample || {};
+  return [
+    { label: '轨迹点数', value: String(state.trackPoints.length) },
+    { label: '当前车辆', value: selectedVehicle.value?.displayName || '-' },
+    { label: '当前状态', value: latest.vehicle_state || selectedVehicle.value?.state || '-' },
+    { label: '最近记录', value: formatTimestamp(latest.timestamp_ms) },
+  ];
+});
+
+const sampleCards = computed(() => {
+  const sample = state.latestSample || {};
+  return [
+    { label: '车速', value: sample.speed != null ? `${sample.speed} km/h` : '-' },
+    { label: '档位', value: sample.shift_state || '-' },
+    { label: '车内温度', value: sample.inside_temp != null ? `${sample.inside_temp}°C` : '-' },
+    { label: '车外温度', value: sample.outside_temp != null ? `${sample.outside_temp}°C` : '-' },
+    { label: '里程', value: sample.odometer != null ? String(sample.odometer) : '-' },
+    { label: '充电状态', value: sample.charging_state || '-' },
+    { label: '充电上限', value: sample.charge_limit_soc != null ? `${sample.charge_limit_soc}%` : '-' },
+    { label: '哨兵模式', value: sample.sentry_mode != null ? (sample.sentry_mode ? '开启' : '关闭') : '-' },
+    { label: '空调', value: sample.is_climate_on != null ? (sample.is_climate_on ? '开启' : '关闭') : '-' },
+  ];
+});
+
+function formatTimestamp(timestampMs?: number) {
+  if (!timestampMs) {
+    return '-';
+  }
+  const date = new Date(timestampMs);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
+}
+
+function loadSettings() {
+  state.settingsLoading = true;
+  return get('/api/tesla/settings', '读取 Tesla 配置失败').then((data) => {
+    state.settings.mode = data.mode || 'owner_api';
+    state.settings.clientId = data.clientId || '';
+    state.settings.apiBaseUrl = data.apiBaseUrl || '';
+    state.settings.authBaseUrl = data.authBaseUrl || '';
+    state.settings.tokenPath = data.tokenPath || '';
+    state.settings.accessToken = data.accessToken || '';
+    state.settings.refreshToken = data.refreshToken || '';
+    state.settings.hasAccessToken = Boolean(data.accessToken || data.hasAccessToken);
+    state.settings.hasRefreshToken = Boolean(data.refreshToken || data.hasRefreshToken);
+    state.settings.dbPath = data.dbPath || '';
+  }).finally(() => {
+    state.settingsLoading = false;
+  });
+}
+
+function saveSettings() {
+  state.settingsLoading = true;
+  post('/api/tesla/settings', {
+    mode: state.settings.mode,
+    clientId: state.settings.clientId.trim(),
+    apiBaseUrl: state.settings.apiBaseUrl.trim(),
+    authBaseUrl: state.settings.authBaseUrl.trim(),
+    tokenPath: state.settings.tokenPath.trim(),
+    accessToken: state.settings.accessToken.trim(),
+    refreshToken: state.settings.refreshToken.trim(),
+  }, '保存 Tesla 配置失败').then((data) => {
+    state.settings.mode = data.mode || 'owner_api';
+    state.settings.clientId = data.clientId || '';
+    state.settings.apiBaseUrl = data.apiBaseUrl || '';
+    state.settings.authBaseUrl = data.authBaseUrl || '';
+    state.settings.tokenPath = data.tokenPath || '';
+    state.settings.accessToken = data.accessToken || '';
+    state.settings.refreshToken = data.refreshToken || '';
+    state.settings.hasAccessToken = Boolean(data.accessToken || data.hasAccessToken);
+    state.settings.hasRefreshToken = Boolean(data.refreshToken || data.hasRefreshToken);
+    state.settings.dbPath = data.dbPath || '';
+    ElMessage.success('Tesla 配置已保存');
+  }).finally(() => {
+    state.settingsLoading = false;
+  });
+}
+
+function loadStatus() {
+  state.statusLoading = true;
+  return get('/api/tesla/auth/status', '读取 Tesla 授权状态失败').then((data) => {
+    state.status = data;
+  }).finally(() => {
+    state.statusLoading = false;
+  });
+}
+
+function loadVehicles() {
+  return get('/api/tesla/vehicles', '读取车辆列表失败').then((data) => {
+    state.vehicles = data || [];
+    if (!state.selectedVin && state.vehicles.length > 0) {
+      state.selectedVin = state.vehicles[0].vin;
+    }
+  });
+}
+
+function loadTrack() {
+  if (!state.selectedVin) {
+    state.trackPoints = [];
+    state.latestSample = null;
+    renderTrackOnMap();
+    return Promise.resolve();
+  }
+  return get(`/api/tesla/history/track?vin=${encodeURIComponent(state.selectedVin)}&limit=600`, '读取轨迹失败').then((data) => {
+    state.trackPoints = data.points || [];
+    state.latestSample = data.latest || null;
+    renderTrackOnMap();
+  });
+}
+
+function syncVehicles(showMessage = false) {
+  state.syncLoading = true;
+  return post('/api/tesla/sync', {
+    vin: state.selectedVin || undefined,
+  }, '同步 Tesla 数据失败').then(() => {
+    return Promise.all([loadStatus(), loadVehicles(), loadTrack()]).then(() => {
+      if (showMessage) {
+        ElMessage.success('Tesla 数据已同步');
+      }
+    });
+  }).finally(() => {
+    state.syncLoading = false;
+  });
+}
+
+function logoutTesla() {
+  post('/api/tesla/auth/logout', {}, '断开 Tesla 连接失败').then(() => {
+    state.status.authorized = false;
+    state.status.profile = null;
+    state.vehicles = [];
+    state.trackPoints = [];
+    state.latestSample = null;
+    renderTrackOnMap();
+    ElMessage.success('Tesla 已断开连接');
+  });
+}
+
+function initMap() {
+  getAMap().then((AMap) => {
+    gAMap = AMap;
+    if (!mapContainer.value) {
+      return;
+    }
+    mapInstance = new AMap.Map(mapContainer.value, {
+      zoom: 11,
+      center: [120.2169, 30.2783],
+      mapStyle: 'amap://styles/whitesmoke',
+      viewMode: '2D',
+    });
+    state.mapReady = true;
+    renderTrackOnMap();
+  }).catch((error) => {
+    console.error(error);
+    state.mapError = '高德地图初始化失败，请检查 Key 配置';
+  });
+}
+
+function renderTrackOnMap() {
+  if (!mapInstance || !gAMap) {
+    return;
+  }
+  if (polyline) {
+    mapInstance.remove(polyline);
+    polyline = null;
+  }
+  if (vehicleMarker) {
+    mapInstance.remove(vehicleMarker);
+    vehicleMarker = null;
+  }
+
+  const points = state.trackPoints
+    .filter((item: any) => item.longitude != null && item.latitude != null)
+    .map((item: any) => [item.longitude, item.latitude]);
+
+  if (points.length > 1) {
+    polyline = new gAMap.Polyline({
+      path: points,
+      strokeColor: '#409EFF',
+      strokeWeight: 6,
+      lineJoin: 'round',
+      lineCap: 'round',
+    });
+    mapInstance.add(polyline);
+  }
+
+  const latestPoint = points[points.length - 1];
+  if (latestPoint) {
+    vehicleMarker = new gAMap.Marker({
+      position: latestPoint,
+      title: selectedVehicle.value?.displayName || state.selectedVin,
+    });
+    mapInstance.add(vehicleMarker);
+    mapInstance.setFitView(vehicleMarker ? [vehicleMarker, polyline].filter(Boolean) : [polyline], false, [80, 80, 80, 80]);
+  }
+}
+
+onMounted(() => {
+  Promise.all([loadSettings(), loadStatus()]).then(() => {
+    if (state.status.authorized) {
+      return loadVehicles().then(() => loadTrack());
+    }
+  });
+  initMap();
+  autoSyncTimer = window.setInterval(() => {
+    if (state.status.authorized && !state.syncLoading) {
+      syncVehicles(false);
+    }
+  }, 30000);
+});
+
+onUnmounted(() => {
+  if (autoSyncTimer !== null) {
+    window.clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+});
+</script>
+
+<template>
+  <div class="tesla-page">
+    <section class="tesla-tabs-card">
+      <el-tabs v-model="state.activeTab" class="tesla-tabs">
+        <el-tab-pane label="车辆状态" name="status">
+          <section class="tesla-grid tesla-grid--content">
+            <article class="tesla-card">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">Vehicles</p>
+                  <h2>车辆与状态</h2>
+                </div>
+              </div>
+              <div class="vehicle-overview">
+                <div class="vehicle-main">
+                  <span class="vehicle-label">当前车辆</span>
+                  <el-select v-model="state.selectedVin" placeholder="选择车辆" class="vehicle-select" @change="loadTrack">
+                    <el-option v-for="vehicle of state.vehicles" :key="vehicle.vin" :label="`${vehicle.displayName} (${vehicle.vin})`" :value="vehicle.vin" />
+                  </el-select>
+                </div>
+                <div class="overview-pill">
+                  <span>状态</span>
+                  <strong>{{ state.latestSample?.vehicle_state || selectedVehicle?.state || '-' }}</strong>
+                </div>
+                <div class="overview-pill">
+                  <span>电量</span>
+                  <strong>{{ state.latestSample?.battery_level != null ? `${state.latestSample.battery_level}%` : '-' }}</strong>
+                </div>
+                <div class="overview-pill">
+                  <span>最近同步</span>
+                  <strong>{{ formatTimestamp(state.latestSample?.timestamp_ms || state.status.lastSyncAt * 1000) }}</strong>
+                </div>
+              </div>
+              <div class="state-grid">
+                <div v-for="item of sampleCards" :key="item.label" class="state-box">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ item.value }}</strong>
+                </div>
+              </div>
+            </article>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="轨迹" name="track">
+          <section class="tesla-grid tesla-grid--content">
+            <article class="tesla-card tesla-card--map">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">Track</p>
+                  <h2>轨迹</h2>
+                </div>
+                <div class="status-pill">{{ state.trackPoints.length }} 点</div>
+              </div>
+              <div v-if="state.mapError" class="map-empty">{{ state.mapError }}</div>
+              <div v-else ref="mapContainer" class="map-container"></div>
+            </article>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="行程" name="trip">
+          <section class="tesla-grid tesla-grid--content">
+            <article class="tesla-card">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">Trips</p>
+                  <h2>行程</h2>
+                </div>
+              </div>
+              <div class="state-grid">
+                <div v-for="item of tripSummary" :key="item.label" class="state-box">
+                  <span>{{ item.label }}</span>
+                  <strong>{{ item.value }}</strong>
+                </div>
+              </div>
+              <p class="helper-text">当前版本先基于已有轨迹和最近状态展示行程概要。后续如果接入 drive session 切分，这里再扩成完整行程列表。</p>
+            </article>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="设置" name="settings">
+          <section class="tesla-grid">
+            <article class="tesla-hero">
+              <div>
+                <p class="tesla-kicker">Tesla Fleet API</p>
+                <h1>Tesla 状态与轨迹</h1>
+                <p class="tesla-copy">当前是兼容 TeslaMate 个人用法的 Owner API 模式：手动填 access token / refresh token，后端定时拉车辆状态和轨迹。默认按 TeslaMate 文档的 China 配置工作。</p>
+              </div>
+              <div class="button-row">
+                <el-button round @click="loadStatus">刷新授权状态</el-button>
+                <el-button type="primary" round :loading="state.syncLoading" @click="syncVehicles(true)">立即同步</el-button>
+              </div>
+            </article>
+
+            <article class="tesla-card" v-loading="state.settingsLoading">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">Token</p>
+                  <h2>Tesla Token</h2>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field field-wide">
+                  <span>Access Token</span>
+                  <el-input v-model="state.settings.accessToken" type="textarea" :rows="3" :placeholder="state.settings.hasAccessToken ? '已配置，留空则不修改' : '粘贴 Tesla access token'" />
+                </div>
+                <div class="field field-wide">
+                  <span>Refresh Token</span>
+                  <el-input v-model="state.settings.refreshToken" type="textarea" :rows="3" :placeholder="state.settings.hasRefreshToken ? '已配置，留空则不修改' : '粘贴 Tesla refresh token'" />
+                </div>
+              </div>
+              <p class="helper-text">只需要填写 `Access Token` 和 `Refresh Token`。默认接口参数已经内置，并按 TeslaMate 文档的 China 配置工作；保存时会先校验 `Refresh Token`，已保存的 token 会直接回填到输入框里。</p>
+              <div class="button-row">
+                <el-button type="primary" round @click="saveSettings">保存配置</el-button>
+              </div>
+            </article>
+
+            <article class="tesla-card" v-loading="state.statusLoading">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">Account</p>
+                  <h2>授权状态</h2>
+                </div>
+                <div class="status-pill" :class="{ 'status-pill--ok': state.status.authorized }">
+                  {{ state.status.authorized ? '已连接' : '未连接' }}
+                </div>
+              </div>
+              <div class="meta-stack">
+                <div class="meta-line"><span>是否已配置</span><strong>{{ state.status.configured ? '是' : '否' }}</strong></div>
+                <div class="meta-line"><span>最近同步</span><strong>{{ formatTimestamp(state.status.lastSyncAt * 1000) }}</strong></div>
+                <div class="meta-line"><span>账户</span><strong>{{ state.status.profile?.email || '-' }}</strong></div>
+                <div class="meta-line"><span>名称</span><strong>{{ state.status.profile?.fullName || '-' }}</strong></div>
+              </div>
+              <div class="button-row">
+                <el-button type="danger" plain round :disabled="!state.status.authorized" @click="logoutTesla">断开连接</el-button>
+              </div>
+            </article>
+          </section>
+        </el-tab-pane>
+      </el-tabs>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+.tesla-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+}
+
+.tesla-hero,
+.tesla-card,
+.tesla-tabs-card {
+  border: 1px solid var(--color-border);
+  border-radius: 24px;
+  background: var(--color-surface);
+  box-shadow: 0 14px 30px var(--color-shadow);
+}
+
+.tesla-hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px;
+}
+
+.tesla-kicker {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-soft);
+}
+
+.tesla-hero h1,
+.card-head h2 {
+  margin: 0;
+  color: var(--color-heading);
+}
+
+.tesla-copy {
+  margin: 8px 0 0;
+  color: var(--color-text-soft);
+  max-width: 720px;
+}
+
+.tesla-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 18px;
+}
+
+.tesla-grid--content {
+  grid-template-columns: 1fr;
+}
+
+.tesla-card {
+  padding: 22px;
+}
+
+.tesla-tabs-card {
+  padding: 8px 18px 18px;
+}
+
+:deep(.tesla-tabs .el-tabs__header) {
+  margin: 0 0 12px;
+}
+
+:deep(.tesla-tabs .el-tabs__nav-wrap::after) {
+  display: none;
+}
+
+:deep(.tesla-tabs .el-tabs__item) {
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  color: var(--color-text-soft);
+}
+
+:deep(.tesla-tabs .el-tabs__item.is-active) {
+  color: var(--color-accent);
+}
+
+:deep(.tesla-tabs .el-tabs__active-bar) {
+  height: 3px;
+  border-radius: 999px;
+  background: var(--color-accent);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field-wide {
+  grid-column: 1 / -1;
+}
+
+.field span,
+.state-box span,
+.meta-line span {
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.vehicle-overview {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.5fr) repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.vehicle-main,
+.overview-pill {
+  min-height: 96px;
+  border-radius: 20px;
+  border: 1px solid var(--color-border);
+  background: linear-gradient(180deg, var(--color-panel-muted), transparent);
+}
+
+.vehicle-main {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 18px;
+}
+
+.vehicle-label {
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.vehicle-select {
+  width: 100%;
+}
+
+.overview-pill {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 18px;
+}
+
+.overview-pill span {
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.overview-pill strong {
+  color: var(--color-heading);
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.meta-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+}
+
+.meta-line code,
+.meta-line strong {
+  color: var(--color-heading);
+}
+
+.helper-text {
+  margin: 12px 0 0;
+  color: var(--color-text-soft);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.meta-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.status-pill {
+  min-width: 68px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--color-panel-muted);
+  color: var(--color-text-soft);
+  text-align: center;
+  font-weight: 600;
+}
+
+.status-pill--ok {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.state-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.state-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+}
+
+.state-box strong {
+  font-size: 18px;
+  color: var(--color-heading);
+}
+
+.tesla-card--map {
+  min-height: 560px;
+}
+
+.map-container,
+.map-empty {
+  width: 100%;
+  min-height: 500px;
+  border-radius: 18px;
+  overflow: hidden;
+  background: var(--color-panel-muted);
+}
+
+.map-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-soft);
+}
+
+@media (max-width: 1100px) {
+  .tesla-grid,
+  .tesla-grid--content,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .vehicle-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .state-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tesla-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 860px) {
+  .vehicle-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .state-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+</style>
