@@ -141,82 +141,93 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <!-- player -->
-    <div ref="videoWrapper" class="player">
-        <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
-        <div v-show="!state.showScreen" class="screenCap"></div>
-        <div class="video-float" @click="playOrPause">
-            <div class="loadEffect" id="loading" ref="videoLoading" style="display:none;">
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
-                <span></span>
+    <div class="local-video-page">
+        <div ref="videoWrapper" class="local-player-stage">
+            <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
+            <div v-show="!state.showScreen" class="screenCap"></div>
+            <div class="local-video-float" @click="playOrPause">
+                <div class="loadEffect" id="loading" ref="videoLoading" style="display:none;">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+                <div class="local-video-play-btn" v-if="!state.isPlay">
+                    <el-icon :size="100">
+                        <VideoPlay />
+                    </el-icon>
+                </div>
             </div>
-            <div class="video-play-btn" v-if="!state.isPlay">
-                <el-icon :size="100">
-                    <VideoPlay />
+        </div>
+        <div class="local-bottom-controller">
+            <div>
+                <input class="local-progress" id="timeTrack" ref="timeTrack" type="range" value="0">
+            </div>
+            <div class="local-controller-btn">
+                <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
+                <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频"
+                    inactive-text="短视频" />
+                <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
+                    inactive-text="单播" />
+                <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
+                    inactive-text="仅音频" />
+                <el-icon :size="35" class="right" @click="fullscreen">
+                    <FullScreen />
                 </el-icon>
+                <audio id="silentAudio" loop controls style="height: 28px;">
+                    <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
+                </audio>
             </div>
         </div>
-    </div>
-    <div class="buttom-controller">
-        <div>
-            <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
+        <div class="local-playlist">
+            <div class="local-playlist-grid">
+                <el-card class="local-playlist-item" @click="backLastFolder">
+                    <template #header>
+                        <div class="local-playlist-item-icon">
+                            <el-icon>
+                                <ArrowLeftBold />
+                            </el-icon>
+                        </div>
+                    </template>
+                    <el-text size="large" class="local-playlist-back">返回上一级</el-text>
+                </el-card>
+                <el-card v-for="item of state.curFiles" class="local-playlist-item" @click="fileAction(item)">
+                    <template #header>
+                        <div class="local-playlist-item-icon" :class="{ 'local-playlist-active': item === state.playFile }">
+                            <el-icon v-if="item.fileType == 'DIR'">
+                                <Folder />
+                            </el-icon>
+                            <el-icon v-else>
+                                <Film />
+                            </el-icon>
+                        </div>
+                    </template>
+                    <el-text line-clamp="2" size="large" :class="{ 'local-playlist-active': item === state.playFile }">
+                        {{ item.fileName }}
+                    </el-text>
+                </el-card>
+            </div>
         </div>
-        <div class="controller-btn">
-            <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
-            <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频"
-                inactive-text="短视频" />
-            <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
-                inactive-text="单播" />
-            <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
-                inactive-text="仅音频" />
-            <el-icon :size="35" class="right" @click="fullscreen">
-                <FullScreen />
-            </el-icon>
-            <audio id="silentAudio" loop controls style="height: 28px;">
-                <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
-            </audio>
-        </div>
-    </div>
-    <!-- video menu -->
-    <div class="playlist">
-        <el-space wrap>
-            <el-card class="playlist-item" @click="backLastFolder">
-                <template #header>
-                    <div class="playlist-item-icon">
-                        <el-icon>
-                            <ArrowLeftBold />
-                        </el-icon>
-                    </div>
-                </template>
-                <el-text size="large" class="playlist-back">返回上一级</el-text>
-            </el-card>
-            <el-card v-for="item of state.curFiles" class="playlist-item" @click="fileAction(item)">
-                <template #header>
-                    <div class="playlist-item-icon" :class="{ 'playlist-active': item === state.playFile }">
-                        <el-icon v-if="item.fileType == 'DIR'">
-                            <Folder />
-                        </el-icon>
-                        <el-icon v-else>
-                            <Film />
-                        </el-icon>
-                    </div>
-                </template>
-                <el-text line-clamp="2" size="large" :class="{ 'playlist-active': item === state.playFile }">
-                    {{ item.fileName }}
-                </el-text>
-            </el-card>
-        </el-space>
     </div>
 </template>
 
 
 <style>
+.local-video-page {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
+    background: var(--color-surface);
+}
+
 .screenCap {
     position: absolute;
     width: 100%;
@@ -238,88 +249,92 @@ onUnmounted(() => {
     margin-right: 20px;
 }
 
-.controller-btn {
+.local-controller-btn {
     font-size: 25px;
 }
 
-.progress {
-    width: 1100px;
+.local-progress {
+    width: 100%;
     height: 34px;
 }
 
-.video-float {
+.local-video-float {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    inset: 0;
 }
 
-.video-play-btn {
+.local-video-play-btn {
     position: absolute;
-    top: 258px;
-    left: 500px;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
     color: #808080;
 }
 
-.buttom-controller {
-    /* position: absolute; */
-    /* bottom: 0px; */
-    width: 1100px;
-    height: 80px;
+.local-bottom-controller {
+    width: 100%;
+    flex: 0 0 auto;
+    padding: 12px 16px 0;
+    box-sizing: border-box;
 }
 
-.player {
-    width: 1100px;
-    height: 623px;
-    /* position: absolute; */
-    /* bottom: 80px; */
+.local-player-stage {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    aspect-ratio: 1100 / 623;
+    background: #000;
+    overflow: hidden;
 }
 
-.player>canvas {
+.local-player-stage > canvas {
     width: 100%;
     height: 100%;
+    display: block;
     background-color: black;
 }
 
-.playlist {
-    height: 196px;
-    border-bottom: 3px solid #ccc;
+.local-playlist {
+    flex: 0 0 auto;
     overflow: auto;
-    padding: 0 0 0 30px;
+    padding: 12px 16px 16px;
+    box-sizing: border-box;
 }
 
-.playlist-active {
+.local-playlist-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 14px;
+    align-items: stretch;
+}
+
+.local-playlist-active {
     color: rgb(64, 158, 255) !important;
 }
 
-.playlist-back {
+.local-playlist-back {
     display: inline-block;
     text-align: center;
 }
 
-.playlist-item {
-    display: inline-block;
+.local-playlist-item {
     position: relative;
-    width: 200px;
-    height: 120px;
+    min-height: 120px;
 }
 
-.playlist-item .el-text {
+.local-playlist-item .el-text {
     width: 100%;
 }
 
-.playlist-item .el-card__header {
+.local-playlist-item .el-card__header {
     padding: 4px;
 }
 
-.playlist-item .el-card__body {
+.local-playlist-item .el-card__body {
     padding: 4px;
 }
 
-.playlist-item-icon {
-    /* width: 200px; */
-    /* height: 80px; */
+.local-playlist-item-icon {
     font-size: 50px;
     line-height: 50px;
     text-align: center;

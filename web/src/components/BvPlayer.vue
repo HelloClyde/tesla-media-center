@@ -313,14 +313,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="videoPlayView">
-        <div ref="videoWrapper" class="player">
+    <div class="bv-video-play-view">
+        <div ref="videoWrapper" class="bv-player-stage">
             <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
             <div v-show="!state.showScreen" class="screenCap"></div>
             <div id="danmu-container" class="danmu-container" v-show="state.dmSwitch">
                 <!-- 弹幕将动态添加到这里 -->
             </div>
-            <div class="video-float" @click="playOrPause">
+            <div class="bv-video-float" @click="playOrPause">
                 <div class="loadEffect" id="loading" ref="videoLoading" style="display:none;">
                     <span></span>
                     <span></span>
@@ -331,14 +331,14 @@ onUnmounted(() => {
                     <span></span>
                     <span></span>
                 </div>
-                <div class="video-play-btn" v-if="!state.isPlay">
+                <div class="bv-video-play-btn" v-if="!state.isPlay">
                     <el-icon :size="100">
                         <VideoPlay />
                     </el-icon>
                 </div>
             </div>
         </div>
-        <div class="buttom-controller">
+        <div class="bv-bottom-controller">
             <div>
                 <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
@@ -395,22 +395,66 @@ onUnmounted(() => {
     margin-right: 10px;
 }
 
+.bv-player-stage {
+    position: relative;
+    width: 100%;
+    max-width: 100%;
+    aspect-ratio: 1100 / 623;
+    background: #000;
+    overflow: hidden;
+}
+
+.bv-player-stage > canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #000;
+}
+
+.bv-video-float {
+    position: absolute;
+    inset: 0;
+}
+
+.bv-video-play-btn {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #808080;
+}
+
+.bv-bottom-controller {
+    width: 100%;
+    flex: 0 0 auto;
+    overflow: visible;
+    padding: 12px 16px 0;
+    box-sizing: border-box;
+}
+
+.progress {
+    width: 100%;
+    height: 34px;
+}
+
 .ep-list  {
     margin-top: 4px;
     display: flex;
-    width: 1100px;
+    width: 100%;
+    max-width: 100%;
     height: 164px;
     overflow-x: auto;
     scrollbar-width: none;
     padding: 6px 0 10px;
+    box-sizing: border-box;
 }
 
 .ep-item {
     margin-bottom: 5px;
     margin-left: 0 !important;
     margin-right: 10px;
-    width: 150px;
-    min-width: 150px;
+    width: clamp(140px, 16vw, 150px);
+    min-width: clamp(140px, 16vw, 150px);
     height: 134px;
     display: inline-block;
     border-radius: 14px;
@@ -424,7 +468,7 @@ onUnmounted(() => {
 }
 
 .ep-item > img {
-    width: 138px;
+    width: 100%;
     height: 85px;
     border-radius: 10px;
     display: block;
@@ -464,8 +508,7 @@ onUnmounted(() => {
 .danmu-container {
     border: 0px solid rgb(0, 0, 0);
     position: absolute;
-    width: 1100px;
-    height: 623px;
+    inset: 0;
     top: 0;
     overflow: hidden;
 }
@@ -483,16 +526,20 @@ onUnmounted(() => {
 }
 
 #videoWrapper {
-    width: 1100px;
-    height: 624px;
+    width: 100%;
+    height: 100%;
 }
 
-.videoPlayView {
-    width: 1100px;
-    height: 899px;
+.bv-video-play-view {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
     position: absolute;
-    top: 0px;
-    /* z-index: 1000; */
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+    overflow-y: auto;
     color: var(--color-text);
     background: var(--color-surface-strong);
 }
