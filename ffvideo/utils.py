@@ -28,10 +28,11 @@ def json_ok(data):
         'data': data,
     })
 
-def json_fail(status='fail'):
+def json_fail(status='fail', data=None, message=None):
     return jsonify({
         'status': status,
-        'data': None
+        'data': data,
+        'message': message,
     })
 
 def login_check(f):

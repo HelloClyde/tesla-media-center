@@ -14,11 +14,25 @@ export function get(url: string, errMsg = "请求错误"): Promise<any> {
                 } else if(resp.status == 'need_login'){
                     (window as any).$router.push('/login');
                 } else {
-                    ElMessage.error(errMsg);
-                    return Promise.reject(errMsg);
+                    const finalMsg = resp?.message || errMsg;
+                    ElMessage.error(finalMsg);
+                    return Promise.reject({ ...resp, __handled: true });
                 }
             }
             return Promise.resolve(response);
+        })
+        .catch((error) => {
+            if (error?.__handled) {
+                return Promise.reject(error);
+            }
+            const resp = error?.response?.data;
+            if (resp?.status === 'need_login') {
+                (window as any).$router.push('/login');
+                return Promise.reject(resp);
+            }
+            const finalMsg = resp?.message || errMsg;
+            ElMessage.error(finalMsg);
+            return Promise.reject(resp || error);
         })
 }
 
@@ -30,10 +44,20 @@ export function post(url: string, data: any, errMsg='请求错误'): Promise<any
                 if (resp.status == 'ok') {
                     return Promise.resolve(resp?.data);
                 } else {
-                    ElMessage.error(errMsg);
-                    return Promise.reject(errMsg);
+                    const finalMsg = resp?.message || errMsg;
+                    ElMessage.error(finalMsg);
+                    return Promise.reject({ ...resp, __handled: true });
                 }
             }
             return Promise.resolve(response);
+        })
+        .catch((error) => {
+            if (error?.__handled) {
+                return Promise.reject(error);
+            }
+            const resp = error?.response?.data;
+            const finalMsg = resp?.message || errMsg;
+            ElMessage.error(finalMsg);
+            return Promise.reject(resp || error);
         })
 }

@@ -28,6 +28,7 @@ const state = reactive({
     dm_seg: 0,
     dmSwitch: true,
     epList: [] as any[],
+    epid: null as string | null,
     bvid: null as string | null,
     cid: null as string | null,
     title: null as string | null,
@@ -37,7 +38,12 @@ const state = reactive({
 const getDmKey = (dm: any) => dm.id_str;
 
 const currentEpIndex = computed(() => {
-    return state.epList.findIndex((ep: any) => ep.bvid === state.bvid && String(ep.cid) === String(state.cid));
+    return state.epList.findIndex((ep: any) => {
+        if (props.type === 'bangumi_ss') {
+            return String(ep.epid) === String(state.epid);
+        }
+        return ep.bvid === state.bvid && String(ep.cid) === String(state.cid);
+    });
 });
 
 function playOrPause() {
@@ -55,7 +61,9 @@ function playOrPause() {
 }
 
 function getStreamUrl(startMs = 0) {
-    const baseUrl = `/api/bilibili/bv/${state.bvid}/${state.cid}`;
+    const baseUrl = props.type === 'bangumi_ss'
+        ? `/api/bilibili/bangumi_ep/${state.epid}/${state.cid}`
+        : `/api/bilibili/bv/${state.bvid}/${state.cid}`;
     if (startMs > 0) {
         return `${baseUrl}?start_ms=${Math.floor(startMs)}`;
     }
@@ -113,7 +121,7 @@ function playCurrentVideo(startMs = 0) {
 }
 
 function seekVideo(ms: number) {
-    if (!state.bvid || !state.cid) {
+    if ((!state.bvid && !state.epid) || !state.cid) {
         return;
     }
     playCurrentVideo(ms);
@@ -190,6 +198,7 @@ onMounted(() => {
                 state.title = data.title;
                 state.desc = data.desc;
                 console.log('ep_list', state.epList);
+                state.epid = null;
                 state.bvid = state.epList[0].bvid;
                 state.cid = state.epList[0].cid;
                 resolve(`/api/bilibili/bv/${state.bvid}/${state.cid}`);
@@ -198,9 +207,10 @@ onMounted(() => {
             return get(`/api/bilibili/bangumi_ss/${props.id}`).then(data => {
                 state.epList = data;
                 console.log('ep_list', state.epList);
+                state.epid = state.epList[0].epid;
                 state.bvid = state.epList[0].bvid;
                 state.cid = state.epList[0].cid;
-                resolve(`/api/bilibili/bv/${state.bvid}/${state.cid}`);
+                resolve(`/api/bilibili/bangumi_ep/${state.epid}/${state.cid}`);
             })
         }
     }).then(url => {
@@ -219,8 +229,11 @@ onMounted(() => {
                 seekVideo(Number(target.value));
             };
         }
-    })
-    ;
+    }).catch((error) => {
+        console.error('init bilibili player failed', error);
+        state.isPlay = false;
+        props.onClose?.();
+    });
     
     videoPlayer.setTimeCallback((t: number) => {
         popDanmu(t);
@@ -296,12 +309,16 @@ function switchDanmu(){
 }
 
 function switchEp(ep: any){
+    state.epid = ep.epid ?? null;
     state.bvid = ep.bvid;
     state.cid = ep.cid;
     playCurrentVideo(0);
 }
 
 function isCurrentEp(ep: any) {
+    if (props.type === 'bangumi_ss') {
+        return String(ep.epid) === String(state.epid);
+    }
     return ep.bvid === state.bvid && String(ep.cid) === String(state.cid);
 }
 

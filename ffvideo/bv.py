@@ -13,6 +13,8 @@ import os
 from werkzeug.exceptions import ClientDisconnected
 import re
 import shutil
+from bilibili_api.exceptions import ResponseCodeException
+from bilibili_api import utils as bilibili_utils
 
 ffplay_stop_event = threading.Event()
 
@@ -192,6 +194,47 @@ def make_ffmpeg_headers():
     for key, value in HEADERS.items():
         header_lines.append(f'{key}: {value}')
     return '\r\n'.join(header_lines) + '\r\n'
+
+
+def extract_bangumi_episode_items(payload):
+    episodes = []
+    seen_ids = set()
+
+    def add_episode_list(items):
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ep_id = item.get('id') or item.get('ep_id') or item.get('episode_id')
+            if ep_id in seen_ids:
+                continue
+            seen_ids.add(ep_id)
+            episodes.append(item)
+
+    def walk(node):
+        if isinstance(node, dict):
+            add_episode_list(node.get('episodes'))
+            main_section = node.get('main_section')
+            if isinstance(main_section, dict):
+                add_episode_list(main_section.get('episodes'))
+            for section_key in ('sections', 'section'):
+                sections = node.get(section_key)
+                if isinstance(sections, list):
+                    for section in sections:
+                        if isinstance(section, dict):
+                            add_episode_list(section.get('episodes'))
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                if isinstance(item, (dict, list)):
+                    walk(item)
+
+    walk(payload)
+    return episodes
+
 
 def add_bv_route(app):
     @app.route('/api/bilibili/cache', methods=['GET'])
@@ -375,6 +418,58 @@ def add_bv_route(app):
             logger.info(f'ret code:{return_code}, write done file')
         else:
             logger.warning(f'ffmpeg error exit, code:{return_code}')
+
+    def ffmpeg_single_stream(input_url, output_video_path, start_ms=0):
+        global ffmpeg_jobs
+
+        DONE_FILE = get_cache_done_path(output_video_path)
+        if os.path.exists(DONE_FILE):
+            os.remove(DONE_FILE)
+        if os.path.exists(output_video_path):
+            os.remove(output_video_path)
+
+        ffmpeg_cmd = [
+            FFMPEG_PATH,
+            '-headers', make_ffmpeg_headers(),
+        ]
+        if start_ms > 0:
+            ffmpeg_cmd.extend(['-ss', str(max(start_ms / 1000.0, 0))])
+        ffmpeg_cmd.extend([
+            '-i', input_url,
+            '-c:v', 'libx264',
+            '-x264-params', 'keyint=30:scenecut=0',
+            '-c:a', 'copy',
+            '-f', 'flv',
+            output_video_path,
+            '-y'
+        ])
+
+        logger.info(f'cmd:{ffmpeg_cmd}')
+        process = subprocess.Popen(ffmpeg_cmd)
+
+        while True:
+            if ffmpeg_jobs.stop_event.is_set():
+                logger.info(f"terminate ffmpeg:{ffmpeg_cmd}")
+                process.terminate()
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.info("terminate timeout,kill")
+                    process.kill()
+
+            if process.poll() is not None:
+                break
+            time.sleep(0.1)
+
+        return_code = process.wait()
+        logger.info(f'ret code:{return_code}')
+        if return_code == 0:
+            with open(DONE_FILE, 'w') as f:
+                pass
+            enforce_bilibili_cache_limit(exclude_paths={output_video_path, DONE_FILE})
+            logger.info(f'ret code:{return_code}, write done file')
+        else:
+            logger.warning(f'ffmpeg error exit, code:{return_code}')
             
             
     @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
@@ -469,25 +564,142 @@ def add_bv_route(app):
         
         return response
 
+    def return_bangumi_stream(epid, cid, start_ms=0, as_response=True):
+        global ffmpeg_jobs
+        ep = bangumi.Episode(epid=int(epid))
+        try:
+            download_url_data = sync(ep.get_download_url())
+        except ResponseCodeException as e:
+            logger.warning(f'bangumi download url failed for epid={epid}, code={e.code}, msg={e.msg}')
+            if e.code == -10403:
+                return json_fail('region_restricted', data={'epid': epid}, message='该番剧因地区限制暂时无法播放'), 451
+            if e.code == -404:
+                return json_fail('not_found', data={'epid': epid}, message='该番剧分集暂时无法获取播放地址'), 404
+            raise
+
+        stream_info = download_url_data.get('video_info', download_url_data)
+        duration = stream_info.get('timelength', 0)
+        output_video_path = get_output_video_path(f'ep_{epid}', cid, start_ms)
+        done_file_path = get_cache_done_path(output_video_path)
+        job_key = f'ep_{epid}_{cid}_{start_ms}'
+        enforce_bilibili_cache_limit(exclude_paths={output_video_path, done_file_path})
+
+        if ffmpeg_jobs.bv != job_key:
+            stop_current_jobs()
+
+            detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
+            streams = detecter.detect_best_streams(codecs=[video.VideoCodecs.AVC])
+
+            ffmpeg_jobs.bv = job_key
+            ffmpeg_jobs.stop_event.clear()
+            ffmpeg_jobs.size_map = {}
+            if detecter.check_video_and_audio_stream():
+                if start_ms > 0:
+                    ffmpeg_jobs.tasks = [
+                        threading.Thread(
+                            target=ffmpeg_seek_streams,
+                            args=(streams[0].url, streams[1].url, output_video_path, start_ms),
+                        ),
+                    ]
+                else:
+                    input_video_pipe = '/tmp/input_video_pipe'
+                    input_audio_pipe = '/tmp/input_audio_pipe'
+                    if os.path.exists(input_video_pipe):
+                        os.remove(input_video_pipe)
+                    if os.path.exists(input_audio_pipe):
+                        os.remove(input_audio_pipe)
+                    os.mkfifo(input_video_pipe)
+                    os.mkfifo(input_audio_pipe)
+                    ffmpeg_jobs.tasks = [
+                        threading.Thread(target=download_stream, args=(streams[0].url, input_video_pipe)),
+                        threading.Thread(target=download_stream, args=(streams[1].url, input_audio_pipe)),
+                        threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
+                    ]
+            elif streams and getattr(streams[0], 'url', None):
+                ffmpeg_jobs.tasks = [
+                    threading.Thread(
+                        target=ffmpeg_single_stream,
+                        args=(streams[0].url, output_video_path, start_ms),
+                    ),
+                ]
+            else:
+                raise Exception(f'can not get usable bangumi stream by epid:{epid}')
+            for task in ffmpeg_jobs.tasks:
+                task.start()
+
+        if not wait_for_output_file(output_video_path):
+            return json_fail('Video generation timeout'), 504
+
+        payload = {
+            'size': os.path.getsize(output_video_path),
+            'file': output_video_path,
+            'detail': {'epid': epid, 'cid': cid},
+        }
+        if not as_response:
+            return payload, duration
+
+        response = make_response(jsonify(payload), 200)
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['BV-Duration'] = duration
+        return response
+
     @app.route('/api/bilibili/bangumi_ss/<string:sid>', methods=['GET'])
     @login_check
     def get_bilibili_bangumi_info(sid):
         bgm = bangumi.Bangumi(ssid=sid)
-        ep_lst = sync(bgm.get_episodes())
-        logger.info(f'ep list:{ep_lst}')
-        # ep 转dict
+        episode_list_payload = sync(bgm.get_episode_list())
+        episode_items = extract_bangumi_episode_items(episode_list_payload)
+        logger.info(f'bangumi episode payload type:{type(episode_list_payload)}')
+        logger.info(f'bangumi episode count:{len(episode_items)}')
+        if not episode_items:
+            logger.error(f'No bangumi episodes found for ssid={sid}, payload={episode_list_payload}')
+            return json_fail('empty_episode_list'), 502
+
         ep_dict_lst = []
-        for idx in range(len(ep_lst)):
-            ep = ep_lst[idx]
+        for idx, ep_meta in enumerate(episode_items):
+            ep_id = ep_meta.get('id') or ep_meta.get('ep_id') or ep_meta.get('episode_id')
+            if not ep_id:
+                continue
+            title = ep_meta.get('share_copy') or ep_meta.get('long_title') or ep_meta.get('longtitle') or ep_meta.get('show_title') or ep_meta.get('title')
+            cover = ep_meta.get('cover')
+            bvid = ep_meta.get('bvid')
+            cid = ep_meta.get('cid')
+            aid = ep_meta.get('aid')
+
+            if not bvid and aid:
+                try:
+                    bvid = bilibili_utils.aid_bvid_transformer.aid2bvid(int(aid))
+                except Exception:
+                    logger.warning(f'failed to transform aid to bvid for ssid={sid}, epid={ep_id}, aid={aid}')
+
+            if not bvid or not cid:
+                ep = bangumi.Episode(epid=ep_id)
+                try:
+                    if not bvid:
+                        bvid = sync(ep.get_bvid())
+                    if not cid:
+                        cid = sync(ep.get_cid())
+                except ResponseCodeException as e:
+                    logger.warning(f'bangumi episode lookup failed for ssid={sid}, epid={ep_id}, code={e.code}, msg={e.msg}')
+                    if e.code == -10403:
+                        return json_fail(
+                            'region_restricted',
+                            data={
+                                'ssid': sid,
+                                'epid': ep_id,
+                                'title': title or str(idx + 1),
+                            },
+                            message='该番剧因地区限制暂时无法播放',
+                        ), 451
+                    raise
+
             ep_dict_lst.append({
                 'idx': idx,
-                # 'epid': ep.get_epid(),
-                'bvid': sync(ep.get_bvid()),
-                'cid': sync(ep.get_cid()),
-                'title': str(idx + 1),
-                'cover': None,
-                # 'aid': sync(ep.get_aid()),
-                # 'info': sync(ep.get_info())
+                'epid': ep_id,
+                'bvid': bvid,
+                'cid': cid,
+                'title': title or str(idx + 1),
+                'cover': cover,
             })
         return json_ok(ep_dict_lst)
     
@@ -615,3 +827,56 @@ def add_bv_route(app):
             'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
         })
         return resp
+
+    @app.route('/api/bilibili/bangumi_ep/<string:epid>/<string:cid>/info', methods=['GET'])
+    @login_check
+    def get_bilibili_bangumi_info_stream(epid, cid):
+        start_ms = int(request.args.get('start_ms', '0'))
+        return return_bangumi_stream(epid, cid, start_ms)
+
+    @app.route('/api/bilibili/bangumi_ep/<string:epid>/<string:cid>', methods=['GET'])
+    @login_check
+    def get_bilibili_bangumi_chunk(epid, cid):
+        start_ms = int(request.args.get('start_ms', '0'))
+        output_video_path = get_output_video_path(f'ep_{epid}', cid, start_ms)
+        range_header = request.headers.get('range')
+        start, end = range_header.replace('bytes=', '').split('-')
+        logger.info(f'get bangumi range, start:{start}, end:{end}, epid:{epid}')
+
+        start = int(start)
+        end = int(end)
+        length = end - start + 1
+
+        DONE_FILE = get_cache_done_path(output_video_path)
+        CHECK_INTERVAL = 0.1
+
+        if not os.path.exists(output_video_path):
+            result = return_bangumi_stream(epid, cid, start_ms, as_response=False)
+            if not (isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], dict)):
+                return result
+        if not wait_for_output_file(output_video_path):
+            return json_fail('Video generation timeout'), 504
+
+        final_size = -1
+        while True:
+            size = os.path.getsize(output_video_path)
+            if os.path.exists(DONE_FILE):
+                final_size = size
+                end = min(end, size - 1)
+                length = end - start + 1 if end > start else 0
+                break
+            if size >= end:
+                break
+            time.sleep(CHECK_INTERVAL)
+
+        def generate():
+            with open(output_video_path, 'rb') as f:
+                f.seek(start)
+                chunk = f.read(length)
+                yield chunk
+
+        return Response(stream_with_context(generate()), mimetype='video/mp4', headers={
+            'BV-Content-Length': final_size,
+            'Content-Length': length,
+            'Content-Range': f'bytes {start}-{end}/{final_size if final_size > 0 else "*"}',
+        })
