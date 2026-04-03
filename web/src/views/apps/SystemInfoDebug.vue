@@ -25,21 +25,9 @@ const state = reactive({
         devices: '',
     },
     browser: '',
-    bilibiliCache: {
-        cacheDir: '',
-        maxSizeMb: 2048,
-        sizeMb: 0,
-        fileCount: 0,
-        diskFreeMb: 0,
-    },
     mapConfig: {
         amapKey: '',
-        bilibiliMaxQuality: '_720P',
     },
-    cacheForm: {
-        maxSizeMb: 2048,
-    },
-    cacheLoading: false,
     mapLoading: false,
 });
 
@@ -50,12 +38,6 @@ const postionState = useGeoLocationStore();
 const formatedPostion = computed(() => {
     const curPos = postionState.getCurPosition();
     return JSON.stringify(curPos, null, '\t');
-});
-
-const cacheUsagePercent = computed(() => {
-    const maxSizeMb = Number(state.bilibiliCache.maxSizeMb) || 1;
-    const sizeMb = Number(state.bilibiliCache.sizeMb) || 0;
-    return Math.min(100, Math.round((sizeMb / maxSizeMb) * 100));
 });
 
 function refresh() {
@@ -76,7 +58,6 @@ function refresh() {
             state.media.devices = err.name + ': ' + err.message;
         });
 
-    refreshBilibiliCache();
     refreshMapConfig();
 }
 
@@ -110,51 +91,10 @@ function logout() {
     });
 }
 
-function refreshBilibiliCache() {
-    state.cacheLoading = true;
-    get('/api/bilibili/cache', '读取缓存信息失败').then((data) => {
-        state.bilibiliCache = data;
-        state.cacheForm.maxSizeMb = data.maxSizeMb;
-    }).finally(() => {
-        state.cacheLoading = false;
-    });
-}
-
-function saveBilibiliCacheSettings() {
-    state.cacheLoading = true;
-    post('/api/bilibili/cache/settings', {
-        maxSizeMb: state.cacheForm.maxSizeMb,
-    }, '保存缓存配置失败').then((data) => {
-        state.bilibiliCache = data;
-        state.cacheForm.maxSizeMb = data.maxSizeMb;
-        return post('/api/config', {
-            bilibili_max_quality: state.mapConfig.bilibiliMaxQuality,
-        }, '保存分辨率配置失败').then(() => {
-            const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
-            ElMessage.success(deletedSizeMb > 0 ? `B站设置已保存，并回收了 ${deletedSizeMb} MB` : 'B站设置已保存');
-        });
-    }).finally(() => {
-        state.cacheLoading = false;
-    });
-}
-
-function clearBilibiliCache() {
-    state.cacheLoading = true;
-    post('/api/bilibili/cache/clear', {}, '清理缓存失败').then((data) => {
-        state.bilibiliCache = data;
-        state.cacheForm.maxSizeMb = data.maxSizeMb;
-        const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
-        ElMessage.success(`缓存已清理，释放 ${deletedSizeMb} MB`);
-    }).finally(() => {
-        state.cacheLoading = false;
-    });
-}
-
 function refreshMapConfig() {
     state.mapLoading = true;
     get('/api/config', '读取配置失败').then((data) => {
         state.mapConfig.amapKey = data.amap_key || '';
-        state.mapConfig.bilibiliMaxQuality = data.bilibili_max_quality || '_720P';
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -164,9 +104,8 @@ function saveMapConfig() {
     state.mapLoading = true;
     post('/api/config', {
         amap_key: state.mapConfig.amapKey.trim(),
-        bilibili_max_quality: state.mapConfig.bilibiliMaxQuality,
     }, '保存高德 Key 失败').then(() => {
-        ElMessage.success('地图与 B 站取流配置已保存');
+        ElMessage.success('地图配置已保存');
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -194,70 +133,6 @@ onMounted(() => {
             </header>
 
             <section class="settings-grid">
-                <article class="settings-card settings-card--wide" v-loading="state.cacheLoading">
-                    <div class="card-head">
-                        <div>
-                            <p class="card-kicker">Bilibili Cache</p>
-                            <h2>缓存管理</h2>
-                        </div>
-                        <div class="usage-pill">{{ cacheUsagePercent }}%</div>
-                    </div>
-
-                    <div class="metric-row">
-                        <div class="metric-box">
-                            <span class="metric-label">当前占用</span>
-                            <strong>{{ state.bilibiliCache.sizeMb }} MB</strong>
-                        </div>
-                        <div class="metric-box">
-                            <span class="metric-label">缓存上限</span>
-                            <strong>{{ state.bilibiliCache.maxSizeMb }} MB</strong>
-                        </div>
-                        <div class="metric-box">
-                            <span class="metric-label">缓存文件</span>
-                            <strong>{{ state.bilibiliCache.fileCount }}</strong>
-                        </div>
-                        <div class="metric-box">
-                            <span class="metric-label">磁盘剩余</span>
-                            <strong>{{ state.bilibiliCache.diskFreeMb }} MB</strong>
-                        </div>
-                    </div>
-
-                    <div class="progress-track">
-                        <div class="progress-fill" :style="{ width: `${cacheUsagePercent}%` }"></div>
-                    </div>
-
-                    <div class="setting-line">
-                        <span class="setting-label">缓存目录</span>
-                        <code class="setting-value">{{ state.bilibiliCache.cacheDir || '-' }}</code>
-                    </div>
-
-                    <div class="setting-actions">
-                        <div class="setting-input">
-                            <span class="setting-label">缓存上限</span>
-                            <div class="inline-control">
-                                <el-input-number v-model="state.cacheForm.maxSizeMb" :min="256" :step="256" :max="102400" />
-                                <span class="unit">MB</span>
-                            </div>
-                        </div>
-                        <div class="setting-input">
-                            <span class="setting-label">最高分辨率</span>
-                            <el-select v-model="state.mapConfig.bilibiliMaxQuality" placeholder="选择最高分辨率" style="width: 220px">
-                                <el-option label="360P" value="_360P" />
-                                <el-option label="480P" value="_480P" />
-                                <el-option label="720P" value="_720P" />
-                                <el-option label="1080P" value="_1080P" />
-                                <el-option label="1080P 高码率" value="_1080P_PLUS" />
-                                <el-option label="1080P 60帧" value="_1080P_60" />
-                                <el-option label="4K" value="_4K" />
-                            </el-select>
-                        </div>
-                        <div class="button-row">
-                            <el-button type="primary" round @click="saveBilibiliCacheSettings">保存设置</el-button>
-                            <el-button type="danger" plain round @click="clearBilibiliCache">一键清理</el-button>
-                        </div>
-                    </div>
-                </article>
-
                 <article class="settings-card">
                     <div class="card-head">
                         <div>

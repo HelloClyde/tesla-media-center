@@ -53,6 +53,9 @@ def update_config():
         'bilibili_cache_dir',
         'bilibili_cache_size_mb',
         'bilibili_max_quality',
+        'bilibili_danmaku_area',
+        'bilibili_danmaku_max_count',
+        'bilibili_danmaku_opacity',
     }
 
     updated = {}

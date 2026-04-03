@@ -12,6 +12,9 @@ const timeLabel = ref<HTMLLabelElement | null>(null);
 
 let videoPlayer: any = null;
 const waitHeaderLength = 512 * 1024;
+const DEFAULT_DANMU_AREA = 'top_half';
+const DEFAULT_DANMU_MAX_COUNT = 30;
+const DEFAULT_DANMU_OPACITY = 70;
 
 const state = reactive({
     curFiles: [] as any[],
@@ -33,6 +36,9 @@ const state = reactive({
     cid: null as string | null,
     title: null as string | null,
     desc: null as string| null,
+    danmuArea: DEFAULT_DANMU_AREA,
+    danmuMaxCount: DEFAULT_DANMU_MAX_COUNT,
+    danmuOpacity: DEFAULT_DANMU_OPACITY,
 })
 
 const getDmKey = (dm: any) => dm.id_str;
@@ -146,32 +152,30 @@ interface VideoProps {
 const props = defineProps<VideoProps>();
 
 function popDanmu(t: number) {
-    // 使用当前弹幕的副本进行处理
     const currentDms = [...state.dms];
-    const toRemove: any[] = [];
-    const newProcessedKeys = new Set<string>();
-
-    // 遍历副本，避免处理过程中原数组被修改
+    const readyToShow: any[] = [];
     for (const dm of currentDms) {
         const key = getDmKey(dm);
         if (dm.dm_time < t && !state.processedDmKeys.has(key)) {
-            toRemove.push(dm);
-            newProcessedKeys.add(key);
+            readyToShow.push(dm);
         }
     }
 
-    // 显示弹幕（截断至100条）
-    const showDanmu = toRemove.slice(0, 100);
+    const visibleDanmuCount = getVisibleDanmuCount();
+    const availableSlots = Math.max(0, state.danmuMaxCount - visibleDanmuCount);
+    const showDanmu = readyToShow.slice(0, availableSlots);
+    const newProcessedKeys = new Set<string>();
     showDanmu.forEach(danmu => 
         addDanmu(danmu.text, `#${danmu.color}`)
     );
+    showDanmu.forEach((dm) => {
+        newProcessedKeys.add(getDmKey(dm));
+    });
 
-    // 更新已处理的弹幕键
     newProcessedKeys.forEach(key => 
         state.processedDmKeys.add(key)
     );
 
-    // 从原数组中过滤已处理的弹幕
     state.dms = state.dms.filter(dm => 
         !newProcessedKeys.has(getDmKey(dm))
     );
@@ -179,6 +183,14 @@ function popDanmu(t: number) {
     newProcessedKeys.forEach(key => {
         state.loadedDmKeys.delete(key);
     });
+}
+
+function getVisibleDanmuCount() {
+    const container = document.getElementById('danmu-container');
+    if (!container) {
+        return 0;
+    }
+    return container.getElementsByClassName('danmu').length;
 }
 
 onMounted(() => {
@@ -189,6 +201,19 @@ onMounted(() => {
         if (state.isAutoContinue) {
             playNextEp();
         }
+    });
+
+    get('/api/config', '读取 B 站弹幕设置失败').then((config) => {
+        const area = config?.bilibili_danmaku_area;
+        const maxCount = Number(config?.bilibili_danmaku_max_count);
+        const opacity = Number(config?.bilibili_danmaku_opacity);
+        state.danmuArea = ['top_third', 'top_half', 'bottom_half', 'full'].includes(area) ? area : DEFAULT_DANMU_AREA;
+        state.danmuMaxCount = Number.isFinite(maxCount) ? Math.min(100, Math.max(5, Math.floor(maxCount))) : DEFAULT_DANMU_MAX_COUNT;
+        state.danmuOpacity = Number.isFinite(opacity) ? Math.min(100, Math.max(10, Math.floor(opacity))) : DEFAULT_DANMU_OPACITY;
+    }).catch(() => {
+        state.danmuArea = DEFAULT_DANMU_AREA;
+        state.danmuMaxCount = DEFAULT_DANMU_MAX_COUNT;
+        state.danmuOpacity = DEFAULT_DANMU_OPACITY;
     });
 
     new Promise((resolve, reject) => {
@@ -269,18 +294,39 @@ onMounted(() => {
 
 function addDanmu(danmuText: string, color='#fff') {
     const container: any = document.getElementById('danmu-container');
-    if (!danmuText) return;
+    if (!danmuText || !container) return;
 
     const danmu = document.createElement('div');
     danmu.className = 'danmu';
     danmu.innerText = danmuText;
     danmu.style.left = `${container.offsetWidth}px`;
-    danmu.style.top = `${Math.random() * (container.offsetHeight * 2 / 3 - 20)}px`;
-    danmu.style.color = color
+    danmu.style.top = `${getDanmuTop(container.offsetHeight)}px`;
+    danmu.style.color = color;
+    danmu.style.opacity = `${state.danmuOpacity / 100}`;
+    danmu.style.backgroundColor = `rgba(0, 0, 0, ${Math.max(0.08, state.danmuOpacity / 200)})`;
 
     container.appendChild(danmu);
 
     moveDanmu(danmu, container);
+}
+
+function getDanmuTop(containerHeight: number) {
+    const maxTop = Math.max(containerHeight - 30, 0);
+    if (maxTop === 0) {
+        return 0;
+    }
+
+    const ranges: Record<string, [number, number]> = {
+        top_third: [0, containerHeight / 3],
+        top_half: [0, containerHeight / 2],
+        bottom_half: [containerHeight / 2, containerHeight],
+        full: [0, containerHeight],
+    };
+    const [rawStart, rawEnd] = ranges[state.danmuArea] || ranges.top_half;
+    const start = Math.min(maxTop, Math.max(0, rawStart));
+    const end = Math.min(containerHeight, Math.max(start + 1, rawEnd));
+    const usableHeight = Math.max(1, end - start - 30);
+    return Math.min(maxTop, start + Math.random() * usableHeight);
 }
 
 function moveDanmu(elem: any, container: any) {

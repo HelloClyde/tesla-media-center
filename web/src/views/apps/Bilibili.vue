@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { get, post } from '@/functions/requests'
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
@@ -42,7 +42,28 @@ const state = reactive({
   biliProfile: null as any,
   biliQrCode: '',
   biliQrStatus: '',
+  biliCache: {
+    cacheDir: '',
+    maxSizeMb: 2048,
+    sizeMb: 0,
+    fileCount: 0,
+    diskFreeMb: 0,
+  },
+  biliSettings: {
+    maxSizeMb: 2048,
+    maxQuality: '_720P',
+    danmakuArea: 'top_half',
+    danmakuMaxCount: 30,
+    danmakuOpacity: 70,
+  },
+  biliSettingsLoading: false,
 })
+
+const biliCacheUsagePercent = computed(() => {
+  const maxSizeMb = Number(state.biliCache.maxSizeMb) || 1;
+  const sizeMb = Number(state.biliCache.sizeMb) || 0;
+  return Math.min(100, Math.round((sizeMb / maxSizeMb) * 100));
+});
 
 const updateGridColumns = (width: number) => {
   state.gridContainerWidth = Math.round(width);
@@ -272,6 +293,7 @@ const tabChange = (name: string) => {
       break;
     case 'my':
       loadBiliAuthStatus();
+      loadBiliSettings();
       break;
   }
 }
@@ -309,6 +331,55 @@ const loadBiliAuthStatus = () => {
     }
   }).finally(() => {
     state.biliAuthLoading = false;
+  });
+}
+
+const loadBiliSettings = () => {
+  state.biliSettingsLoading = true;
+  return Promise.all([
+    get('/api/bilibili/cache', '读取B站缓存信息失败'),
+    get('/api/config', '读取B站配置失败'),
+  ]).then(([cacheData, configData]) => {
+    state.biliCache = cacheData;
+    state.biliSettings.maxSizeMb = cacheData.maxSizeMb || 2048;
+    state.biliSettings.maxQuality = configData.bilibili_max_quality || '_720P';
+    state.biliSettings.danmakuArea = configData.bilibili_danmaku_area || 'top_half';
+    state.biliSettings.danmakuMaxCount = Number(configData.bilibili_danmaku_max_count) || 30;
+    state.biliSettings.danmakuOpacity = Number(configData.bilibili_danmaku_opacity) || 70;
+  }).finally(() => {
+    state.biliSettingsLoading = false;
+  });
+}
+
+const saveBiliSettings = () => {
+  state.biliSettingsLoading = true;
+  post('/api/bilibili/cache/settings', {
+    maxSizeMb: state.biliSettings.maxSizeMb,
+  }, '保存B站缓存配置失败').then((cacheData) => {
+    state.biliCache = cacheData;
+    state.biliSettings.maxSizeMb = cacheData.maxSizeMb;
+    return post('/api/config', {
+      bilibili_max_quality: state.biliSettings.maxQuality,
+      bilibili_danmaku_area: state.biliSettings.danmakuArea,
+      bilibili_danmaku_max_count: state.biliSettings.danmakuMaxCount,
+      bilibili_danmaku_opacity: state.biliSettings.danmakuOpacity,
+    }, '保存B站播放配置失败');
+  }).then(() => {
+    ElMessage.success('B站设置已保存');
+  }).finally(() => {
+    state.biliSettingsLoading = false;
+  });
+}
+
+const clearBiliCache = () => {
+  state.biliSettingsLoading = true;
+  post('/api/bilibili/cache/clear', {}, '清理B站缓存失败').then((cacheData) => {
+    state.biliCache = cacheData;
+    state.biliSettings.maxSizeMb = cacheData.maxSizeMb;
+    const deletedSizeMb = cacheData.cleanup?.deletedSizeMb ?? 0;
+    ElMessage.success(`缓存已清理，释放 ${deletedSizeMb} MB`);
+  }).finally(() => {
+    state.biliSettingsLoading = false;
   });
 }
 
@@ -369,6 +440,7 @@ const logoutBili = () => {
 onMounted(() => {
   loadHomeVideos();
   loadBiliAuthStatus();
+  loadBiliSettings();
   if (listContainer.value) {
     updateGridColumns(listContainer.value.clientWidth);
     listResizeObserver = new ResizeObserver((entries) => {
@@ -445,32 +517,136 @@ onUnmounted(() => {
         </div>
       </el-tab-pane>
       <el-tab-pane label="我的" name="my">
-        <div class="bili-auth-panel" v-loading="state.biliAuthLoading">
-          <template v-if="state.biliLoggedIn">
-            <div class="bili-auth-head">
-              <img v-if="state.biliProfile?.avatar" :src="state.biliProfile.avatar" class="bili-avatar" />
+        <div class="bili-my-layout">
+          <section class="bili-my-section">
+            <div class="bili-section-copy">
+              <p class="bili-section-kicker">Account</p>
+              <h3>账号</h3>
+              <p class="bili-auth-meta">管理登录状态，查看当前 B 站账户信息。</p>
+            </div>
+            <div class="bili-auth-panel" v-loading="state.biliAuthLoading">
+              <template v-if="state.biliLoggedIn">
+                <div class="bili-auth-head">
+                  <img v-if="state.biliProfile?.avatar" :src="state.biliProfile.avatar" class="bili-avatar" />
+                  <div>
+                    <div class="bili-auth-title">{{ state.biliProfile?.name || '已登录' }}</div>
+                    <div class="bili-auth-meta">UID {{ state.biliProfile?.uid || '-' }}</div>
+                    <div class="bili-auth-meta" v-if="state.biliProfile?.sign">{{ state.biliProfile.sign }}</div>
+                  </div>
+                </div>
+                <div class="button-row">
+                  <el-button type="danger" plain round @click="logoutBili">退出 B 站登录</el-button>
+                </div>
+              </template>
+              <template v-else>
+                <div class="bili-auth-title">扫码登录 B 站</div>
+                <div class="bili-auth-meta">登录后可在“我的”页查看状态，并用于需要登录态的 B 站能力。</div>
+                <div v-if="state.biliQrCode" class="bili-qr-wrap">
+                  <img :src="state.biliQrCode" class="bili-qr-image" />
+                  <div class="bili-auth-meta">状态：{{ state.biliQrStatus || 'pending' }}</div>
+                </div>
+                <div class="button-row">
+                  <el-button type="primary" round @click="createBiliLoginQrCode">生成二维码</el-button>
+                  <el-button v-if="state.biliQrCode" round @click="createBiliLoginQrCode">刷新二维码</el-button>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <section class="bili-my-section">
+            <div class="bili-section-copy">
+              <p class="bili-section-kicker">Playback</p>
+              <h3>播放与缓存</h3>
+              <p class="bili-auth-meta">统一管理缓存容量、取流清晰度和弹幕展示策略。</p>
+            </div>
+            <div class="bili-auth-panel bili-settings-panel" v-loading="state.biliSettingsLoading">
+            <div class="bili-settings-head">
               <div>
-                <div class="bili-auth-title">{{ state.biliProfile?.name || '已登录' }}</div>
-                <div class="bili-auth-meta">UID {{ state.biliProfile?.uid || '-' }}</div>
-                <div class="bili-auth-meta" v-if="state.biliProfile?.sign">{{ state.biliProfile.sign }}</div>
+                <div class="bili-auth-title">B站设置</div>
+                <div class="bili-auth-meta">缓存、取流和弹幕体验统一放在这里。</div>
+              </div>
+              <div class="bili-usage-pill">{{ biliCacheUsagePercent }}%</div>
+            </div>
+
+            <div class="bili-metric-row">
+              <div class="bili-metric-box">
+                <span class="bili-metric-label">当前占用</span>
+                <strong>{{ state.biliCache.sizeMb }} MB</strong>
+              </div>
+              <div class="bili-metric-box">
+                <span class="bili-metric-label">缓存上限</span>
+                <strong>{{ state.biliCache.maxSizeMb }} MB</strong>
+              </div>
+              <div class="bili-metric-box">
+                <span class="bili-metric-label">缓存文件</span>
+                <strong>{{ state.biliCache.fileCount }}</strong>
+              </div>
+              <div class="bili-metric-box">
+                <span class="bili-metric-label">磁盘剩余</span>
+                <strong>{{ state.biliCache.diskFreeMb }} MB</strong>
               </div>
             </div>
+
+            <div class="bili-progress-track">
+              <div class="bili-progress-fill" :style="{ width: `${biliCacheUsagePercent}%` }"></div>
+            </div>
+
+            <div class="bili-setting-line">
+              <span class="bili-metric-label">缓存目录</span>
+              <code class="bili-setting-value">{{ state.biliCache.cacheDir || '-' }}</code>
+            </div>
+
+            <div class="bili-settings-grid">
+              <div class="bili-setting-input">
+                <span class="bili-metric-label">缓存上限</span>
+                <div class="button-row">
+                  <el-input-number v-model="state.biliSettings.maxSizeMb" :min="256" :step="256" :max="102400" />
+                  <span class="bili-setting-unit">MB</span>
+                </div>
+              </div>
+              <div class="bili-setting-input">
+                <span class="bili-metric-label">最高分辨率</span>
+                <el-select v-model="state.biliSettings.maxQuality" placeholder="选择最高分辨率" style="width: 220px">
+                  <el-option label="360P" value="_360P" />
+                  <el-option label="480P" value="_480P" />
+                  <el-option label="720P" value="_720P" />
+                  <el-option label="1080P" value="_1080P" />
+                  <el-option label="1080P 高码率" value="_1080P_PLUS" />
+                  <el-option label="1080P 60帧" value="_1080P_60" />
+                  <el-option label="4K" value="_4K" />
+                </el-select>
+              </div>
+              <div class="bili-setting-input">
+                <span class="bili-metric-label">弹幕位置</span>
+                <el-select v-model="state.biliSettings.danmakuArea" placeholder="选择弹幕区域" style="width: 220px">
+                  <el-option label="顶部 1/3" value="top_third" />
+                  <el-option label="顶部 1/2" value="top_half" />
+                  <el-option label="底部 1/2" value="bottom_half" />
+                  <el-option label="全屏" value="full" />
+                </el-select>
+              </div>
+              <div class="bili-setting-input">
+                <span class="bili-metric-label">同屏最大弹幕数</span>
+                <div class="button-row">
+                  <el-input-number v-model="state.biliSettings.danmakuMaxCount" :min="5" :step="5" :max="100" />
+                  <span class="bili-setting-unit">条</span>
+                </div>
+              </div>
+              <div class="bili-setting-input bili-setting-input--wide">
+                <span class="bili-metric-label">弹幕透明度</span>
+                <div class="button-row">
+                  <el-slider v-model="state.biliSettings.danmakuOpacity" :min="10" :max="100" :step="5" style="width: 220px" />
+                  <span class="bili-setting-unit">{{ state.biliSettings.danmakuOpacity }}%</span>
+                </div>
+              </div>
+            </div>
+
             <div class="button-row">
-              <el-button type="danger" plain round @click="logoutBili">退出 B 站登录</el-button>
+              <el-button type="primary" round @click="saveBiliSettings">保存设置</el-button>
+              <el-button type="danger" plain round @click="clearBiliCache">一键清理缓存</el-button>
             </div>
-          </template>
-          <template v-else>
-            <div class="bili-auth-title">扫码登录 B 站</div>
-            <div class="bili-auth-meta">登录后可在“我的”页查看状态，并用于需要登录态的 B 站能力。</div>
-            <div v-if="state.biliQrCode" class="bili-qr-wrap">
-              <img :src="state.biliQrCode" class="bili-qr-image" />
-              <div class="bili-auth-meta">状态：{{ state.biliQrStatus || 'pending' }}</div>
             </div>
-            <div class="button-row">
-              <el-button type="primary" round @click="createBiliLoginQrCode">生成二维码</el-button>
-              <el-button v-if="state.biliQrCode" round @click="createBiliLoginQrCode">刷新二维码</el-button>
-            </div>
-          </template>
+          </section>
         </div>
       </el-tab-pane>
     </el-tabs>
@@ -614,6 +790,39 @@ onUnmounted(() => {
   box-shadow: 0 14px 28px var(--color-shadow);
 }
 
+.bili-my-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 0;
+  align-items: start;
+}
+
+.bili-my-section {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.bili-section-copy {
+  margin: 16px 20px 0 10px;
+  padding: 0 4px;
+}
+
+.bili-section-kicker {
+  margin: 0 0 6px;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--color-text-soft);
+}
+
+.bili-section-copy h3 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.2;
+  color: var(--color-heading);
+}
+
 .bili-auth-head {
   display: flex;
   align-items: center;
@@ -662,5 +871,124 @@ onUnmounted(() => {
   display: flex;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.bili-settings-panel {
+  min-width: 0;
+}
+
+.bili-settings-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.bili-usage-pill {
+  min-width: 64px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  text-align: center;
+  font-weight: 600;
+}
+
+.bili-metric-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.bili-metric-box {
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+}
+
+.bili-metric-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.bili-metric-box strong {
+  color: var(--color-heading);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.bili-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--color-background-mute);
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.bili-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-accent) 0%, #53a8ff 100%);
+}
+
+.bili-setting-line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+  margin-bottom: 16px;
+}
+
+.bili-setting-value {
+  color: var(--color-heading);
+  word-break: break-all;
+}
+
+.bili-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.bili-setting-input {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bili-setting-input--wide {
+  grid-column: 1 / -1;
+}
+
+.bili-setting-unit {
+  color: var(--color-text-soft);
+  align-self: center;
+}
+
+@media (max-width: 1120px) {
+  .bili-my-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .bili-metric-row,
+  .bili-settings-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .bili-metric-row,
+  .bili-settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
