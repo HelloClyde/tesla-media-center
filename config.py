@@ -13,8 +13,13 @@ def write_config(config_dict):
         
 def get_all_config_safe():
     config = read_config()
-    del config['password']
-    del config['secret_key']
+    config.pop('password', None)
+    config.pop('secret_key', None)
+    config.pop('bilibili_sessdata', None)
+    config.pop('bilibili_bili_jct', None)
+    config.pop('bilibili_buvid3', None)
+    config.pop('bilibili_dedeuserid', None)
+    config.pop('bilibili_ac_time_value', None)
     return config
 
 def put_config_by_key(key, value):

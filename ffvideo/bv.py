@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify, stream_with_context, redirect, send_from_directory, abort, send_file, make_response
 import requests
-from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass
+from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass, login_v2, user
 from loguru import logger
 import imageio_ffmpeg
 import subprocess
@@ -15,6 +15,7 @@ import re
 import shutil
 from bilibili_api.exceptions import ResponseCodeException
 from bilibili_api import utils as bilibili_utils
+import base64
 
 ffplay_stop_event = threading.Event()
 
@@ -38,16 +39,77 @@ ffmpeg_jobs_dict = {
     'size_map': {},
 }
 ffmpeg_jobs = FFMPEGJobs(**ffmpeg_jobs_dict)
+qr_login = None
+qr_login_lock = threading.Lock()
 
 
 DEFAULT_BILIBILI_CACHE_DIR = '/tmp/tesla-media-center/bilibili-cache'
 DEFAULT_BILIBILI_CACHE_SIZE_MB = 2048
+BILIBILI_CREDENTIAL_CONFIG_KEYS = {
+    'sessdata': 'bilibili_sessdata',
+    'bili_jct': 'bilibili_bili_jct',
+    'buvid3': 'bilibili_buvid3',
+    'dedeuserid': 'bilibili_dedeuserid',
+    'ac_time_value': 'bilibili_ac_time_value',
+}
 
 
 def get_bilibili_cache_dir():
     cache_dir = get_config_by_key('bilibili_cache_dir', DEFAULT_BILIBILI_CACHE_DIR)
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
+
+
+def get_bilibili_credential():
+    return Credential(
+        sessdata=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['sessdata']),
+        bili_jct=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['bili_jct']),
+        buvid3=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['buvid3']),
+        dedeuserid=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['dedeuserid']),
+        ac_time_value=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['ac_time_value']),
+    )
+
+
+def save_bilibili_credential(credential: Credential):
+    put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['sessdata'], credential.sessdata or '')
+    put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['bili_jct'], credential.bili_jct or '')
+    put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['buvid3'], credential.buvid3 or '')
+    put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['dedeuserid'], credential.dedeuserid or '')
+    put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['ac_time_value'], credential.ac_time_value or '')
+
+
+def clear_bilibili_credential():
+    for key in BILIBILI_CREDENTIAL_CONFIG_KEYS.values():
+        put_config_by_key(key, '')
+
+
+def get_bilibili_auth_status():
+    credential = get_bilibili_credential()
+    if not credential.has_sessdata():
+        return {
+            'loggedIn': False,
+            'profile': None,
+        }
+
+    try:
+        profile = sync(user.get_self_info(credential))
+        return {
+            'loggedIn': True,
+            'profile': {
+                'uid': profile.get('mid'),
+                'name': profile.get('name'),
+                'avatar': profile.get('face'),
+                'sign': profile.get('sign'),
+                'level': profile.get('level'),
+            },
+        }
+    except Exception as e:
+        logger.warning(f'failed to read bilibili auth status: {e}')
+        clear_bilibili_credential()
+        return {
+            'loggedIn': False,
+            'profile': None,
+        }
 
 
 def get_bilibili_cache_limit_bytes():
@@ -237,6 +299,61 @@ def extract_bangumi_episode_items(payload):
 
 
 def add_bv_route(app):
+    @app.route('/api/bilibili/auth/status', methods=['GET'])
+    @login_check
+    def get_bilibili_login_status():
+        return json_ok(get_bilibili_auth_status())
+
+    @app.route('/api/bilibili/auth/qrcode', methods=['POST'])
+    @login_check
+    def create_bilibili_login_qrcode():
+        global qr_login
+        with qr_login_lock:
+            qr_login = login_v2.QrCodeLogin()
+            sync(qr_login.generate_qrcode())
+            pic = qr_login.get_qrcode_picture()
+            qrcode_data_url = f'data:image/{pic.imageType};base64,{base64.b64encode(pic.content).decode("ascii")}'
+            return json_ok({
+                'qrcode': qrcode_data_url,
+                'terminal': qr_login.get_qrcode_terminal(),
+                'status': 'pending',
+            })
+
+    @app.route('/api/bilibili/auth/qrcode/poll', methods=['GET'])
+    @login_check
+    def poll_bilibili_login_qrcode():
+        global qr_login
+        with qr_login_lock:
+            if qr_login is None:
+                return json_fail('qrcode_not_found', message='请先生成二维码'), 404
+
+            event = sync(qr_login.check_state())
+            status = event.value
+            if event == login_v2.QrCodeLoginEvents.DONE:
+                credential = qr_login.get_credential()
+                save_bilibili_credential(credential)
+                qr_login = None
+                auth_status = get_bilibili_auth_status()
+                auth_status['status'] = status
+                return json_ok(auth_status)
+            if event == login_v2.QrCodeLoginEvents.TIMEOUT:
+                qr_login = None
+            return json_ok({
+                'status': status,
+            })
+
+    @app.route('/api/bilibili/auth/logout', methods=['POST'])
+    @login_check
+    def logout_bilibili_auth():
+        global qr_login
+        with qr_login_lock:
+            qr_login = None
+        clear_bilibili_credential()
+        return json_ok({
+            'loggedIn': False,
+            'profile': None,
+        })
+
     @app.route('/api/bilibili/cache', methods=['GET'])
     @login_check
     def get_bilibili_cache_info():
@@ -287,7 +404,7 @@ def add_bv_route(app):
     @app.route('/api/bilibili/home', methods=['GET'])
     @login_check
     def bl_home():
-        resp = sync(homepage.get_videos())
+        resp = sync(homepage.get_videos(credential=get_bilibili_credential()))
         return json_ok(resp)
 
     @app.route('/api/bilibili/search', methods=['GET'])
@@ -475,7 +592,7 @@ def add_bv_route(app):
     @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
     @login_check
     def get_bilibili_video_dm(bvid, seg):        
-        v = video.Video(bvid=bvid)
+        v = video.Video(bvid=bvid, credential=get_bilibili_credential())
         dms = sync(v.get_danmakus(0, from_seg=seg, to_seg=seg+1))
         return json_ok({
             'dm': list(map(lambda x: x.__dict__, dms))
@@ -483,7 +600,7 @@ def add_bv_route(app):
     
     def return_bv_stream(bvid, cid, start_ms=0):
         global ffmpeg_jobs
-        v = video.Video(bvid=bvid)
+        v = video.Video(bvid=bvid, credential=get_bilibili_credential())
         v_detail = sync(v.get_detail())
         download_url_data = sync(v.get_download_url(cid=cid))
         duration = download_url_data['timelength']
@@ -566,7 +683,7 @@ def add_bv_route(app):
 
     def return_bangumi_stream(epid, cid, start_ms=0, as_response=True):
         global ffmpeg_jobs
-        ep = bangumi.Episode(epid=int(epid))
+        ep = bangumi.Episode(epid=int(epid), credential=get_bilibili_credential())
         try:
             download_url_data = sync(ep.get_download_url())
         except ResponseCodeException as e:
@@ -646,7 +763,7 @@ def add_bv_route(app):
     @app.route('/api/bilibili/bangumi_ss/<string:sid>', methods=['GET'])
     @login_check
     def get_bilibili_bangumi_info(sid):
-        bgm = bangumi.Bangumi(ssid=sid)
+        bgm = bangumi.Bangumi(ssid=sid, credential=get_bilibili_credential())
         episode_list_payload = sync(bgm.get_episode_list())
         episode_items = extract_bangumi_episode_items(episode_list_payload)
         logger.info(f'bangumi episode payload type:{type(episode_list_payload)}')
@@ -673,7 +790,7 @@ def add_bv_route(app):
                     logger.warning(f'failed to transform aid to bvid for ssid={sid}, epid={ep_id}, aid={aid}')
 
             if not bvid or not cid:
-                ep = bangumi.Episode(epid=ep_id)
+                ep = bangumi.Episode(epid=ep_id, credential=get_bilibili_credential())
                 try:
                     if not bvid:
                         bvid = sync(ep.get_bvid())
@@ -754,7 +871,7 @@ def add_bv_route(app):
     @app.route('/api/bilibili/video/<string:bvid>', methods=['GET'])
     @login_check
     def get_bilibili_video_info(bvid):
-        v = video.Video(bvid=bvid)
+        v = video.Video(bvid=bvid, credential=get_bilibili_credential())
         v_detail = sync(v.get_detail())
         epList = []
         for page in v_detail['View']['pages']:

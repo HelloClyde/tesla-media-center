@@ -32,10 +32,14 @@ const state = reactive({
         fileCount: 0,
         diskFreeMb: 0,
     },
+    mapConfig: {
+        amapKey: '',
+    },
     cacheForm: {
         maxSizeMb: 2048,
     },
     cacheLoading: false,
+    mapLoading: false,
 });
 
 let recorder: MediaRecorder | null = null;
@@ -72,6 +76,7 @@ function refresh() {
         });
 
     refreshBilibiliCache();
+    refreshMapConfig();
 }
 
 function h5TTS(text: string) {
@@ -137,6 +142,26 @@ function clearBilibiliCache() {
         ElMessage.success(`缓存已清理，释放 ${deletedSizeMb} MB`);
     }).finally(() => {
         state.cacheLoading = false;
+    });
+}
+
+function refreshMapConfig() {
+    state.mapLoading = true;
+    get('/api/config', '读取配置失败').then((data) => {
+        state.mapConfig.amapKey = data.amap_key || '';
+    }).finally(() => {
+        state.mapLoading = false;
+    });
+}
+
+function saveMapConfig() {
+    state.mapLoading = true;
+    post('/api/config', {
+        amap_key: state.mapConfig.amapKey.trim(),
+    }, '保存高德 Key 失败').then(() => {
+        ElMessage.success('高德 Key 已保存');
+    }).finally(() => {
+        state.mapLoading = false;
     });
 }
 
@@ -211,6 +236,27 @@ onMounted(() => {
                             <el-button type="primary" round @click="saveBilibiliCacheSettings">保存设置</el-button>
                             <el-button type="danger" plain round @click="clearBilibiliCache">一键清理</el-button>
                         </div>
+                    </div>
+                </article>
+
+                <article class="settings-card">
+                    <div class="card-head">
+                        <div>
+                            <p class="card-kicker">Maps</p>
+                            <h2>高德地图</h2>
+                        </div>
+                    </div>
+                    <div class="setting-input" v-loading="state.mapLoading">
+                        <span class="setting-label">Web JS API Key</span>
+                        <el-input
+                            v-model="state.mapConfig.amapKey"
+                            type="textarea"
+                            :rows="3"
+                            placeholder="请输入高德地图 Web 端 Key"
+                        />
+                    </div>
+                    <div class="button-row top-gap">
+                        <el-button type="primary" round @click="saveMapConfig">保存 Key</el-button>
                     </div>
                 </article>
 
@@ -446,6 +492,10 @@ onMounted(() => {
     display: flex;
     gap: 12px;
     flex-wrap: wrap;
+}
+
+.top-gap {
+    margin-top: 16px;
 }
 
 .button-column {

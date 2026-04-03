@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue';
-import { get } from '@/functions/requests'
+import { get, post } from '@/functions/requests'
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
 import BvPlayer from '@/components/BvPlayer.vue';
+import { ElMessage } from 'element-plus';
 
 const searchInput = ref<any>(null);
 const listContainer = ref<HTMLElement | null>(null);
 let listResizeObserver: ResizeObserver | null = null;
+let biliLoginPollTimer: number | null = null;
 
 const state = reactive({
   videoConfig: null as any,
@@ -28,6 +30,12 @@ const state = reactive({
   searchFinished: false,
   gridColumns: 3,
   gridContainerWidth: 0,
+  biliAuthLoading: false,
+  biliLoginPolling: false,
+  biliLoggedIn: false,
+  biliProfile: null as any,
+  biliQrCode: '',
+  biliQrStatus: '',
 })
 
 const updateGridColumns = (width: number) => {
@@ -202,6 +210,9 @@ const tabChange = (name: string) => {
     case 'rank':
       loadRankVideos();
       break;
+    case 'my':
+      loadBiliAuthStatus();
+      break;
   }
 }
 
@@ -218,9 +229,86 @@ const videoSelect = (type: string, id: any) => {
   
 }
 
+const stopBiliLoginPolling = () => {
+  if (biliLoginPollTimer !== null) {
+    window.clearInterval(biliLoginPollTimer);
+    biliLoginPollTimer = null;
+  }
+  state.biliLoginPolling = false;
+}
+
+const loadBiliAuthStatus = () => {
+  state.biliAuthLoading = true;
+  return get('/api/bilibili/auth/status', '读取B站登录状态失败').then((data) => {
+    state.biliLoggedIn = Boolean(data.loggedIn);
+    state.biliProfile = data.profile || null;
+    if (state.biliLoggedIn) {
+      state.biliQrCode = '';
+      state.biliQrStatus = '';
+      stopBiliLoginPolling();
+    }
+  }).finally(() => {
+    state.biliAuthLoading = false;
+  });
+}
+
+const pollBiliLoginState = () => {
+  if (state.biliLoginPolling) {
+    return;
+  }
+  state.biliLoginPolling = true;
+  biliLoginPollTimer = window.setInterval(() => {
+    get('/api/bilibili/auth/qrcode/poll', '轮询扫码状态失败').then((data) => {
+      state.biliQrStatus = data.status || '';
+      if (data.loggedIn) {
+        state.biliLoggedIn = true;
+        state.biliProfile = data.profile || null;
+        state.biliQrCode = '';
+        ElMessage.success('B站登录成功');
+        stopBiliLoginPolling();
+      }
+    }).catch((error) => {
+      if (error?.status === 'qrcode_not_found') {
+        state.biliQrCode = '';
+        state.biliQrStatus = '';
+      }
+      stopBiliLoginPolling();
+    });
+  }, 2000);
+}
+
+const createBiliLoginQrCode = () => {
+  state.biliAuthLoading = true;
+  post('/api/bilibili/auth/qrcode', {}, '生成登录二维码失败').then((data) => {
+    state.biliQrCode = data.qrcode;
+    state.biliQrStatus = data.status || 'pending';
+    state.biliLoggedIn = false;
+    state.biliProfile = null;
+    stopBiliLoginPolling();
+    pollBiliLoginState();
+  }).finally(() => {
+    state.biliAuthLoading = false;
+  });
+}
+
+const logoutBili = () => {
+  state.biliAuthLoading = true;
+  post('/api/bilibili/auth/logout', {}, '退出B站登录失败').then(() => {
+    state.biliLoggedIn = false;
+    state.biliProfile = null;
+    state.biliQrCode = '';
+    state.biliQrStatus = '';
+    stopBiliLoginPolling();
+    ElMessage.success('已退出 B 站登录');
+  }).finally(() => {
+    state.biliAuthLoading = false;
+  });
+}
+
 
 onMounted(() => {
   loadHomeVideos();
+  loadBiliAuthStatus();
   if (listContainer.value) {
     updateGridColumns(listContainer.value.clientWidth);
     listResizeObserver = new ResizeObserver((entries) => {
@@ -236,6 +324,7 @@ onMounted(() => {
 onUnmounted(() => {
   listResizeObserver?.disconnect();
   listResizeObserver = null;
+  stopBiliLoginPolling();
 })
 </script>
 
@@ -281,7 +370,35 @@ onUnmounted(() => {
         <div v-else-if="state.searchFinished && state.searchVideoResult.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">关注</el-tab-pane>
-      <el-tab-pane label="我的" name="my">我的</el-tab-pane>
+      <el-tab-pane label="我的" name="my">
+        <div class="bili-auth-panel" v-loading="state.biliAuthLoading">
+          <template v-if="state.biliLoggedIn">
+            <div class="bili-auth-head">
+              <img v-if="state.biliProfile?.avatar" :src="state.biliProfile.avatar" class="bili-avatar" />
+              <div>
+                <div class="bili-auth-title">{{ state.biliProfile?.name || '已登录' }}</div>
+                <div class="bili-auth-meta">UID {{ state.biliProfile?.uid || '-' }}</div>
+                <div class="bili-auth-meta" v-if="state.biliProfile?.sign">{{ state.biliProfile.sign }}</div>
+              </div>
+            </div>
+            <div class="button-row">
+              <el-button type="danger" plain round @click="logoutBili">退出 B 站登录</el-button>
+            </div>
+          </template>
+          <template v-else>
+            <div class="bili-auth-title">扫码登录 B 站</div>
+            <div class="bili-auth-meta">登录后可在“我的”页查看状态，并用于需要登录态的 B 站能力。</div>
+            <div v-if="state.biliQrCode" class="bili-qr-wrap">
+              <img :src="state.biliQrCode" class="bili-qr-image" />
+              <div class="bili-auth-meta">状态：{{ state.biliQrStatus || 'pending' }}</div>
+            </div>
+            <div class="button-row">
+              <el-button type="primary" round @click="createBiliLoginQrCode">生成二维码</el-button>
+              <el-button v-if="state.biliQrCode" round @click="createBiliLoginQrCode">刷新二维码</el-button>
+            </div>
+          </template>
+        </div>
+      </el-tab-pane>
     </el-tabs>
     
   </div>
@@ -344,5 +461,64 @@ onUnmounted(() => {
   gap: 18px;
   padding: 0 20px 20px 10px;
   align-items: start;
+}
+
+.bili-auth-panel {
+  margin: 16px 20px 24px 10px;
+  padding: 24px;
+  border: 1px solid var(--color-border);
+  border-radius: 24px;
+  background: var(--color-surface);
+  box-shadow: 0 14px 28px var(--color-shadow);
+}
+
+.bili-auth-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.bili-avatar {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--color-border);
+}
+
+.bili-auth-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--color-heading);
+}
+
+.bili-auth-meta {
+  margin-top: 8px;
+  color: var(--color-text-soft);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.bili-qr-wrap {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 20px 0;
+}
+
+.bili-qr-image {
+  width: 240px;
+  height: 240px;
+  border-radius: 20px;
+  background: #fff;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 </style>

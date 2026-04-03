@@ -42,6 +42,30 @@ def logout():
 def get_config():
     return futils.json_ok(get_all_config_safe())
 
+@app.route('/api/config', methods=['POST'])
+@login_check
+def update_config():
+    data = request.json or {}
+    allowed_keys = {
+        'amap_key',
+        'video_path',
+        'home_page_iframe',
+        'bilibili_cache_dir',
+        'bilibili_cache_size_mb',
+    }
+
+    updated = {}
+    for key, value in data.items():
+        if key not in allowed_keys:
+            continue
+        put_config_by_key(key, value)
+        updated[key] = value
+
+    return futils.json_ok({
+        'updated': updated,
+        'config': get_all_config_safe(),
+    })
+
 @app.route('/<path:name>')
 def static_web(name):
     # 排除以api开头的路径
