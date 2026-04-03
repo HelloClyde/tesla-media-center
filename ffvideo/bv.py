@@ -68,6 +68,47 @@ def get_bilibili_max_quality():
     return getattr(video.VideoQuality, quality_name, video.VideoQuality._720P)
 
 
+def select_preferred_streams(detecter, source_label='video'):
+    max_quality = get_bilibili_max_quality()
+    streams = detecter.detect(
+        video_max_quality=max_quality,
+        codecs=[video.VideoCodecs.AVC],
+        no_hdr=True,
+        no_dolby_video=True,
+        no_dolby_audio=True,
+    )
+    logger.info(f'{source_label} stream selection, max_quality={max_quality.name}, stream_count={len(streams)}')
+
+    if detecter.check_video_and_audio_stream():
+        video_streams = [s for s in streams if isinstance(s, video.VideoStreamDownloadURL)]
+        audio_streams = [s for s in streams if isinstance(s, video.AudioStreamDownloadURL)]
+        logger.info(f'{source_label} candidate video streams={[(s.video_quality.name, s.video_codecs.name, s.url[:96]) for s in video_streams]}')
+        logger.info(f'{source_label} candidate audio streams={[(s.audio_quality.name, s.url[:96]) for s in audio_streams]}')
+
+        video_streams.sort(key=lambda s: s.video_quality.value, reverse=True)
+        audio_streams.sort(key=lambda s: s.audio_quality.value, reverse=True)
+
+        if not video_streams:
+            logger.warning(f'{source_label} no AVC video stream available under quality limit {max_quality.name}')
+            return None, None, 'no_avc_stream'
+        if not audio_streams:
+            logger.warning(f'{source_label} no audio stream available under quality limit {max_quality.name}')
+            return None, None, 'no_audio_stream'
+
+        selected_video = video_streams[0]
+        selected_audio = audio_streams[0]
+        logger.info(
+            f'{source_label} selected video={selected_video.video_quality.name}/{selected_video.video_codecs.name}, '
+            f'audio={selected_audio.audio_quality.name}'
+        )
+        return selected_video, selected_audio, None
+
+    single_stream = streams[0] if streams else None
+    if single_stream:
+        logger.info(f'{source_label} selected single stream type={type(single_stream).__name__}, url={getattr(single_stream, "url", "")[:96]}')
+    return single_stream, None, None
+
+
 def get_bilibili_credential():
     return Credential(
         sessdata=get_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['sessdata']),
@@ -723,12 +764,10 @@ def add_bv_route(app):
         else:
             stop_current_jobs()
             
-            # get bv stream
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-            streams = detecter.detect_best_streams(
-                video_max_quality=get_bilibili_max_quality(),
-                codecs=[video.VideoCodecs.AVC],
-            )
+            selected_video, selected_audio, stream_error = select_preferred_streams(detecter, source_label=f'bv:{bvid}')
+            if stream_error == 'no_avc_stream':
+                return json_fail('no_avc_stream', message='当前视频仅提供非 H264 码流，后端转码压力过高，已拒绝播放'), 409
             if not detecter.check_video_and_audio_stream():
                 raise Exception(f'can not get video and audio stream by bvid:{bvid}')
 
@@ -739,7 +778,7 @@ def add_bv_route(app):
                 ffmpeg_jobs.tasks = [
                     threading.Thread(
                         target=ffmpeg_seek_streams,
-                        args=(streams[0].url, streams[1].url, output_video_path, start_ms)
+                        args=(selected_video.url, selected_audio.url, output_video_path, start_ms)
                     ),
                 ]
             else:
@@ -752,8 +791,8 @@ def add_bv_route(app):
                 os.mkfifo(input_video_pipe)
                 os.mkfifo(input_audio_pipe)
                 ffmpeg_jobs.tasks = [
-                    threading.Thread(target=download_stream, args=(streams[0].url, input_video_pipe)),
-                    threading.Thread(target=download_stream, args=(streams[1].url, input_audio_pipe)),
+                    threading.Thread(target=download_stream, args=(selected_video.url, input_video_pipe)),
+                    threading.Thread(target=download_stream, args=(selected_audio.url, input_audio_pipe)),
                     threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
                 ]
             for task in ffmpeg_jobs.tasks:
@@ -817,10 +856,11 @@ def add_bv_route(app):
             stop_current_jobs()
 
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
-            streams = detecter.detect_best_streams(
-                video_max_quality=get_bilibili_max_quality(),
-                codecs=[video.VideoCodecs.AVC],
-            )
+            selected_video, selected_audio, stream_error = select_preferred_streams(detecter, source_label=f'bangumi:{epid}')
+            if stream_error == 'no_avc_stream':
+                return json_fail('no_avc_stream', data={'epid': epid}, message='当前番剧仅提供非 H264 码流，后端转码压力过高，已拒绝播放'), 409
+            if stream_error == 'no_audio_stream':
+                return json_fail('no_audio_stream', data={'epid': epid}, message='当前番剧音频流不可用'), 409
 
             ffmpeg_jobs.bv = job_key
             ffmpeg_jobs.stop_event.clear()
@@ -830,7 +870,7 @@ def add_bv_route(app):
                     ffmpeg_jobs.tasks = [
                         threading.Thread(
                             target=ffmpeg_seek_streams,
-                            args=(streams[0].url, streams[1].url, output_video_path, start_ms),
+                            args=(selected_video.url, selected_audio.url, output_video_path, start_ms),
                         ),
                     ]
                 else:
@@ -843,15 +883,15 @@ def add_bv_route(app):
                     os.mkfifo(input_video_pipe)
                     os.mkfifo(input_audio_pipe)
                     ffmpeg_jobs.tasks = [
-                        threading.Thread(target=download_stream, args=(streams[0].url, input_video_pipe)),
-                        threading.Thread(target=download_stream, args=(streams[1].url, input_audio_pipe)),
+                        threading.Thread(target=download_stream, args=(selected_video.url, input_video_pipe)),
+                        threading.Thread(target=download_stream, args=(selected_audio.url, input_audio_pipe)),
                         threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
                     ]
-            elif streams and getattr(streams[0], 'url', None):
+            elif selected_video and getattr(selected_video, 'url', None):
                 ffmpeg_jobs.tasks = [
                     threading.Thread(
                         target=ffmpeg_single_stream,
-                        args=(streams[0].url, output_video_path, start_ms),
+                        args=(selected_video.url, output_video_path, start_ms),
                     ),
                 ]
             else:
