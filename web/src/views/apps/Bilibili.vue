@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { get } from '@/functions/requests'
 import { Search } from '@element-plus/icons-vue'
 import BiliCover from '@/components/BiliCover.vue';
 import BvPlayer from '@/components/BvPlayer.vue';
 
 const searchInput = ref<any>(null);
+const listContainer = ref<HTMLElement | null>(null);
+let listResizeObserver: ResizeObserver | null = null;
 
 const state = reactive({
   videoConfig: null as any,
@@ -24,7 +26,25 @@ const state = reactive({
   searchPageSize: 20,
   searchLoading: false,
   searchFinished: false,
+  gridColumns: 3,
+  gridContainerWidth: 0,
 })
+
+const updateGridColumns = (width: number) => {
+  state.gridContainerWidth = Math.round(width);
+  if (width <= 640) {
+    state.gridColumns = 1;
+  } else if (width <= 860) {
+    state.gridColumns = 2;
+  } else {
+    state.gridColumns = 3;
+  }
+  console.log('[bilibili-grid]', {
+    containerWidth: state.gridContainerWidth,
+    columns: state.gridColumns,
+    viewportWidth: window.innerWidth,
+  });
+}
 
 
 const rankTypes= [
@@ -201,6 +221,21 @@ const videoSelect = (type: string, id: any) => {
 
 onMounted(() => {
   loadHomeVideos();
+  if (listContainer.value) {
+    updateGridColumns(listContainer.value.clientWidth);
+    listResizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        updateGridColumns(entry.contentRect.width);
+      }
+    });
+    listResizeObserver.observe(listContainer.value);
+  }
+})
+
+onUnmounted(() => {
+  listResizeObserver?.disconnect();
+  listResizeObserver = null;
 })
 </script>
 
@@ -210,17 +245,17 @@ onMounted(() => {
       <BvPlayer :type="state.videoConfig.type" :on-close="() => state.videoConfig = null" :id="state.videoConfig.id"/>
   </div>
 
-  <div class="bv-list" @scroll.passive="onListScroll">
+  <div ref="listContainer" class="bv-list" @scroll.passive="onListScroll">
     <el-tabs v-model="state.curTab" @tab-change="tabChange" class="tabs">
       <el-tab-pane label="首页" name="homepage">
-        <el-space wrap>
+        <div class="video-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
           <BiliCover v-for="video of state.homeVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
-        </el-space>
+        </div>
       </el-tab-pane>
       <el-tab-pane label="热门" name="hot">
-        <el-space wrap v-loading="state.hotLoading">
+        <div class="video-grid" v-loading="state.hotLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
           <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
-        </el-space>
+        </div>
         <div v-if="state.hotLoading" class="hot-load-state">加载中...</div>
         <div v-else-if="state.hotFinished && state.hotVideoList.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
@@ -229,9 +264,9 @@ onMounted(() => {
           <el-radio-group v-model="state.rankType" size="large"  @change="(v: string) => loadRankVideos()" class="rank-type">
             <el-radio-button v-for="item of rankTypes" :key="item.value" :label="item.label" :value="item.value" />
           </el-radio-group>
-        <el-space wrap>
+        <div class="video-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
           <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
-        </el-space>
+        </div>
       </el-tab-pane>
       <el-tab-pane label="搜索" name="search">
         <el-input ref="searchInput" class="search-input" v-model="state.searchText" size="large" placeholder="请输入搜索关键词" :prefix-icon="Search"  @keyup.enter="searchByText">
@@ -239,9 +274,9 @@ onMounted(() => {
             <el-button :icon="Search" @click="searchByText"/>
           </template>
         </el-input>
-        <el-space wrap v-loading="state.searchLoading">
+        <div class="video-grid" v-loading="state.searchLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
           <BiliCover v-for="video of state.searchVideoResult" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
-        </el-space>
+        </div>
         <div v-if="state.searchLoading" class="hot-load-state">加载中...</div>
         <div v-else-if="state.searchFinished && state.searchVideoResult.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
@@ -264,6 +299,7 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   overflow-y: auto;
+  container-type: inline-size;
 }
 
 .video-view {
@@ -299,5 +335,12 @@ onMounted(() => {
   text-align: center;
   font-size: 22px;
   color: #64748b;
+}
+
+.video-grid {
+  display: grid;
+  gap: 18px;
+  padding: 0 20px 20px 10px;
+  align-items: start;
 }
 </style>

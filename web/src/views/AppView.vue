@@ -43,28 +43,29 @@ onMounted(() => {
 
 <template>
   <template v-if="state.isTesla">
-    <div class="menu">
-      <div class="menu-top">
-        <div class="menu-item" v-for="item of state.menuTopItems">
-          <el-icon @click="routeTo(item.route)">
-            <component :is="item.icon"></component>
-          </el-icon>
+    <div class="app-shell">
+      <div class="menu">
+        <div class="menu-top">
+          <div class="menu-item" v-for="item of state.menuTopItems">
+            <el-icon @click="routeTo(item.route)">
+              <component :is="item.icon"></component>
+            </el-icon>
+          </div>
+        </div>
+        <div class="menu-bottom">
+          <div class="menu-item" :class="{ 'menu-item-active': item.route == state.curMenu }" v-for="item of state.menuItems">
+            <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'">
+              <img :src="item.icon" class="icon-svg" />
+            </el-icon>
+            <el-icon @click="routeTo(item.route)" v-else>
+              <component :is="item.icon"></component>
+            </el-icon>
+          </div>
         </div>
       </div>
-      <div class="menu-bottom">
-        <div class="menu-item" :class="{ 'menu-item-active': item.route == state.curMenu }" v-for="item of state.menuItems">
-          <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'">
-            <img :src="item.icon" class="icon-svg" />
-          </el-icon>
-          <el-icon @click="routeTo(item.route)" v-else>
-            <component :is="item.icon"></component>
-          </el-icon>
-        </div>
+      <div class="main-view">
+        <RouterView />
       </div>
-    </div>
-
-    <div class="main-view">
-      <RouterView />
     </div>
   </template>
   <template v-else>
@@ -73,6 +74,14 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.app-shell {
+  display: flex;
+  width: 100%;
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
 .icon-svg {
   width: 100%;
   filter: drop-shadow(1000px 0 0 var(--color-text-soft));
@@ -87,14 +96,12 @@ onMounted(() => {
 
 
 .menu {
-  width: 80px;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  position: fixed;
+  width: clamp(68px, 6.8vw, 80px);
+  flex: 0 0 clamp(68px, 6.8vw, 80px);
   border-right: 1px solid var(--color-border);
   background: var(--color-surface);
   backdrop-filter: blur(18px);
+  height: 100%;
 }
 
 .menu-bottom {
@@ -110,10 +117,10 @@ onMounted(() => {
 }
 
 .menu-item {
-  font-size: 50px;
+  font-size: clamp(38px, 4vw, 50px);
   width: 100%;
-  height: 80px;
-  line-height: 80px;
+  height: clamp(68px, 8vh, 80px);
+  line-height: clamp(68px, 8vh, 80px);
   text-align: center;
   color: var(--color-text-soft);
 }
@@ -123,9 +130,10 @@ onMounted(() => {
 }
 
 .main-view {
-  margin-left: 80px;
-  width: 1100px;
-  height: 899px;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: calc(100vw - clamp(68px, 6.8vw, 80px));
+  height: 100dvh;
   overflow: auto;
   color: var(--color-text);
 }
@@ -135,5 +143,16 @@ nav {
   font-size: 12px;
   text-align: center;
   margin-top: 2rem;
+}
+
+@media (max-width: 900px) {
+  .menu {
+    width: 64px;
+    flex-basis: 64px;
+  }
+
+  .main-view {
+    width: calc(100vw - 64px);
+  }
 }
 </style>

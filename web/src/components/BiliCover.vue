@@ -107,8 +107,8 @@ function formatTime(seconds: number | string): string {
 }
 
 .video-card {
-  width: 350px;
-  height: 322px;
+  width: 100%;
+  height: 100%;
   border: 1px solid var(--color-border) !important;
   background: var(--color-card-gradient) !important;
   box-shadow: 0 18px 34px var(--color-shadow);
@@ -148,13 +148,15 @@ function formatTime(seconds: number | string): string {
 
 .video-card .el-card__header {
   padding: 0;
-  width: 350px;
-  height: 196px;
+  width: 100%;
+  aspect-ratio: 350 / 196;
+  height: auto;
+  overflow: hidden;
 }
 
 .video-cover>img {
-  width: 350px;
-  height: 196px;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
 }
 
