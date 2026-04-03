@@ -12,6 +12,7 @@ from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
 from werkzeug.exceptions import ClientDisconnected
 import re
+import shutil
 
 ffplay_stop_event = threading.Event()
 
@@ -37,10 +38,135 @@ ffmpeg_jobs_dict = {
 ffmpeg_jobs = FFMPEGJobs(**ffmpeg_jobs_dict)
 
 
+DEFAULT_BILIBILI_CACHE_DIR = '/tmp/tesla-media-center/bilibili-cache'
+DEFAULT_BILIBILI_CACHE_SIZE_MB = 2048
+
+
+def get_bilibili_cache_dir():
+    cache_dir = get_config_by_key('bilibili_cache_dir', DEFAULT_BILIBILI_CACHE_DIR)
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def get_bilibili_cache_limit_bytes():
+    cache_size_mb = get_config_by_key('bilibili_cache_size_mb', DEFAULT_BILIBILI_CACHE_SIZE_MB)
+    try:
+        cache_size_mb = int(cache_size_mb)
+    except (TypeError, ValueError):
+        cache_size_mb = DEFAULT_BILIBILI_CACHE_SIZE_MB
+    cache_size_mb = max(cache_size_mb, 256)
+    return cache_size_mb * 1024 * 1024
+
+
+def get_cache_done_path(output_video_path):
+    return f'{output_video_path}.done'
+
+
+def get_managed_cache_entries():
+    cache_dir = get_bilibili_cache_dir()
+    entries = []
+    for entry in os.scandir(cache_dir):
+        if not entry.is_file():
+            continue
+        if not entry.name.startswith('bv_output_'):
+            continue
+        if not (entry.name.endswith('.flv') or entry.name.endswith('.flv.done')):
+            continue
+        stat = entry.stat()
+        entries.append({
+            'path': entry.path,
+            'name': entry.name,
+            'size': stat.st_size,
+            'mtime': stat.st_mtime,
+        })
+    return sorted(entries, key=lambda item: item['mtime'])
+
+
+def get_bilibili_cache_stats():
+    cache_dir = get_bilibili_cache_dir()
+    entries = get_managed_cache_entries()
+    total_size = sum(entry['size'] for entry in entries)
+    disk_usage = shutil.disk_usage(cache_dir)
+    return {
+        'cacheDir': cache_dir,
+        'maxSizeMb': get_bilibili_cache_limit_bytes() // (1024 * 1024),
+        'sizeBytes': total_size,
+        'sizeMb': round(total_size / 1024 / 1024, 2),
+        'fileCount': len(entries),
+        'diskFreeMb': round(disk_usage.free / 1024 / 1024, 2),
+        'files': [
+            {
+                'name': entry['name'],
+                'sizeBytes': entry['size'],
+                'sizeMb': round(entry['size'] / 1024 / 1024, 2),
+                'mtime': int(entry['mtime']),
+            }
+            for entry in reversed(entries)
+        ],
+    }
+
+
+def clear_bilibili_cache(exclude_paths=None):
+    exclude_paths = set(exclude_paths or [])
+    deleted_size = 0
+    deleted_count = 0
+    for entry in get_managed_cache_entries():
+        if entry['path'] in exclude_paths:
+            continue
+        try:
+            os.remove(entry['path'])
+            deleted_size += entry['size']
+            deleted_count += 1
+        except FileNotFoundError:
+            continue
+    return {
+        'deletedCount': deleted_count,
+        'deletedSizeBytes': deleted_size,
+        'deletedSizeMb': round(deleted_size / 1024 / 1024, 2),
+    }
+
+
+def enforce_bilibili_cache_limit(exclude_paths=None):
+    exclude_paths = set(exclude_paths or [])
+    limit_bytes = get_bilibili_cache_limit_bytes()
+    entries = get_managed_cache_entries()
+    total_size = sum(entry['size'] for entry in entries)
+    if total_size <= limit_bytes:
+        return {
+            'deletedCount': 0,
+            'deletedSizeBytes': 0,
+            'deletedSizeMb': 0,
+        }
+
+    deleted_size = 0
+    deleted_count = 0
+    for entry in entries:
+        if total_size <= limit_bytes:
+            break
+        if entry['path'] in exclude_paths:
+            continue
+        try:
+            os.remove(entry['path'])
+            total_size -= entry['size']
+            deleted_size += entry['size']
+            deleted_count += 1
+        except FileNotFoundError:
+            continue
+
+    if deleted_count > 0:
+        logger.info(f'evicted bilibili cache, deleted_count:{deleted_count}, deleted_size:{deleted_size}')
+    return {
+        'deletedCount': deleted_count,
+        'deletedSizeBytes': deleted_size,
+        'deletedSizeMb': round(deleted_size / 1024 / 1024, 2),
+    }
+
+
 def get_output_video_path(bvid, cid, start_ms=0):
+    cache_dir = get_bilibili_cache_dir()
     if start_ms > 0:
-        return f'/tmp/bv_output_{bvid}_{cid}_{start_ms}.flv'
-    return f'/tmp/bv_output_{bvid}_{cid}.flv'
+        return os.path.join(cache_dir, f'bv_output_{bvid}_{cid}_{start_ms}.flv')
+    return os.path.join(cache_dir, f'bv_output_{bvid}_{cid}.flv')
 
 
 def wait_for_output_file(output_video_path, timeout=30):
@@ -68,6 +194,36 @@ def make_ffmpeg_headers():
     return '\r\n'.join(header_lines) + '\r\n'
 
 def add_bv_route(app):
+    @app.route('/api/bilibili/cache', methods=['GET'])
+    @login_check
+    def get_bilibili_cache_info():
+        return json_ok(get_bilibili_cache_stats())
+
+    @app.route('/api/bilibili/cache/settings', methods=['POST'])
+    @login_check
+    def set_bilibili_cache_settings():
+        data = request.json or {}
+        max_size_mb = data.get('maxSizeMb')
+        try:
+            max_size_mb = int(max_size_mb)
+        except (TypeError, ValueError):
+            return json_fail('invalid_cache_size'), 400
+        max_size_mb = max(max_size_mb, 256)
+        put_config_by_key('bilibili_cache_size_mb', max_size_mb)
+        cleanup = enforce_bilibili_cache_limit()
+        stats = get_bilibili_cache_stats()
+        stats['cleanup'] = cleanup
+        return json_ok(stats)
+
+    @app.route('/api/bilibili/cache/clear', methods=['POST'])
+    @login_check
+    def clear_bilibili_cache_route():
+        stop_current_jobs()
+        cleanup = clear_bilibili_cache()
+        ffmpeg_jobs.bv = None
+        stats = get_bilibili_cache_stats()
+        stats['cleanup'] = cleanup
+        return json_ok(stats)
 
     @app.route('/api/bilibili/rank', methods=['GET'])
     @login_check
@@ -131,7 +287,7 @@ def add_bv_route(app):
     def ffmpeg(input_video_pipe, input_audio_pipe, output_video_path):
         global ffmpeg_jobs
         
-        DONE_FILE = f'{output_video_path}.done'
+        DONE_FILE = get_cache_done_path(output_video_path)
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
             
@@ -160,8 +316,9 @@ def add_bv_route(app):
         return_code = process.wait()
         logger.info(f'ret code:{return_code}')
         if return_code == 0:
-            with open(f'{output_video_path}.done', 'w') as f:
+            with open(DONE_FILE, 'w') as f:
                 pass
+            enforce_bilibili_cache_limit(exclude_paths={output_video_path, DONE_FILE})
             logger.info(f'ret code:{return_code}, write done file')
         else:
             logger.warning(f'ffmpeg error exit, code:{return_code}')
@@ -169,7 +326,7 @@ def add_bv_route(app):
     def ffmpeg_seek_streams(video_url, audio_url, output_video_path, start_ms):
         global ffmpeg_jobs
 
-        DONE_FILE = f'{output_video_path}.done'
+        DONE_FILE = get_cache_done_path(output_video_path)
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
         if os.path.exists(output_video_path):
@@ -214,6 +371,7 @@ def add_bv_route(app):
         if return_code == 0:
             with open(DONE_FILE, 'w') as f:
                 pass
+            enforce_bilibili_cache_limit(exclude_paths={output_video_path, DONE_FILE})
             logger.info(f'ret code:{return_code}, write done file')
         else:
             logger.warning(f'ffmpeg error exit, code:{return_code}')
@@ -235,7 +393,9 @@ def add_bv_route(app):
         download_url_data = sync(v.get_download_url(cid=cid))
         duration = download_url_data['timelength']
         output_video_path = get_output_video_path(bvid, cid, start_ms)
+        done_file_path = get_cache_done_path(output_video_path)
         job_key = f'{bvid}_{cid}_{start_ms}'
+        enforce_bilibili_cache_limit(exclude_paths={output_video_path, done_file_path})
         
         if ffmpeg_jobs.bv == job_key:
             pass
@@ -420,7 +580,7 @@ def add_bv_route(app):
         end = int(end)
         length = end - start + 1
             
-        DONE_FILE = f'{output_video_path}.done'
+        DONE_FILE = get_cache_done_path(output_video_path)
         CHECK_INTERVAL = 0.1  # 检查间隔（秒）
 
         if not os.path.exists(output_video_path):

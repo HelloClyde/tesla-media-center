@@ -6,7 +6,7 @@ import { reactive } from 'vue'
 import { onMounted, computed } from 'vue'
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import getAMap from '@/functions/amapConfig';
-import { get } from '@/functions/requests'
+import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { RouterView,useRouter, useRoute } from 'vue-router';
 
@@ -29,6 +29,18 @@ const state = reactive({
         devices: ''
     },
     browser: ''
+    ,
+    bilibiliCache: {
+        cacheDir: '',
+        maxSizeMb: 2048,
+        sizeMb: 0,
+        fileCount: 0,
+        diskFreeMb: 0
+    },
+    cacheForm: {
+        maxSizeMb: 2048
+    },
+    cacheLoading: false,
 })
 
 let recorder: MediaRecorder | null = null;
@@ -57,6 +69,8 @@ function refresh() {
         .catch(function (err) {
             state.media.devices = err.name + ": " + err.message
         });
+
+    refreshBilibiliCache();
 }
 
 function h5TTS(text: string) {
@@ -91,6 +105,42 @@ function logout() {
         ElMessage.success('已退出登陆');
         router.push('/login');
     })
+}
+
+function refreshBilibiliCache() {
+    state.cacheLoading = true;
+    get('/api/bilibili/cache', '读取缓存信息失败').then(data => {
+        state.bilibiliCache = data;
+        state.cacheForm.maxSizeMb = data.maxSizeMb;
+    }).finally(() => {
+        state.cacheLoading = false;
+    });
+}
+
+function saveBilibiliCacheSettings() {
+    state.cacheLoading = true;
+    post('/api/bilibili/cache/settings', {
+        maxSizeMb: state.cacheForm.maxSizeMb,
+    }, '保存缓存配置失败').then(data => {
+        state.bilibiliCache = data;
+        state.cacheForm.maxSizeMb = data.maxSizeMb;
+        const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
+        ElMessage.success(deletedSizeMb > 0 ? `缓存上限已保存，并回收了 ${deletedSizeMb} MB` : '缓存上限已保存');
+    }).finally(() => {
+        state.cacheLoading = false;
+    });
+}
+
+function clearBilibiliCache() {
+    state.cacheLoading = true;
+    post('/api/bilibili/cache/clear', {}, '清理缓存失败').then(data => {
+        state.bilibiliCache = data;
+        state.cacheForm.maxSizeMb = data.maxSizeMb;
+        const deletedSizeMb = data.cleanup?.deletedSizeMb ?? 0;
+        ElMessage.success(`缓存已清理，释放 ${deletedSizeMb} MB`);
+    }).finally(() => {
+        state.cacheLoading = false;
+    });
 }
 
 
@@ -136,6 +186,20 @@ onMounted(() => {
             <el-descriptions-item label="账号">
                 <el-button type="default" round @click="logout()">退出登陆</el-button>
             </el-descriptions-item>
+            <el-descriptions-item label="B站缓存">
+                <div class="cache-panel" v-loading="state.cacheLoading">
+                    <div>缓存目录：{{ state.bilibiliCache.cacheDir || '-' }}</div>
+                    <div>当前占用：{{ state.bilibiliCache.sizeMb }} MB</div>
+                    <div>缓存文件：{{ state.bilibiliCache.fileCount }}</div>
+                    <div>磁盘剩余：{{ state.bilibiliCache.diskFreeMb }} MB</div>
+                    <div class="cache-actions">
+                        <el-input-number v-model="state.cacheForm.maxSizeMb" :min="256" :step="256" :max="102400" />
+                        <span>MB</span>
+                        <el-button type="primary" round @click="saveBilibiliCacheSettings">保存缓存上限</el-button>
+                        <el-button type="danger" plain round @click="clearBilibiliCache">一键清理缓存</el-button>
+                    </div>
+                </div>
+            </el-descriptions-item>
         </el-descriptions>
     </SimpleView>
 </template>
@@ -144,5 +208,19 @@ onMounted(() => {
 .text-block {
     word-break: break-word;
     white-space: pre-wrap;
+}
+
+.cache-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.cache-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 4px;
 }
 </style>
