@@ -29,8 +29,10 @@ const state = reactive({
   rankType: 'All',
   curTab: "homepage",
   searchText: '',
-  searchVideoResult: [] as any[],
+  searchResultSections: [] as any[],
+  searchActiveType: '',
   searchPage: 1,
+  searchNextPage: null as number | null,
   searchPageSize: 20,
   searchLoading: false,
   searchFinished: false,
@@ -58,6 +60,77 @@ const state = reactive({
   },
   biliSettingsLoading: false,
 })
+
+const SEARCH_SECTION_LABELS: Record<string, string> = {
+  video: '视频',
+  media_bangumi: '番剧',
+  media_ft: '影视',
+  bili_user: '用户',
+  live_room: '直播间',
+  article: '专栏',
+  topic: '话题',
+  photo: '相簿',
+};
+
+const getSearchItemKey = (item: any, fallbackIndex: number) => {
+  return String(
+    item?.bvid ||
+    item?.season_id ||
+    item?.roomid ||
+    item?.mid ||
+    item?.id ||
+    item?.cv_id ||
+    item?.article_id ||
+    item?.dynamic_id ||
+    `${item?.title || item?.uname || item?.author || 'item'}-${fallbackIndex}`
+  );
+}
+
+const mergeSearchSections = (currentSections: any[], incomingSections: any[]) => {
+  const mergedMap = new Map<string, any>();
+  currentSections.forEach((section) => {
+    mergedMap.set(section.result_type, {
+      ...section,
+      items: [...section.items],
+    });
+  });
+
+  incomingSections.forEach((section) => {
+    const existing = mergedMap.get(section.result_type);
+    if (!existing) {
+      mergedMap.set(section.result_type, {
+        ...section,
+        items: [...section.items],
+      });
+      return;
+    }
+
+    const seen = new Set(existing.items.map((item: any, index: number) => getSearchItemKey(item, index)));
+    section.items.forEach((item: any, index: number) => {
+      const key = getSearchItemKey(item, index);
+      if (!seen.has(key)) {
+        seen.add(key);
+        existing.items.push(item);
+      }
+    });
+  });
+
+  return Array.from(mergedMap.values());
+}
+
+const normalizeSearchSections = (results: any[]) => {
+  return results
+    .filter((section: any) => Array.isArray(section?.data) && section.data.length > 0)
+    .map((section: any) => ({
+      result_type: section.result_type,
+      title: SEARCH_SECTION_LABELS[section.result_type] || section.result_type,
+      items: section.data,
+    }));
+}
+
+const activeSearchSection = computed(() => {
+  return state.searchResultSections.find((section: any) => section.result_type === state.searchActiveType) || null;
+});
 
 const biliCacheUsagePercent = computed(() => {
   const maxSizeMb = Number(state.biliCache.maxSizeMb) || 1;
@@ -232,23 +305,26 @@ const loadSearch = (append = false) => {
   state.searchLoading = true;
   get(`/api/bilibili/search?pageNo=${state.searchPage}&keyword=${encodeURIComponent(state.searchText)}`).then(data => {
     const allReuslt = data.result || [];
-    const videoResult = allReuslt.filter((x: any) => x.result_type == 'video')[0];
-    const incomingList = videoResult?.data || [];
+    const normalizedSections = normalizeSearchSections(allReuslt);
+    const incomingCount = normalizedSections.reduce((count: number, section: any) => count + section.items.length, 0);
+    const currentPage = Number(data?.page) || state.searchPage;
+    const nextPage = Number(data?.next);
+    const pageSize = Number(data?.pagesize) || state.searchPageSize;
+    const totalResults = Number(data?.numResults) || 0;
+    const totalPages = pageSize > 0 && totalResults > 0 ? Math.ceil(totalResults / pageSize) : 0;
     if (append) {
-      const mergedList = [...state.searchVideoResult];
-      const seen = new Set(mergedList.map((video: any) => video.bvid || `${video.aid}-${video.title}`));
-      incomingList.forEach((video: any) => {
-        const key = video.bvid || `${video.aid}-${video.title}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          mergedList.push(video);
-        }
-      });
-      state.searchVideoResult = mergedList;
+      state.searchResultSections = mergeSearchSections(state.searchResultSections, normalizedSections);
     } else {
-      state.searchVideoResult = incomingList;
+      state.searchResultSections = normalizedSections;
     }
-    state.searchFinished = incomingList.length < state.searchPageSize;
+    if (!state.searchActiveType || !state.searchResultSections.some((section: any) => section.result_type === state.searchActiveType)) {
+      state.searchActiveType = state.searchResultSections[0]?.result_type || '';
+    }
+    state.searchNextPage = Number.isFinite(nextPage) && nextPage > currentPage ? nextPage : null;
+    state.searchFinished = normalizedSections.length === 0
+      || incomingCount === 0
+      || (state.searchNextPage === null && totalPages > 0 && currentPage >= totalPages)
+      || (state.searchNextPage === null && totalPages === 0);
   }).finally(() => {
     state.searchLoading = false;
   })
@@ -258,8 +334,10 @@ const searchByText = () => {
   searchInput.value?.blur?.();
   searchInput.value?.input?.blur?.();
   state.searchPage = 1;
+  state.searchNextPage = null;
   state.searchFinished = false;
-  state.searchVideoResult = [];
+  state.searchResultSections = [];
+  state.searchActiveType = '';
   loadSearch(false);
 }
 
@@ -267,7 +345,7 @@ const loadMoreSearch = () => {
   if (state.searchLoading || state.searchFinished || !state.searchText.trim()) {
     return;
   }
-  state.searchPage += 1;
+  state.searchPage = state.searchNextPage ?? (state.searchPage + 1);
   loadSearch(true);
 }
 
@@ -306,6 +384,9 @@ const videoSelect = (type: string, id: any) => {
       break;
     case 'bangumi_ss':
       state.videoConfig = { 'type': 'bangumi_ss', 'id': id}
+      break;
+    default:
+      ElMessage.info('当前类型已支持展示，暂不支持进一步打开');
       break;
   }
   
@@ -495,11 +576,26 @@ onUnmounted(() => {
             <el-button :icon="Search" @click="searchByText"/>
           </template>
         </el-input>
-        <div class="video-grid" v-loading="state.searchLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
-          <BiliCover v-for="video of state.searchVideoResult" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
+        <div class="search-panel" v-loading="state.searchLoading">
+          <el-tabs v-if="state.searchResultSections.length > 0" v-model="state.searchActiveType" class="search-type-tabs">
+            <el-tab-pane v-for="section of state.searchResultSections" :key="section.result_type" :name="section.result_type">
+              <template #label>
+                <span class="search-tab-label">{{ section.title }} <em>{{ section.items.length }}</em></span>
+              </template>
+            </el-tab-pane>
+          </el-tabs>
+          <section v-if="activeSearchSection" class="search-section">
+            <div class="search-section-head">
+              <h3>{{ activeSearchSection.title }}</h3>
+              <span>{{ activeSearchSection.items.length }} 条</span>
+            </div>
+            <div class="video-grid search-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+              <BiliCover v-for="item of activeSearchSection.items" :key="item.bvid || item.season_id || item.roomid || item.mid || item.id || item.cv_id || item.title" :video="item" :on-click="(type, id) => videoSelect(type, id)" />
+            </div>
+          </section>
         </div>
         <div v-if="state.searchLoading" class="hot-load-state">加载中...</div>
-        <div v-else-if="state.searchFinished && state.searchVideoResult.length > 0" class="hot-load-state">没有更多了</div>
+        <div v-else-if="state.searchFinished && state.searchResultSections.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">
         <div class="video-grid" v-loading="state.followingLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
@@ -765,6 +861,57 @@ onUnmounted(() => {
   gap: 18px;
   padding: 0 20px 20px 10px;
   align-items: start;
+}
+
+.search-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.search-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search-type-tabs {
+  margin: 0 20px 0 10px;
+}
+
+.search-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.search-tab-label em {
+  font-style: normal;
+  color: var(--color-text-soft);
+  font-size: 14px;
+}
+
+.search-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 20px 0 10px;
+}
+
+.search-section-head h3 {
+  margin: 0;
+  font-size: 24px;
+  color: var(--color-heading);
+}
+
+.search-section-head span {
+  color: var(--color-text-soft);
+  font-size: 16px;
+}
+
+.search-grid {
+  padding-top: 0;
 }
 
 .favorite-panel {

@@ -52,22 +52,65 @@ function formatTime(seconds: number | string): string {
     }
 }
 
+const coverUrl = computed(() => {
+    return props.video?.pic || props.video?.cover || props.video?.upic || props.video?.face || props.video?.uface || '';
+});
+
+const titleHtml = computed(() => {
+    return props.video?.title || props.video?.uname || props.video?.name || props.video?.season_name || '未命名';
+});
+
+const subtitleText = computed(() => {
+    return props.video?.owner?.name
+        || props.video?.author
+        || props.video?.uname
+        || props.video?.areas
+        || props.video?.styles
+        || props.video?.desc
+        || props.video?.description
+        || props.video?.sign
+        || '';
+});
+
+const metaLabel = computed(() => {
+    if (props.video?.bvid) return '视频';
+    if (props.video?.season_id) return '番剧';
+    if (props.video?.roomid) return '直播';
+    if (props.video?.mid) return '用户';
+    if (props.video?.cv_id || props.video?.id) return '内容';
+    return '搜索结果';
+});
+
+const clickType = computed(() => {
+    if (props.video?.bvid) return 'bv';
+    if (props.video?.season_id) return 'bangumi_ss';
+    if (props.video?.roomid) return 'live_room';
+    if (props.video?.mid) return 'bili_user';
+    if (props.video?.cv_id) return 'article';
+    return 'search_item';
+});
+
+const clickId = computed(() => {
+    return props.video?.bvid || props.video?.season_id || props.video?.roomid || props.video?.mid || props.video?.cv_id || props.video?.id;
+});
+
 </script>
 
 <template>
-    <el-card v-if="props.video?.bvid" class="video-card" @click="props?.onClick('bv', props.video.bvid)">
+    <el-card class="video-card" @click="props?.onClick(clickType, clickId)">
         <template #header>
             <div class="video-cover">
-                <img :src="`${video.pic}@350w_196h_1c_!web-home-common-cover`" />
+                <img v-if="coverUrl" :src="`${coverUrl}@350w_196h_1c_!web-home-common-cover`" />
+                <div v-else class="cover-placeholder">{{ metaLabel }}</div>
                 <div class="cover-float">
                     <div truncated class="video-duration">
-                        {{ formatTime(props.video?.duration) }}
+                        {{ props.video?.duration ? formatTime(props.video?.duration) : metaLabel }}
                     </div>
                 </div>
             </div>
         </template>
         <el-text line-clamp="2" class="video-title">
-            <div v-html="video.title"></div>
+            <div v-html="titleHtml"></div>
         </el-text>
         <el-row>
             <el-col :span="20">
@@ -75,7 +118,7 @@ function formatTime(seconds: number | string): string {
                 <el-icon>
                     <User />
                 </el-icon>
-                {{ video?.owner?.name || video?.author }}
+                {{ subtitleText || metaLabel }}
                 </el-text>
             </el-col>
             <el-col :span="4">
@@ -83,22 +126,6 @@ function formatTime(seconds: number | string): string {
             
         </el-row>
     </el-card>
-    <el-card v-else-if="props.video?.season_id" class="video-card" @click="props?.onClick('bangumi_ss', props.video.season_id)">
-        <template #header>
-            <div class="video-cover">
-                <img :src="`${video.cover}@350w_196h_1c_!web-home-common-cover`" />
-            </div>
-        </template>
-        <el-text line-clamp="2" class="video-title">
-            {{ video.title }}
-        </el-text>
-        <el-row>
-            <el-text truncated class="video-author">
-                {{ props.video?.rating }}
-            </el-text>
-        </el-row>
-    </el-card>
-    
 </template>
 
 <style>
@@ -158,6 +185,18 @@ function formatTime(seconds: number | string): string {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--color-accent-soft) 0%, var(--color-panel-muted) 100%);
+  color: var(--color-heading);
+  font-size: 24px;
+  font-weight: 700;
 }
 
 </style>
