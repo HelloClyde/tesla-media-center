@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, shallowRef, onUnmounted, computed } from 'vue';
+import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { generateSilentWav } from '@/functions/audioUtils';
@@ -10,7 +10,7 @@ const videoLoading = ref(null);
 const timeTrack = ref(null);
 const timeLabel = ref(null);
 
-let videoPlayer = shallowRef<any>(null);
+let videoPlayer: any = null;
 
 const state = reactive({
     curFiles: [] as any[],

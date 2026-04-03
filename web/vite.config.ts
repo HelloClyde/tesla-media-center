@@ -2,7 +2,6 @@ import { fileURLToPath, URL } from 'node:url'
 
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import vueJsx from '@vitejs/plugin-vue-jsx'
 
 import compresssionBuild from "rollup-plugin-compression";
 import type { ICompressionOptions } from "rollup-plugin-compression";
@@ -16,7 +15,6 @@ import type { ICompressionOptions } from "rollup-plugin-compression";
 export default defineConfig({
   plugins: [
     vue(),
-    vueJsx(),
     // compresssionBuild(option)
   ],
   define:{
@@ -39,4 +37,3 @@ export default defineConfig({
     }
   }
 })
-

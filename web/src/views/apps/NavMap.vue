@@ -8,17 +8,17 @@ import getAMap from '@/functions/amapConfig';
 import carImg from '@/assets/car.png';
 import { ElMessage } from 'element-plus';
 // import { AMapConfig } from '@/config/AMapConfig';
-import { ref, shallowRef } from '@vue/reactivity';
+import { ref } from '@vue/reactivity';
 
 const postionState = useGeoLocationStore();
 
-let gAMap = shallowRef<any>(null);
-let myMap = shallowRef<any>(null);
+let gAMap: any = null;
+let myMap: any = null;
 
 // 地址搜索
-let geoSearch = shallowRef<any>(null);
-let driving = shallowRef<any>(null);
-let trafficLayer = shallowRef<any>(null);
+let geoSearch: any = null;
+let driving: any = null;
+let trafficLayer: any = null;
 
 const state = reactive({
     lastPos: null as (GeoLocation | null),
