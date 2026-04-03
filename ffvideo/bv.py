@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify, stream_with_context, redirect, send_from_directory, abort, send_file, make_response
 import requests
-from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass, login_v2, user
+from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass, login_v2, user, favorite_list
 from loguru import logger
 import imageio_ffmpeg
 import subprocess
@@ -110,6 +110,13 @@ def get_bilibili_auth_status():
             'loggedIn': False,
             'profile': None,
         }
+
+
+def require_bilibili_credential():
+    credential = get_bilibili_credential()
+    if not credential.has_sessdata():
+        return None, (json_fail('bilibili_auth_required', message='请先在“我的”页登录 B 站'), 401)
+    return credential, None
 
 
 def get_bilibili_cache_limit_bytes():
@@ -327,20 +334,25 @@ def add_bv_route(app):
             if qr_login is None:
                 return json_fail('qrcode_not_found', message='请先生成二维码'), 404
 
-            event = sync(qr_login.check_state())
-            status = event.value
-            if event == login_v2.QrCodeLoginEvents.DONE:
-                credential = qr_login.get_credential()
-                save_bilibili_credential(credential)
+            try:
+                event = sync(qr_login.check_state())
+                status = event.value
+                if event == login_v2.QrCodeLoginEvents.DONE:
+                    credential = qr_login.get_credential()
+                    save_bilibili_credential(credential)
+                    qr_login = None
+                    auth_status = get_bilibili_auth_status()
+                    auth_status['status'] = status
+                    return json_ok(auth_status)
+                if event == login_v2.QrCodeLoginEvents.TIMEOUT:
+                    qr_login = None
+                return json_ok({
+                    'status': status,
+                })
+            except Exception as e:
+                logger.exception('poll bilibili qrcode failed')
                 qr_login = None
-                auth_status = get_bilibili_auth_status()
-                auth_status['status'] = status
-                return json_ok(auth_status)
-            if event == login_v2.QrCodeLoginEvents.TIMEOUT:
-                qr_login = None
-            return json_ok({
-                'status': status,
-            })
+                return json_fail('qrcode_poll_failed', message=str(e)), 500
 
     @app.route('/api/bilibili/auth/logout', methods=['POST'])
     @login_check
@@ -352,6 +364,95 @@ def add_bv_route(app):
         return json_ok({
             'loggedIn': False,
             'profile': None,
+        })
+
+    @app.route('/api/bilibili/following/bangumi', methods=['GET'])
+    @login_check
+    def get_bilibili_following_bangumi():
+        credential, error = require_bilibili_credential()
+        if error:
+            return error
+
+        pn = int(request.args.get('pn', '1'))
+        ps = int(request.args.get('ps', '15'))
+        type_value = int(request.args.get('type', str(user.BangumiType.BANGUMI.value)))
+        self_info = sync(user.get_self_info(credential))
+        current_user = user.User(uid=self_info['mid'], credential=credential)
+        resp = sync(current_user.get_subscribed_bangumi(
+            type_=user.BangumiType(type_value),
+            pn=pn,
+            ps=ps,
+        ))
+        items = resp.get('list', []) or resp.get('items', []) or []
+        mapped = []
+        for item in items:
+            mapped.append({
+                'season_id': item.get('season_id') or item.get('seasonId'),
+                'title': item.get('title') or item.get('season_title'),
+                'cover': item.get('cover') or item.get('square_cover'),
+                'rating': item.get('new_ep', {}).get('index_show') or item.get('evaluate') or item.get('areas', ''),
+            })
+        return json_ok({
+            'list': mapped,
+            'pn': pn,
+            'ps': ps,
+            'total': resp.get('total'),
+            'hasMore': len(mapped) >= ps,
+        })
+
+    @app.route('/api/bilibili/favorites/folders', methods=['GET'])
+    @login_check
+    def get_bilibili_favorite_folders():
+        credential, error = require_bilibili_credential()
+        if error:
+            return error
+
+        self_info = sync(user.get_self_info(credential))
+        resp = sync(favorite_list.get_video_favorite_list(uid=self_info['mid'], credential=credential))
+        folders = resp.get('list', []) or resp.get('list_list', []) or []
+        mapped = []
+        for folder in folders:
+            mapped.append({
+                'id': folder.get('id') or folder.get('media_id'),
+                'title': folder.get('title'),
+                'count': folder.get('media_count') or folder.get('count') or 0,
+            })
+        return json_ok(mapped)
+
+    @app.route('/api/bilibili/favorites/content', methods=['GET'])
+    @login_check
+    def get_bilibili_favorite_folder_content():
+        credential, error = require_bilibili_credential()
+        if error:
+            return error
+
+        media_id = int(request.args.get('media_id', '0'))
+        page = int(request.args.get('page', '1'))
+        resp = sync(favorite_list.get_video_favorite_list_content(
+            media_id=media_id,
+            page=page,
+            credential=credential,
+        ))
+        medias = resp.get('medias', []) or resp.get('items', []) or []
+        mapped = []
+        for item in medias:
+            mapped.append({
+                'bvid': item.get('bvid'),
+                'title': item.get('title'),
+                'pic': item.get('cover') or item.get('pic'),
+                'duration': item.get('duration'),
+                'author': item.get('upper', {}).get('name') or item.get('author'),
+                'owner': {
+                    'name': item.get('upper', {}).get('name') or item.get('author'),
+                },
+            })
+        info = resp.get('info', {}) or {}
+        return json_ok({
+            'list': mapped,
+            'title': info.get('title'),
+            'mediaId': media_id,
+            'page': page,
+            'hasMore': len(mapped) >= 20,
         })
 
     @app.route('/api/bilibili/cache', methods=['GET'])

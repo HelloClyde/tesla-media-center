@@ -19,6 +19,12 @@ const state = reactive({
   hotPageSize: 20,
   hotLoading: false,
   hotFinished: false,
+  followingList: [] as any[],
+  followingLoading: false,
+  favoriteFolders: [] as any[],
+  favoriteFolderId: null as number | null,
+  favoriteList: [] as any[],
+  favoriteLoading: false,
   rankVideoList: [] as any[],
   rankType: 'All',
   curTab: "homepage",
@@ -150,6 +156,54 @@ const loadRankVideos = () => {
   });
 }
 
+const loadFollowingBangumi = () => {
+  if (state.followingLoading) {
+    return;
+  }
+  state.followingLoading = true;
+  get('/api/bilibili/following/bangumi?pn=1&ps=30', '读取关注列表失败').then((data) => {
+    state.followingList = data.list || [];
+  }).finally(() => {
+    state.followingLoading = false;
+  });
+}
+
+const loadFavoriteContent = (mediaId?: number | null) => {
+  const targetMediaId = mediaId ?? state.favoriteFolderId;
+  if (!targetMediaId || state.favoriteLoading) {
+    return;
+  }
+  state.favoriteLoading = true;
+  get(`/api/bilibili/favorites/content?media_id=${targetMediaId}&page=1`, '读取收藏内容失败').then((data) => {
+    state.favoriteFolderId = targetMediaId;
+    state.favoriteList = data.list || [];
+  }).finally(() => {
+    state.favoriteLoading = false;
+  });
+}
+
+const loadFavoriteFolders = () => {
+  if (state.favoriteLoading) {
+    return;
+  }
+  state.favoriteLoading = true;
+  get('/api/bilibili/favorites/folders', '读取收藏夹失败').then((data) => {
+    state.favoriteFolders = data || [];
+    if (!state.favoriteFolderId && state.favoriteFolders.length > 0) {
+      state.favoriteFolderId = state.favoriteFolders[0].id;
+    }
+  }).then(() => {
+    if (state.favoriteFolderId) {
+      return get(`/api/bilibili/favorites/content?media_id=${state.favoriteFolderId}&page=1`, '读取收藏内容失败').then((data) => {
+        state.favoriteList = data.list || [];
+      });
+    }
+    state.favoriteList = [];
+  }).finally(() => {
+    state.favoriteLoading = false;
+  });
+}
+
 const loadSearch = (append = false) => {
   if (state.searchLoading || !state.searchText.trim() || (append && state.searchFinished)) {
     return;
@@ -209,6 +263,12 @@ const tabChange = (name: string) => {
       break;
     case 'rank':
       loadRankVideos();
+      break;
+    case '关注':
+      loadFollowingBangumi();
+      break;
+    case 'favorite':
+      loadFavoriteFolders();
       break;
     case 'my':
       loadBiliAuthStatus();
@@ -369,7 +429,21 @@ onUnmounted(() => {
         <div v-if="state.searchLoading" class="hot-load-state">加载中...</div>
         <div v-else-if="state.searchFinished && state.searchVideoResult.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
-      <el-tab-pane label="关注" name="关注">关注</el-tab-pane>
+      <el-tab-pane label="关注" name="关注">
+        <div class="video-grid" v-loading="state.followingLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+          <BiliCover v-for="video of state.followingList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="收藏" name="favorite">
+        <div class="favorite-panel" v-loading="state.favoriteLoading">
+          <el-radio-group v-if="state.favoriteFolders.length > 0" v-model="state.favoriteFolderId" class="favorite-folders" @change="(value: number) => loadFavoriteContent(value)">
+            <el-radio-button v-for="folder of state.favoriteFolders" :key="folder.id" :label="folder.title" :value="folder.id" />
+          </el-radio-group>
+          <div class="video-grid favorite-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+            <BiliCover v-for="video of state.favoriteList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
+          </div>
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="我的" name="my">
         <div class="bili-auth-panel" v-loading="state.biliAuthLoading">
           <template v-if="state.biliLoggedIn">
@@ -442,11 +516,65 @@ onUnmounted(() => {
 }
 
 .rank-type{
-  margin: 0 0 10px 0;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  overflow-x: auto;
+  margin: 4px 20px 18px 10px;
+  padding: 6px;
+  scrollbar-width: none;
 }
 
-.rank-type span{
-  font-size: 22px !important;
+.rank-type::-webkit-scrollbar {
+  display: none;
+}
+
+.rank-type :deep(.el-radio-button__inner) {
+  min-width: max-content;
+  padding: 10px 16px;
+  border: none !important;
+  border-radius: 999px !important;
+  background: transparent;
+  color: var(--color-text-soft);
+  font-size: 18px !important;
+  font-weight: 600;
+  line-height: 1;
+  box-shadow: none !important;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.rank-type :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+  background: linear-gradient(135deg, var(--color-accent-soft) 0%, color-mix(in srgb, var(--color-accent) 18%, var(--color-surface)) 100%);
+  color: var(--color-accent);
+  box-shadow: 0 10px 22px var(--color-shadow) !important;
+}
+
+.rank-type :deep(.el-radio-button:first-child .el-radio-button__inner),
+.rank-type :deep(.el-radio-button:last-child .el-radio-button__inner) {
+  border-radius: 999px !important;
+}
+
+.rank-type :deep(.el-radio-button) {
+  display: inline-flex;
+  border-radius: 999px;
+  border: none !important;
+  overflow: visible;
+  background: transparent;
+  box-shadow: none !important;
+}
+
+.rank-type :deep(.el-radio-button__inner::before) {
+  display: none !important;
+}
+
+.rank-type :deep(.el-radio-button__original-radio) {
+  appearance: none;
+}
+
+.rank-type :deep(.el-radio-button__inner:hover) {
+  background: var(--color-panel-muted);
+  color: var(--color-heading);
+  transform: translateY(-1px);
 }
 
 .hot-load-state {
@@ -461,6 +589,20 @@ onUnmounted(() => {
   gap: 18px;
   padding: 0 20px 20px 10px;
   align-items: start;
+}
+
+.favorite-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.favorite-folders {
+  margin: 0 20px 0 10px;
+}
+
+.favorite-grid {
+  padding-top: 0;
 }
 
 .bili-auth-panel {
