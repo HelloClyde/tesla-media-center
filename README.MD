@@ -235,6 +235,7 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 7. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
 8. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
 9. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
+10. `tesla_db_path`：Tesla SQLite 数据库路径，默认 `./db/tesla_history.sqlite3`
 
 缓存说明：
 

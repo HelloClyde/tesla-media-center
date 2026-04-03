@@ -223,8 +223,7 @@ onUnmounted(() => {
     min-height: 100%;
     display: flex;
     flex-direction: column;
-    overflow-x: hidden;
-    overflow-y: auto;
+    overflow: hidden;
     background: var(--color-surface);
 }
 
@@ -279,6 +278,7 @@ onUnmounted(() => {
 }
 
 .local-player-stage {
+    flex: 0 0 auto;
     position: relative;
     width: 100%;
     max-width: 100%;
@@ -295,8 +295,10 @@ onUnmounted(() => {
 }
 
 .local-playlist {
-    flex: 0 0 auto;
-    overflow: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 12px 16px 16px;
     box-sizing: border-box;
 }

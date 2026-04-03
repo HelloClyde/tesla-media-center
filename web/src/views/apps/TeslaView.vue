@@ -25,6 +25,8 @@ const state = reactive({
     hasAccessToken: false,
     hasRefreshToken: false,
     dbPath: '',
+    retentionDays: 30,
+    maxStorageMb: 256,
   },
   status: {
     configured: false,
@@ -36,25 +38,29 @@ const state = reactive({
   selectedVin: '',
   latestSample: null as any,
   trackPoints: [] as any[],
+  trips: [] as any[],
   settingsLoading: false,
   statusLoading: false,
   syncLoading: false,
+  tripsLoading: false,
+  storageLoading: false,
   mapReady: false,
   mapError: '',
+  storage: {
+    dbPath: '',
+    dbSizeMb: 0,
+    sampleCount: 0,
+    vehicleCount: 0,
+    oldestTimestampMs: 0,
+    latestTimestampMs: 0,
+    retentionDays: 30,
+    maxStorageMb: 256,
+    backgroundSyncRunning: false,
+  },
 });
 
 const selectedVehicle = computed(() => {
   return state.vehicles.find((item: any) => item.vin === state.selectedVin) || null;
-});
-
-const tripSummary = computed(() => {
-  const latest = state.latestSample || {};
-  return [
-    { label: '轨迹点数', value: String(state.trackPoints.length) },
-    { label: '当前车辆', value: selectedVehicle.value?.displayName || '-' },
-    { label: '当前状态', value: latest.vehicle_state || selectedVehicle.value?.state || '-' },
-    { label: '最近记录', value: formatTimestamp(latest.timestamp_ms) },
-  ];
 });
 
 const sampleCards = computed(() => {
@@ -80,6 +86,18 @@ function formatTimestamp(timestampMs?: number) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
 }
 
+function formatDuration(totalSec?: number) {
+  if (!totalSec) {
+    return '0 分钟';
+  }
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  if (hours > 0) {
+    return `${hours}小时${minutes}分钟`;
+  }
+  return `${minutes}分钟`;
+}
+
 function loadSettings() {
   state.settingsLoading = true;
   return get('/api/tesla/settings', '读取 Tesla 配置失败').then((data) => {
@@ -93,6 +111,8 @@ function loadSettings() {
     state.settings.hasAccessToken = Boolean(data.accessToken || data.hasAccessToken);
     state.settings.hasRefreshToken = Boolean(data.refreshToken || data.hasRefreshToken);
     state.settings.dbPath = data.dbPath || '';
+    state.settings.retentionDays = Number(data.retentionDays) || 30;
+    state.settings.maxStorageMb = Number(data.maxStorageMb) || 256;
   }).finally(() => {
     state.settingsLoading = false;
   });
@@ -108,6 +128,8 @@ function saveSettings() {
     tokenPath: state.settings.tokenPath.trim(),
     accessToken: state.settings.accessToken.trim(),
     refreshToken: state.settings.refreshToken.trim(),
+    retentionDays: state.settings.retentionDays,
+    maxStorageMb: state.settings.maxStorageMb,
   }, '保存 Tesla 配置失败').then((data) => {
     state.settings.mode = data.mode || 'owner_api';
     state.settings.clientId = data.clientId || '';
@@ -119,9 +141,35 @@ function saveSettings() {
     state.settings.hasAccessToken = Boolean(data.accessToken || data.hasAccessToken);
     state.settings.hasRefreshToken = Boolean(data.refreshToken || data.hasRefreshToken);
     state.settings.dbPath = data.dbPath || '';
+    state.settings.retentionDays = Number(data.retentionDays) || 30;
+    state.settings.maxStorageMb = Number(data.maxStorageMb) || 256;
     ElMessage.success('Tesla 配置已保存');
+    return loadStorage();
   }).finally(() => {
     state.settingsLoading = false;
+  });
+}
+
+function loadStorage() {
+  state.storageLoading = true;
+  return get('/api/tesla/storage', '读取 Tesla 存储信息失败').then((data) => {
+    state.storage = data;
+  }).finally(() => {
+    state.storageLoading = false;
+  });
+}
+
+function clearStorage() {
+  state.storageLoading = true;
+  post('/api/tesla/storage/clear', {}, '清理 Tesla SQLite 记录失败').then((data) => {
+    state.storage = data;
+    state.trackPoints = [];
+    state.trips = [];
+    state.latestSample = null;
+    renderTrackOnMap();
+    ElMessage.success('Tesla SQLite 记录已清理');
+  }).finally(() => {
+    state.storageLoading = false;
   });
 }
 
@@ -157,12 +205,29 @@ function loadTrack() {
   });
 }
 
+function loadTrips() {
+  if (!state.selectedVin) {
+    state.trips = [];
+    return Promise.resolve();
+  }
+  state.tripsLoading = true;
+  return get(`/api/tesla/history/trips?vin=${encodeURIComponent(state.selectedVin)}&limit=2000`, '读取行程失败').then((data) => {
+    state.trips = data.items || [];
+  }).finally(() => {
+    state.tripsLoading = false;
+  });
+}
+
+function handleVehicleChange() {
+  return Promise.all([loadTrack(), loadTrips()]);
+}
+
 function syncVehicles(showMessage = false) {
   state.syncLoading = true;
   return post('/api/tesla/sync', {
     vin: state.selectedVin || undefined,
   }, '同步 Tesla 数据失败').then(() => {
-    return Promise.all([loadStatus(), loadVehicles(), loadTrack()]).then(() => {
+    return Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadStorage()]).then(() => {
       if (showMessage) {
         ElMessage.success('Tesla 数据已同步');
       }
@@ -178,6 +243,7 @@ function logoutTesla() {
     state.status.profile = null;
     state.vehicles = [];
     state.trackPoints = [];
+    state.trips = [];
     state.latestSample = null;
     renderTrackOnMap();
     ElMessage.success('Tesla 已断开连接');
@@ -245,16 +311,17 @@ function renderTrackOnMap() {
 
 onMounted(() => {
   Promise.all([loadSettings(), loadStatus()]).then(() => {
+    loadStorage();
     if (state.status.authorized) {
-      return loadVehicles().then(() => loadTrack());
+      return loadVehicles().then(() => Promise.all([loadTrack(), loadTrips()]));
     }
   });
   initMap();
   autoSyncTimer = window.setInterval(() => {
     if (state.status.authorized && !state.syncLoading) {
-      syncVehicles(false);
+      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadStorage()]);
     }
-  }, 30000);
+  }, 15000);
 });
 
 onUnmounted(() => {
@@ -281,7 +348,7 @@ onUnmounted(() => {
               <div class="vehicle-overview">
                 <div class="vehicle-main">
                   <span class="vehicle-label">当前车辆</span>
-                  <el-select v-model="state.selectedVin" placeholder="选择车辆" class="vehicle-select" @change="loadTrack">
+                  <el-select v-model="state.selectedVin" placeholder="选择车辆" class="vehicle-select" @change="handleVehicleChange">
                     <el-option v-for="vehicle of state.vehicles" :key="vehicle.vin" :label="`${vehicle.displayName} (${vehicle.vin})`" :value="vehicle.vin" />
                   </el-select>
                 </div>
@@ -326,20 +393,52 @@ onUnmounted(() => {
 
         <el-tab-pane label="行程" name="trip">
           <section class="tesla-grid tesla-grid--content">
-            <article class="tesla-card">
+            <article class="tesla-card" v-loading="state.tripsLoading">
               <div class="card-head">
                 <div>
                   <p class="tesla-kicker">Trips</p>
                   <h2>行程</h2>
                 </div>
               </div>
-              <div class="state-grid">
-                <div v-for="item of tripSummary" :key="item.label" class="state-box">
-                  <span>{{ item.label }}</span>
-                  <strong>{{ item.value }}</strong>
+              <div v-if="state.trips.length === 0" class="trip-empty">
+                当前车辆还没有可展示的行程记录
+              </div>
+              <div v-else class="trip-list">
+                <div v-for="trip of state.trips" :key="`${trip.startTimeMs}-${trip.endTimeMs}`" class="trip-item">
+                  <div class="trip-main">
+                    <div>
+                      <span class="trip-label">出发</span>
+                      <strong>{{ formatTimestamp(trip.startTimeMs) }}</strong>
+                    </div>
+                    <div>
+                      <span class="trip-label">结束</span>
+                      <strong>{{ formatTimestamp(trip.endTimeMs) }}</strong>
+                    </div>
+                  </div>
+                  <div class="trip-metrics">
+                    <div class="trip-metric">
+                      <span>时长</span>
+                      <strong>{{ formatDuration(trip.durationSec) }}</strong>
+                    </div>
+                    <div class="trip-metric">
+                      <span>里程</span>
+                      <strong>{{ trip.distanceKm }} km</strong>
+                    </div>
+                    <div class="trip-metric">
+                      <span>最高时速</span>
+                      <strong>{{ trip.maxSpeed }} km/h</strong>
+                    </div>
+                    <div class="trip-metric">
+                      <span>电量变化</span>
+                      <strong>{{ trip.startBatteryLevel ?? '-' }}% → {{ trip.endBatteryLevel ?? '-' }}%</strong>
+                    </div>
+                    <div class="trip-metric">
+                      <span>轨迹点</span>
+                      <strong>{{ trip.pointCount }}</strong>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <p class="helper-text">当前版本先基于已有轨迹和最近状态展示行程概要。后续如果接入 drive session 切分，这里再扩成完整行程列表。</p>
             </article>
           </section>
         </el-tab-pane>
@@ -378,6 +477,42 @@ onUnmounted(() => {
               <p class="helper-text">只需要填写 `Access Token` 和 `Refresh Token`。默认接口参数已经内置，并按 TeslaMate 文档的 China 配置工作；保存时会先校验 `Refresh Token`，已保存的 token 会直接回填到输入框里。</p>
               <div class="button-row">
                 <el-button type="primary" round @click="saveSettings">保存配置</el-button>
+              </div>
+            </article>
+
+            <article class="tesla-card" v-loading="state.storageLoading">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">SQLite</p>
+                  <h2>存储管理</h2>
+                </div>
+                <div class="status-pill" :class="{ 'status-pill--ok': state.storage.backgroundSyncRunning }">
+                  {{ state.storage.backgroundSyncRunning ? '后台采集中' : '未运行' }}
+                </div>
+              </div>
+              <div class="meta-stack">
+                <div class="meta-line"><span>数据库路径</span><strong>{{ state.storage.dbPath || '-' }}</strong></div>
+                <div class="meta-line"><span>当前占用</span><strong>{{ state.storage.dbSizeMb }} MB</strong></div>
+                <div class="meta-line"><span>样本数</span><strong>{{ state.storage.sampleCount }}</strong></div>
+                <div class="meta-line"><span>车辆缓存数</span><strong>{{ state.storage.vehicleCount }}</strong></div>
+                <div class="meta-line"><span>最早记录</span><strong>{{ formatTimestamp(state.storage.oldestTimestampMs) }}</strong></div>
+                <div class="meta-line"><span>最新记录</span><strong>{{ formatTimestamp(state.storage.latestTimestampMs) }}</strong></div>
+                <div class="meta-line"><span>后台轮询</span><strong>静止 60 秒 / 行驶 10 秒</strong></div>
+                <div class="meta-line"><span>Token 续期</span><strong>离失效前 30 分钟自动刷新</strong></div>
+              </div>
+              <div class="form-grid">
+                <div class="field">
+                  <span>最长保留（天）</span>
+                  <el-input-number v-model="state.settings.retentionDays" :min="1" :max="365" />
+                </div>
+                <div class="field">
+                  <span>最大空间（MB）</span>
+                  <el-input-number v-model="state.settings.maxStorageMb" :min="16" :max="8192" :step="16" />
+                </div>
+              </div>
+              <div class="button-row">
+                <el-button round @click="loadStorage">刷新状态</el-button>
+                <el-button type="danger" plain round @click="clearStorage">清理记录</el-button>
               </div>
             </article>
 
@@ -650,6 +785,62 @@ onUnmounted(() => {
   color: var(--color-heading);
 }
 
+.trip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.trip-item {
+  border-radius: 20px;
+  border: 1px solid var(--color-border);
+  background: linear-gradient(180deg, var(--color-panel-muted), transparent);
+  padding: 18px;
+}
+
+.trip-main {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.trip-main strong,
+.trip-metric strong {
+  display: block;
+  color: var(--color-heading);
+}
+
+.trip-label,
+.trip-metric span {
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.trip-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.trip-metric {
+  border-radius: 16px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  padding: 12px 14px;
+}
+
+.trip-empty {
+  min-height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-soft);
+  border-radius: 20px;
+  border: 1px dashed var(--color-border);
+  background: var(--color-panel-muted);
+}
+
 .tesla-card--map {
   min-height: 560px;
 }
@@ -698,6 +889,11 @@ onUnmounted(() => {
 
   .state-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trip-main,
+  .trip-metrics {
+    grid-template-columns: 1fr;
   }
 }
 </style>

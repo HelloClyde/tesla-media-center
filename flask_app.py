@@ -89,4 +89,5 @@ if __name__ == '__main__':
     local_video.add_local_video_route(app)
     bv.add_bv_route(app)
     tesla.add_tesla_route(app)
+    tesla.start_tesla_background_sync()
     app.run(host='0.0.0.0', threaded=True, port=8080)
