@@ -72,12 +72,42 @@ class MemoryBlock extends MemoryView {
 
 class ROMView extends MemoryView {
 	constructor(rom, offset) {
-		super(rom, offset);
+		super(rom);
+		this.romOffset = typeof offset === "number" ? offset : 0;
+		this.romLength = Math.max(0, rom.byteLength - this.romOffset);
 		this.ICACHE_PAGE_BITS = 10;
 		this.PAGE_MASK = (2 << this.ICACHE_PAGE_BITS) - 1;
 		this.icache = new Array(rom.byteLength >> (this.ICACHE_PAGE_BITS + 1));
 		this.mask = 0x01ffffff;
 		this.resetMask();
+	}
+	normalizeOffset(offset, align) {
+		if (!this.romLength) {
+			return this.romOffset;
+		}
+		var normalized = offset & this.mask;
+		if (align > 1) {
+			normalized &= ~(align - 1);
+		}
+		normalized %= this.romLength;
+		return this.romOffset + normalized;
+	}
+	load8(offset) {
+		return this.view.getInt8(this.normalizeOffset(offset, 1));
+	}
+	load16(offset) {
+		return this.view.getInt16(this.normalizeOffset(offset, 2), true);
+	}
+	loadU8(offset) {
+		return this.view.getUint8(this.normalizeOffset(offset, 1));
+	}
+	loadU16(offset) {
+		return this.view.getUint16(this.normalizeOffset(offset, 2), true);
+	}
+	load32(offset) {
+		var rotate = (offset & 3) << 3;
+		var mem = this.view.getInt32(this.normalizeOffset(offset, 4), true);
+		return (mem >>> rotate) | (mem << (32 - rotate));
 	}
 	store8(offset, value) {}
 	store16(offset, value) {
@@ -379,29 +409,32 @@ class GameBoyAdvanceMMU {
 		this.bios.real = !!real;
 		this.bios.mmu = this;
 	}
-	loadRom(rom, process) {
-		var cart = {
-			title: null,
-			code: null,
-			maker: null,
-			memory: rom,
-			saveType: null
-		};
+		loadRom(rom, process) {
+			var cart = {
+				title: null,
+				code: null,
+				maker: null,
+				memory: rom,
+				saveType: null
+			};
 
 		var lo = new ROMView(rom);
 		if (lo.view.getUint8(0xb2) != 0x96) {
 			// Not a valid ROM
 			return null;
 		}
-		lo.mmu = this; // Needed for GPIO
-		this.memory[this.REGION_CART0] = lo;
-		this.memory[this.REGION_CART1] = lo;
-		this.memory[this.REGION_CART2] = lo;
+			lo.mmu = this; // Needed for GPIO
+			this.memory[this.REGION_CART0] = lo;
+			this.memory[this.REGION_CART0 + 1] = lo;
+			this.memory[this.REGION_CART1] = lo;
+			this.memory[this.REGION_CART1 + 1] = lo;
+			this.memory[this.REGION_CART2] = lo;
+			this.memory[this.REGION_CART2 + 1] = lo;
 
-		if (rom.byteLength > 0x01000000) {
-			var hi = new ROMView(rom, 0x01000000);
-			this.memory[this.REGION_CART0 + 1] = hi;
-			this.memory[this.REGION_CART1 + 1] = hi;
+			if (rom.byteLength > 0x01000000) {
+				var hi = new ROMView(rom, 0x01000000);
+				this.memory[this.REGION_CART0 + 1] = hi;
+				this.memory[this.REGION_CART1 + 1] = hi;
 			this.memory[this.REGION_CART2 + 1] = hi;
 		}
 
@@ -707,9 +740,7 @@ class GameBoyAdvanceMMU {
 
 		if (
 			sourceRegion == this.REGION_WORKING_RAM ||
-			sourceRegion == this.REGION_WORKING_IRAM ||
-			sourceRegion == this.REGION_CART0 ||
-			sourceRegion == this.REGION_CART1
+			sourceRegion == this.REGION_WORKING_IRAM
 		) {
 			sourceView = sourceBlock.view;
 			sourceMask = sourceBlock.mask;

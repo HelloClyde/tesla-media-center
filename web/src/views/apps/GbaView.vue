@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { CaretRight, FolderOpened, RefreshRight, Refresh, VideoPause } from '@element-plus/icons-vue';
 import { get } from '@/functions/requests';
+import { generateSilentWav } from '@/functions/audioUtils';
 
 declare global {
   interface Window {
@@ -13,6 +14,7 @@ declare global {
 }
 
 const canvasRef = ref<HTMLCanvasElement | null>(null);
+const silentAudioRef = ref<HTMLAudioElement | null>(null);
 
 const state = reactive({
   viewMode: 'library',
@@ -121,6 +123,7 @@ function ensureEmulator() {
 
 let gbaInstance: any = null;
 let saveSyncTimer: number | null = null;
+let silentAudioUnlockHandler: (() => void) | null = null;
 
 function getActiveSaveKey(item?: any) {
   const candidate = item?.id || item?.path || state.activeRomPath || state.activeRomName;
@@ -175,6 +178,26 @@ async function syncSaveToServer(force = false) {
   if (gbaInstance.mmu.flushSave) {
     gbaInstance.mmu.flushSave();
   }
+}
+
+function ensureSilentAudioPlayback() {
+  const audio = silentAudioRef.value;
+  if (!audio) {
+    return;
+  }
+  if (!audio.src) {
+    audio.src = 'data:audio/wav;base64,' + generateSilentWav(60);
+  }
+  audio.play().catch(() => {
+    if (silentAudioUnlockHandler) {
+      return;
+    }
+    silentAudioUnlockHandler = () => {
+      audio.play().catch(() => {});
+    };
+    document.addEventListener('click', silentAudioUnlockHandler, { passive: true });
+    document.addEventListener('touchstart', silentAudioUnlockHandler, { passive: true });
+  });
 }
 
 function startSaveSyncLoop() {
@@ -295,6 +318,7 @@ function resumeEmulator() {
   if (!gbaInstance || !state.activeRomPath) {
     return;
   }
+  ensureSilentAudioPlayback();
   if (gbaInstance.audio?.context?.resume) {
     gbaInstance.audio.context.resume().catch(() => {});
   }
@@ -325,6 +349,7 @@ function loadRom(item: any) {
   state.viewMode = 'play';
   ensureEmulator().then(async () => {
     await nextTick();
+    ensureSilentAudioPlayback();
     const gba = createEmulator();
     const response = await fetch(item.url, { credentials: 'same-origin' });
     if (!response.ok) {
@@ -398,6 +423,7 @@ function backToLibrary() {
 
 onMounted(() => {
   ensureEmulator().catch(() => {});
+  ensureSilentAudioPlayback();
   loadRomList();
   loadRemoteCatalog();
 });
@@ -408,6 +434,11 @@ onUnmounted(() => {
     console.error(error);
   });
   pauseEmulator();
+  if (silentAudioUnlockHandler) {
+    document.removeEventListener('click', silentAudioUnlockHandler);
+    document.removeEventListener('touchstart', silentAudioUnlockHandler);
+    silentAudioUnlockHandler = null;
+  }
 });
 </script>
 
@@ -514,6 +545,7 @@ onUnmounted(() => {
 
     <template v-else>
       <section class="play-shell">
+        <audio ref="silentAudioRef" loop controls style="display: none;" />
         <div class="play-stage">
           <div class="top-stage">
             <div class="screen-section">
