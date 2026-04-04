@@ -11,6 +11,7 @@ let polyline: any = null;
 let vehicleMarker: any = null;
 let autoSyncTimer: number | null = null;
 let gAMap: any = null;
+let lastForcedSyncAt = 0;
 
 const state = reactive({
   activeTab: 'status',
@@ -64,6 +65,8 @@ const state = reactive({
     effectivePollIntervalSec: 60,
     currentBackoffSec: 0,
     backgroundSyncRunning: false,
+    collectionMode: 'rest',
+    lastStreamResult: '',
   },
 });
 
@@ -292,12 +295,55 @@ function handleRawPageChange(page: number) {
   loadRawRows();
 }
 
+function latestSampleAgeMs() {
+  const ts = Number(state.latestSample?.timestamp_ms || 0);
+  if (!ts) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Date.now() - ts;
+}
+
+function shouldForceFreshSync() {
+  if (!state.status.authorized || state.syncLoading) {
+    return false;
+  }
+  const selectedState = String(selectedVehicle.value?.state || '').toLowerCase();
+  const latestState = String(state.latestSample?.vehicle_state || '').toLowerCase();
+  const ageMs = latestSampleAgeMs();
+
+  if (!Number.isFinite(ageMs)) {
+    return true;
+  }
+  if (selectedState && latestState && selectedState !== latestState && ageMs > 30 * 1000) {
+    return true;
+  }
+  if (selectedState === 'online' && ageMs > 60 * 1000) {
+    return true;
+  }
+  if (latestState === 'online' || latestState === 'driving') {
+    return ageMs > 60 * 1000;
+  }
+  return ageMs > 2 * 60 * 1000;
+}
+
+function maybeForceFreshSync() {
+  const now = Date.now();
+  if (!shouldForceFreshSync()) {
+    return Promise.resolve();
+  }
+  if (now - lastForcedSyncAt < 45 * 1000) {
+    return Promise.resolve();
+  }
+  lastForcedSyncAt = now;
+  return syncVehicles(false);
+}
+
 function syncVehicles(showMessage = false) {
   state.syncLoading = true;
   return post('/api/tesla/sync', {
     vin: state.selectedVin || undefined,
   }, '同步 Tesla 数据失败').then(() => {
-    return Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadStorage()]).then(() => {
+    return Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()]).then(() => {
       if (showMessage) {
         ElMessage.success('Tesla 数据已同步');
       }
@@ -383,13 +429,16 @@ onMounted(() => {
   Promise.all([loadSettings(), loadStatus()]).then(() => {
     loadStorage();
     if (state.status.authorized) {
-      return loadVehicles().then(() => Promise.all([loadTrack(), loadTrips(), loadRawRows()]));
+      return loadVehicles()
+        .then(() => Promise.all([loadTrack(), loadTrips(), loadRawRows()]))
+        .then(() => maybeForceFreshSync());
     }
   });
   initMap();
   autoSyncTimer = window.setInterval(() => {
     if (state.status.authorized && !state.syncLoading) {
-      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()]);
+      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()])
+        .then(() => maybeForceFreshSync());
     }
   }, 15000);
 });
@@ -631,6 +680,8 @@ onUnmounted(() => {
                 <div class="meta-line"><span>后台轮询</span><strong>行驶 2.5 秒 / 充电 5 秒 / 在线 60 秒 / 休眠 60 秒</strong></div>
                 <div class="meta-line"><span>当前有效轮询</span><strong>{{ state.storage.effectivePollIntervalSec || 0 }} 秒</strong></div>
                 <div class="meta-line"><span>当前退避</span><strong>{{ state.storage.currentBackoffSec || 0 }} 秒</strong></div>
+                <div class="meta-line"><span>当前采集模式</span><strong>{{ state.storage.collectionMode || 'rest' }}</strong></div>
+                <div class="meta-line"><span>最近流式结果</span><strong>{{ state.storage.lastStreamResult || '-' }}</strong></div>
                 <div class="meta-line"><span>记录优化</span><strong>60 秒内相同样本会自动合并</strong></div>
                 <div class="meta-line"><span>Token 续期</span><strong>离失效前 30 分钟自动刷新</strong></div>
               </div>

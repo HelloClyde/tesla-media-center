@@ -37,10 +37,16 @@ TESLA_ASLEEP_PROBE_INTERVALS_SEC = [60]
 TESLA_BACKOFF_INITIAL_SEC = 10
 TESLA_BACKOFF_MAX_SEC = 30 * 60
 TESLA_STREAM_TIMEOUT_SEC = 30
+TESLA_VEHICLE_DATA_ENDPOINTS = (
+    'charge_state;climate_state;closures_state;drive_state;gui_settings;'
+    'location_data;vehicle_config;vehicle_state;vehicle_data_combo'
+)
 tesla_sync_thread = None
 tesla_sync_stop_event = threading.Event()
 tesla_sync_backoff_sec = 0
 tesla_asleep_streak = 0
+tesla_collection_mode = 'rest'
+tesla_last_stream_result = ''
 
 
 def get_tesla_db_path():
@@ -491,6 +497,27 @@ def cached_vehicles():
     } for row in rows]
 
 
+def extract_vehicle_location(payload: dict[str, Any]):
+    drive_state = payload.get('drive_state') or {}
+    location_data = payload.get('location_data') or {}
+    latitude = drive_state.get('latitude')
+    longitude = drive_state.get('longitude')
+    heading = drive_state.get('heading')
+
+    if latitude is None:
+        latitude = location_data.get('latitude')
+    if longitude is None:
+        longitude = location_data.get('longitude')
+    if heading is None:
+        heading = location_data.get('heading')
+
+    return {
+        'latitude': latitude,
+        'longitude': longitude,
+        'heading': heading,
+    }
+
+
 def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state: str, payload: dict[str, Any]):
     drive_state = payload.get('drive_state') or {}
     charge_state = payload.get('charge_state') or {}
@@ -498,13 +525,14 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
     vehicle_state_data = payload.get('vehicle_state') or {}
     gui_settings = payload.get('gui_settings') or {}
     vehicle_config = payload.get('vehicle_config') or {}
+    location = extract_vehicle_location(payload)
     return {
         'vin': vin,
         'display_name': display_name,
         'vehicle_state': vehicle_state,
-        'latitude': drive_state.get('latitude'),
-        'longitude': drive_state.get('longitude'),
-        'heading': drive_state.get('heading'),
+        'latitude': location.get('latitude'),
+        'longitude': location.get('longitude'),
+        'heading': location.get('heading'),
         'speed': convert_speed_to_kmh(drive_state.get('speed')),
         'speed_unit': 'km/h',
         'shift_state': drive_state.get('shift_state'),
@@ -757,6 +785,8 @@ def tesla_storage_stats():
         'effectivePollIntervalSec': get_recommended_poll_interval_sec(),
         'currentBackoffSec': tesla_sync_backoff_sec,
         'backgroundSyncRunning': tesla_sync_thread is not None and tesla_sync_thread.is_alive(),
+        'collectionMode': tesla_collection_mode,
+        'lastStreamResult': tesla_last_stream_result,
     }
 
 
@@ -981,6 +1011,10 @@ def has_active_vehicle_motion():
     return False
 
 
+def has_stream_candidates():
+    return any((vehicle.get('state') or '').lower() == 'online' for vehicle in cached_vehicles())
+
+
 def get_recommended_poll_interval_sec():
     base_interval = TESLA_DEFAULT_POLL_INTERVAL_SEC
     vehicles = cached_vehicles()
@@ -1026,6 +1060,18 @@ def tesla_user_profile():
     }
 
 
+def fetch_vehicle_brief(vehicle_id: str):
+    return tesla_api_request('GET', f'/api/1/vehicles/{vehicle_id}')
+
+
+def fetch_vehicle_with_state(vehicle_id: str):
+    return tesla_api_request(
+        'GET',
+        f'/api/1/vehicles/{vehicle_id}/vehicle_data',
+        params={'endpoints': TESLA_VEHICLE_DATA_ENDPOINTS},
+    )
+
+
 def sync_vehicle(vin: str, display_name: str, state: str):
     vehicles_data, vehicles_error = tesla_api_request('GET', '/api/1/products')
     if vehicles_error:
@@ -1037,26 +1083,52 @@ def sync_vehicle(vin: str, display_name: str, state: str):
     if not vehicle_id:
         return {'vin': vin, 'displayName': display_name, 'state': state, 'error': 'Tesla 未返回该车辆的在线数据入口'}
 
-    data, error = tesla_api_request('GET', f'/api/1/vehicles/{vehicle_id}/vehicle_data')
+    if state in ['online', 'driving']:
+        data, error = fetch_vehicle_with_state(vehicle_id)
+        if error and error[0] == 'vehicle_unavailable':
+            data, error = fetch_vehicle_brief(vehicle_id)
+    else:
+        data, error = fetch_vehicle_brief(vehicle_id)
+        if not error:
+            response = data.get('response') or data or {}
+            fetched_state = (response.get('state') or state or '').lower()
+            if fetched_state == 'online':
+                data, error = fetch_vehicle_with_state(vehicle_id)
+
     if error:
+        # Keep the local timeline fresh even when Tesla only returns the coarse
+        # products state but the detailed vehicle_data fetch is temporarily unavailable.
+        sample = {
+            'vin': vin,
+            'display_name': display_name,
+            'vehicle_state': state,
+            'timestamp_ms': int(time.time() * 1000),
+        }
+        sample = restore_last_known_position(sample, vin)
+        insert_vehicle_sample(sample)
         if state in ['asleep', 'offline']:
-            sample = {
-                'vin': vin,
-                'display_name': display_name,
-                'vehicle_state': state,
-                'timestamp_ms': int(time.time() * 1000),
-            }
-            insert_vehicle_sample(sample)
             return {'vin': vin, 'displayName': display_name, 'state': state, 'sample': sample, 'warning': error[1]}
-        return {'vin': vin, 'displayName': display_name, 'state': state, 'error': error[1]}
+        logger.warning(f'tesla vehicle_data fetch failed after products state update, vin={vin}, state={state}, error={error}')
+        return {'vin': vin, 'displayName': display_name, 'state': state, 'sample': sample, 'warning': error[1]}
+
     payload = data.get('response') or data
-    sample = extract_sample_from_vehicle_data(vin, display_name, state, payload)
+    resolved_state = (payload.get('state') or state or 'unknown').lower()
+    sample = extract_sample_from_vehicle_data(vin, display_name, resolved_state, payload)
+    if sample.get('latitude') is None or sample.get('longitude') is None:
+        logger.warning(
+            f'tesla vehicle_data missing coordinates, vin={vin}, '
+            f'state={resolved_state}, '
+            f'drive_lat={((payload.get("drive_state") or {}).get("latitude"))}, '
+            f'drive_lng={((payload.get("drive_state") or {}).get("longitude"))}, '
+            f'loc_lat={((payload.get("location_data") or {}).get("latitude"))}, '
+            f'loc_lng={((payload.get("location_data") or {}).get("longitude"))}'
+        )
     sample = restore_last_known_position(sample, vin)
     insert_vehicle_sample(sample)
     return {
         'vin': vin,
         'displayName': display_name,
-        'state': state,
+        'state': resolved_state,
         'sample': sample,
     }
 
@@ -1160,6 +1232,8 @@ def stream_active_vehicles_once():
 
 
 def tesla_background_sync_loop():
+    global tesla_collection_mode
+    global tesla_last_stream_result
     logger.info('tesla background sync thread started')
     while not tesla_sync_stop_event.is_set():
         try:
@@ -1167,15 +1241,22 @@ def tesla_background_sync_loop():
             if tesla_tokens_configured():
                 used_streaming = False
                 stream_results = None
-                if has_active_vehicle_motion():
+                if has_stream_candidates():
                     stream_results, stream_error = stream_active_vehicles_once()
                     if stream_error:
+                        tesla_last_stream_result = stream_error[0]
                         logger.warning(f'tesla streaming skipped: {stream_error}')
                     else:
                         logger.info(f'tesla streaming finished: {stream_results}')
+                        tesla_last_stream_result = ','.join(
+                            f'{item.get("vin")}:{item.get("result")}' for item in (stream_results or [])
+                        )
                         used_streaming = any(item.get('result') == 'updates' for item in (stream_results or []))
+                        if used_streaming:
+                            tesla_collection_mode = 'streaming'
 
                 if not used_streaming:
+                    tesla_collection_mode = 'rest'
                     synced, error = sync_all_vehicles()
                     if error:
                         backoff = increase_tesla_backoff()
@@ -1186,6 +1267,8 @@ def tesla_background_sync_loop():
                 else:
                     reset_tesla_backoff()
             else:
+                tesla_collection_mode = 'idle'
+                tesla_last_stream_result = ''
                 reset_tesla_backoff()
 
             vehicles = cached_vehicles()
