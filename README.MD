@@ -51,7 +51,7 @@ https://sketchfab.com/search?features=animated&type=models
 
 ### GBA 模拟器
 
-已支持游戏库浏览、ROM 启动、触控按键和键盘映射。README 截图后续可替换成最新车机界面截图。
+![gba](shot/gba.png)
 
 ### 高德地图
 
