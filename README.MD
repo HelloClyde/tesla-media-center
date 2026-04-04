@@ -180,11 +180,15 @@ docker run -it \
   -p 8080:8080 \
   -v ./config.json:/root/tesla-media-center/config.json \
   -v ./video:/root/tesla-media-center/video \
+  -v ./db:/root/tesla-media-center/db \
   -v ./tmc-cache:/tmp/tesla-media-center \
   ghcr.io/helloclyde/tesla-media-center:latest
 ```
 
-建议将 `./tmc-cache` 单独挂载出来，避免容器层磁盘被 B 站缓存和 Tesla 轨迹缓存占满。
+建议将 `./db` 和 `./tmc-cache` 都单独挂载出来：
+
+1. `./db` 用于持久化 Tesla SQLite 数据库，避免容器重建后轨迹和行程记录丢失
+2. `./tmc-cache` 用于 B 站转码缓存，避免容器层磁盘被缓存文件占满
 
 ## Docker 部署
 
