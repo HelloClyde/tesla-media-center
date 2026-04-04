@@ -1,6 +1,6 @@
 # Tesla Media Center
 
-面向车机浏览器的开源多媒体中心，提供本地视频播放、B 站在线播放、Tesla 状态与轨迹查看，以及高德地图路线规划等能力。
+面向车机浏览器的开源多媒体中心，提供本地视频播放、B 站在线播放、Tesla 状态与轨迹查看、GBA 模拟器游玩，以及高德地图路线规划等能力。
 
 ## 目录
 
@@ -26,9 +26,10 @@
 5. B 站缓存目录管理、容量限制、自动回收、一键清理
 6. Tesla Owner API 接入、车辆状态、轨迹、行程和设置分 Tab 展示
 7. 本地 h264 / h265 的 mp4 / flv 点播播放
-8. 高德地图目的地搜索与路线规划
-9. 跟随系统的白天 / 夜间两套主题
-10. GitHub Actions 自动构建并推送 Docker 镜像到 GHCR
+8. GBA 游戏库浏览与模拟器游玩
+9. 高德地图目的地搜索与路线规划
+10. 跟随系统的白天 / 夜间两套主题
+11. GitHub Actions 自动构建并推送 Docker 镜像到 GHCR
 
 ## 截图
 
@@ -47,6 +48,10 @@ https://sketchfab.com/search?features=animated&type=models
 ### 本地视频播放
 
 ![video](shot/img_002.png)
+
+### GBA 模拟器
+
+已支持游戏库浏览、ROM 启动、触控按键和键盘映射。README 截图后续可替换成最新车机界面截图。
 
 ### 高德地图
 
@@ -85,6 +90,23 @@ ffmpeg -i test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r
 
 原始播放器项目：
 https://github.com/sonysuqin/WasmVideoPlayer
+
+### GBA 模拟器
+
+GBA 模拟器内核基于 `gbajs2`，界面按车机横屏场景重新设计。
+
+已支持：
+
+1. 本地 GBA ROM 游戏库浏览
+2. 点击 ROM 后切换到专注游玩界面
+3. 触控方向键、A / B、L / R、Start / Select
+4. 键盘映射控制
+5. 暂停、继续、重启、返回游戏库
+
+默认 ROM 目录为 `./roms/gba`，支持通过 `config.json` 中的 `gba_path` 覆盖。
+
+原始模拟器项目：
+https://github.com/andychase/gbajs2.git
 
 ### Tesla 状态与轨迹
 
@@ -151,6 +173,7 @@ cd ..
 {
   "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
   "video_path": "./video",
+  "gba_path": "./roms/gba",
   "amap_key": "xxx",
   "password": "abc",
   "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
@@ -180,6 +203,7 @@ docker run -it \
   -p 8080:8080 \
   -v ./config.json:/root/tesla-media-center/config.json \
   -v ./video:/root/tesla-media-center/video \
+  -v ./roms:/root/tesla-media-center/roms \
   -v ./db:/root/tesla-media-center/db \
   -v ./tmc-cache:/tmp/tesla-media-center \
   ghcr.io/helloclyde/tesla-media-center:latest
@@ -187,8 +211,9 @@ docker run -it \
 
 建议将 `./db` 和 `./tmc-cache` 都单独挂载出来：
 
-1. `./db` 用于持久化 Tesla SQLite 数据库，避免容器重建后轨迹和行程记录丢失
-2. `./tmc-cache` 用于 B 站转码缓存，避免容器层磁盘被缓存文件占满
+1. `./roms` 用于挂载 GBA ROM 库，默认从 `./roms/gba` 读取游戏
+2. `./db` 用于持久化 Tesla SQLite 数据库，避免容器重建后轨迹和行程记录丢失
+3. `./tmc-cache` 用于 B 站转码缓存，避免容器层磁盘被缓存文件占满
 
 ## Docker 部署
 
@@ -218,6 +243,7 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 {
   "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
   "video_path": "./video",
+  "gba_path": "./roms/gba",
   "amap_key": "xxx",
   "password": "abc",
   "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
@@ -232,14 +258,15 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 
 1. `home_page_iframe`：主页展示内容，不知道填什么时可直接使用默认值
 2. `video_path`：本地视频目录
-3. `amap_key`：高德地图 Key，没有时地图功能不可用
-4. `password`：Web 登录密码
-5. `bilibili_cache_dir`：B 站转码缓存目录，默认可直接使用
-6. `bilibili_cache_size_mb`：B 站缓存上限，单位 MB
-7. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
-8. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
-9. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
-10. `tesla_db_path`：Tesla SQLite 数据库路径，默认 `./db/tesla_history.sqlite3`
+3. `gba_path`：GBA ROM 目录，默认 `./roms/gba`
+4. `amap_key`：高德地图 Key，没有时地图功能不可用
+5. `password`：Web 登录密码
+6. `bilibili_cache_dir`：B 站转码缓存目录，默认可直接使用
+7. `bilibili_cache_size_mb`：B 站缓存上限，单位 MB
+8. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
+9. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
+10. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
+11. `tesla_db_path`：Tesla SQLite 数据库路径，默认 `./db/tesla_history.sqlite3`
 
 缓存说明：
 

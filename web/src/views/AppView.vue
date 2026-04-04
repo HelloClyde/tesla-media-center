@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { House, Position, Headset, VideoPlay, SwitchFilled, InfoFilled, Setting, Switch, Film, Monitor, MapLocation } from '@element-plus/icons-vue';
-import { onMounted, reactive, watch } from 'vue';
-import { RouterView,useRouter, useRoute } from 'vue-router';
-import { tsUnknownKeyword } from '@babel/types';
+import { House, VideoPlay, Monitor, MapLocation } from '@element-plus/icons-vue';
+import { reactive } from 'vue';
+import { RouterView,useRouter } from 'vue-router';
 
 console.info('origin ua:', navigator.userAgent);
 Object.defineProperty(navigator, 'userAgent', {
@@ -22,6 +21,7 @@ const state = reactive({
     {icon: '/icon/TESLA_LOGO.svg', route: '/apps/tesla'},
     // {icon: Headset, route: 'music'},
     {icon: '/icon/BILIBILI_LOGO.svg', route: '/apps/bilibili'},
+    {icon: '/icon/GBA_LOGO.svg', route: '/apps/gba'},
     {icon: VideoPlay, route: '/apps/video'},
     // {icon: SwitchFilled, route: 'game'},
     {icon: Monitor, route: '/apps/debug'},
@@ -36,9 +36,6 @@ function routeTo(name: string){
   router.push(name);
   state.curMenu = name;
 }
-
-onMounted(() => {
-})
 
 </script>
 

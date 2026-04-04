@@ -9,7 +9,7 @@ from ffvideo import utils as futils
 from ffvideo.utils import login_check
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
-from ffvideo import bv, local_video, tesla
+from ffvideo import bv, gba, local_video, tesla
 import time
 from cryptography import fernet
 
@@ -56,6 +56,7 @@ def update_config():
         'bilibili_danmaku_area',
         'bilibili_danmaku_max_count',
         'bilibili_danmaku_opacity',
+        'gba_path',
     }
 
     updated = {}
@@ -87,6 +88,7 @@ def static_web(name):
 if __name__ == '__main__':
     # 运行Flask应用，并启用多线程支持
     local_video.add_local_video_route(app)
+    gba.add_gba_route(app)
     bv.add_bv_route(app)
     tesla.add_tesla_route(app)
     tesla.start_tesla_background_sync()
