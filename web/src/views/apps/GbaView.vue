@@ -18,13 +18,16 @@ const state = reactive({
   viewMode: 'library',
   rootPath: '',
   currentPath: '',
+  libraryTab: 'remote',
   loadingList: false,
+  loadingRemote: false,
   loadingRom: false,
   emulatorReady: false,
   emulatorError: '',
   statusText: '选择一个 GBA ROM 开始游玩',
   debugText: '',
-  items: [] as any[],
+  localItems: [] as any[],
+  remoteItems: [] as any[],
   activeRomPath: '',
   activeRomName: '',
   activeRomUrl: '',
@@ -42,8 +45,8 @@ const breadcrumbs = computed(() => {
   return items;
 });
 
-const romFiles = computed(() => state.items.filter((item: any) => item.type === 'file'));
-const folderItems = computed(() => state.items.filter((item: any) => item.type === 'dir'));
+const romFiles = computed(() => state.localItems.filter((item: any) => item.type === 'file'));
+const folderItems = computed(() => state.localItems.filter((item: any) => item.type === 'dir'));
 
 const SCRIPT_PATHS = [
   '/vendor/gbajs2/js/util.js',
@@ -155,10 +158,47 @@ function loadRomList(path = state.currentPath) {
   return get(`/api/gba/list?path=${encodeURIComponent(path)}`, '读取 GBA ROM 列表失败').then((data) => {
     state.rootPath = data.rootPath || '';
     state.currentPath = data.path || '';
-    state.items = data.items || [];
+    state.localItems = data.items || [];
   }).finally(() => {
     state.loadingList = false;
   });
+}
+
+function loadRemoteCatalog() {
+  state.loadingRemote = true;
+  return fetch('/catalogs/gba-js-org.json', { credentials: 'same-origin' })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error('读取在线 GBA 游戏库失败');
+      }
+      return response.json();
+    })
+    .then((data) => {
+      const items = Array.isArray(data?.items) ? data.items : [];
+      state.remoteItems = items.map((item: any) => ({
+        ...item,
+        type: 'remote',
+        path: `remote:${item.id}`,
+      }));
+    })
+    .catch((error: any) => {
+      state.remoteItems = [];
+      ElMessage.error(error?.message || '读取在线 GBA 游戏库失败');
+    })
+    .finally(() => {
+      state.loadingRemote = false;
+    });
+}
+
+function refreshLibrary() {
+  return Promise.all([loadRomList(), loadRemoteCatalog()]);
+}
+
+function formatRemoteRomTitle(item: any) {
+  if (item?.zhName) {
+    return `${item.zhName}（${item.name}）`;
+  }
+  return item?.name || '';
 }
 
 function goToPath(path: string) {
@@ -190,7 +230,8 @@ function resetEmulator() {
   if (!state.activeRomPath) {
     return;
   }
-  loadRom(state.items.find((item: any) => item.path === state.activeRomPath) || {
+  const allItems = [...state.localItems, ...state.remoteItems];
+  loadRom(allItems.find((item: any) => item.path === state.activeRomPath) || {
     path: state.activeRomPath,
     url: state.activeRomUrl,
     name: state.activeRomName,
@@ -273,6 +314,7 @@ function backToLibrary() {
 onMounted(() => {
   ensureEmulator().catch(() => {});
   loadRomList();
+  loadRemoteCatalog();
 });
 
 onUnmounted(() => {
@@ -287,15 +329,26 @@ onUnmounted(() => {
         <div class="library-topbar">
           <div>
             <h2>游戏库</h2>
-            <p>{{ romFiles.length }} 个 ROM，{{ folderItems.length }} 个文件夹，目录：{{ state.rootPath || './roms/gba' }}</p>
+            <p>本地 {{ romFiles.length }} 个 ROM、{{ folderItems.length }} 个文件夹；在线补充 {{ state.remoteItems.length }} 个 ROM</p>
           </div>
           <div class="library-actions">
             <el-button v-if="state.activeRomName" @click="enterPlayMode">继续 {{ state.activeRomName }}</el-button>
-            <el-button circle :icon="RefreshRight" :loading="state.loadingList" @click="loadRomList()" />
+            <el-button circle :icon="RefreshRight" :loading="state.loadingList || state.loadingRemote" @click="refreshLibrary()" />
           </div>
         </div>
 
-        <div class="breadcrumbs">
+        <div class="library-tabs">
+          <button class="library-tab" :class="{ active: state.libraryTab === 'remote' }" @click="state.libraryTab = 'remote'">
+            在线 ROM
+            <span>{{ state.remoteItems.length }}</span>
+          </button>
+          <button class="library-tab" :class="{ active: state.libraryTab === 'local' }" @click="state.libraryTab = 'local'">
+            本地 ROM
+            <span>{{ romFiles.length }}</span>
+          </button>
+        </div>
+
+        <div v-if="state.libraryTab === 'local'" class="breadcrumbs">
           <button
             v-for="item in breadcrumbs"
             :key="item.path || 'root'"
@@ -307,9 +360,14 @@ onUnmounted(() => {
           </button>
         </div>
 
-        <div class="rom-grid">
+        <div v-if="state.libraryTab === 'local'" class="library-section-title">
+          <strong>本地 ROM</strong>
+          <span>{{ state.rootPath || './roms/gba' }}</span>
+        </div>
+
+        <div v-if="state.libraryTab === 'local'" class="rom-grid">
           <button
-            v-for="item in state.items"
+            v-for="item in state.localItems"
             :key="item.path"
             class="rom-card"
             :class="{
@@ -329,9 +387,37 @@ onUnmounted(() => {
             </div>
           </button>
 
-          <div v-if="!state.loadingList && state.items.length === 0" class="empty-card">
+          <div v-if="!state.loadingList && state.localItems.length === 0" class="empty-card">
             <strong>还没有可启动的 GBA ROM</strong>
             <span>把 `.gba` 文件放到 {{ state.rootPath || './roms/gba' }} 后刷新即可。</span>
+          </div>
+        </div>
+
+        <div v-if="state.libraryTab === 'remote'" class="library-section-title remote">
+          <strong>在线 ROM</strong>
+          <span>来自 gba.js.org 的公开示例库</span>
+        </div>
+
+        <div v-if="state.libraryTab === 'remote'" class="rom-grid remote-grid">
+          <button
+            v-for="item in state.remoteItems"
+            :key="item.path"
+            class="rom-card remote-card"
+            :class="{ active: item.path === state.activeRomPath }"
+            @click="loadRom(item)"
+          >
+            <div class="rom-card-icon">
+              <el-icon><CaretRight /></el-icon>
+            </div>
+            <div class="rom-card-body">
+              <strong>{{ formatRemoteRomTitle(item) }}</strong>
+              <span>{{ item.provider }}</span>
+            </div>
+          </button>
+
+          <div v-if="!state.loadingRemote && state.remoteItems.length === 0" class="empty-card">
+            <strong>在线 GBA 游戏库暂时不可用</strong>
+            <span>稍后再刷新页面试试。</span>
           </div>
         </div>
       </section>
@@ -515,6 +601,66 @@ onUnmounted(() => {
   margin: 16px 0;
 }
 
+.library-tabs {
+  display: flex;
+  gap: 10px;
+  margin: 14px 0 10px;
+}
+
+.library-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
+  color: var(--color-text-soft);
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+.library-tab span {
+  min-width: 20px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: inherit;
+  font-size: 12px;
+  text-align: center;
+}
+
+.library-tab.active {
+  border-color: rgba(14, 165, 233, 0.34);
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+}
+
+.library-tab.active span {
+  background: rgba(14, 165, 233, 0.18);
+}
+
+.library-section-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 2px 12px;
+}
+
+.library-section-title strong {
+  font-size: 15px;
+}
+
+.library-section-title span {
+  color: var(--color-text-soft);
+  font-size: 12px;
+}
+
+.library-section-title.remote {
+  margin-top: 18px;
+}
+
 .crumb-button {
   border: none;
   border-radius: 999px;
@@ -587,6 +733,11 @@ onUnmounted(() => {
   color: #16a34a;
 }
 
+.remote-card .rom-card-icon {
+  background: rgba(249, 115, 22, 0.12);
+  color: #ea580c;
+}
+
 .rom-card-body {
   min-width: 0;
 }
@@ -602,6 +753,10 @@ onUnmounted(() => {
 .empty-card {
   flex-direction: column;
   align-items: flex-start;
+}
+
+.remote-grid {
+  margin-top: 0;
 }
 
 .bottom-status {

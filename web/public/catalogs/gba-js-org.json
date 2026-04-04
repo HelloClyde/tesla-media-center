@@ -1,0 +1,924 @@
+{
+  "provider": "gba.js.org",
+  "sourceUrl": "https://gba.js.org/",
+  "items": [
+    {
+      "id": "advancewars",
+      "name": "Advance Wars",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/advancewars",
+      "remoteUrl": "https://gba.js.org/binaries/advancewars.gba",
+      "zhName": "高级战争"
+    },
+    {
+      "id": "advancewars2",
+      "name": "Advance Wars 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/advancewars2",
+      "remoteUrl": "https://gba.js.org/binaries/advancewars2.gba",
+      "zhName": "高级战争 2"
+    },
+    {
+      "id": "aladdin",
+      "name": "Aladdin",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/aladdin",
+      "remoteUrl": "https://gba.js.org/binaries/aladdin.gba",
+      "zhName": "阿拉丁"
+    },
+    {
+      "id": "alienhominid",
+      "name": "Alien Hominid",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/alienhominid",
+      "remoteUrl": "https://gba.js.org/binaries/alienhominid.gba",
+      "zhName": "异形食人族"
+    },
+    {
+      "id": "bomberman_max2blue",
+      "name": "Bomberman Max 2 - Blue Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/bomberman_max2blue",
+      "remoteUrl": "https://gba.js.org/binaries/bomberman_max2blue.gba",
+      "zhName": "炸弹人 Max 2 蓝版"
+    },
+    {
+      "id": "bomberman_tournament",
+      "name": "Bomberman Tournament",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/bomberman_tournament",
+      "remoteUrl": "https://gba.js.org/binaries/bomberman_tournament.gba",
+      "zhName": "炸弹人锦标赛"
+    },
+    {
+      "id": "bubblebobble",
+      "name": "Bubble Bobble",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/bubblebobble",
+      "remoteUrl": "https://gba.js.org/binaries/bubblebobble.gba",
+      "zhName": "泡泡龙"
+    },
+    {
+      "id": "croket1",
+      "name": "Croket! - Yume no Banker Survival!",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/croket1",
+      "remoteUrl": "https://gba.js.org/binaries/croket1.gba",
+      "zhName": "饼藏！梦之银行家生存战"
+    },
+    {
+      "id": "croket2",
+      "name": "Croket! 2 - Yami no Bank to Banqueen",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/croket2",
+      "remoteUrl": "https://gba.js.org/binaries/croket2.gba",
+      "zhName": "饼藏！2 黑暗银行与女王"
+    },
+    {
+      "id": "croket3",
+      "name": "Croket! 3 - Granu Oukoku no Nazo",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/croket3",
+      "remoteUrl": "https://gba.js.org/binaries/croket3.gba",
+      "zhName": "饼藏！3 格拉努王国之谜"
+    },
+    {
+      "id": "croket4",
+      "name": "Croket! 4 - Bank no Mori no Mamorigami",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/croket4",
+      "remoteUrl": "https://gba.js.org/binaries/croket4.gba",
+      "zhName": "饼藏！4 银行森林守护神"
+    },
+    {
+      "id": "digimon_racing",
+      "name": "Digimon Racing",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/digimon_racing",
+      "remoteUrl": "https://gba.js.org/binaries/digimon_racing.gba",
+      "zhName": "数码宝贝赛车"
+    },
+    {
+      "id": "dbz_supersonic",
+      "name": "Dragon Ball Z - Supersonic Warriors",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/dbz_supersonic",
+      "remoteUrl": "https://gba.js.org/binaries/dbz_supersonic.gba",
+      "zhName": "龙珠 Z 超音速战士"
+    },
+    {
+      "id": "drilldozer",
+      "name": "Drill Dozer",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/drilldozer",
+      "remoteUrl": "https://gba.js.org/binaries/drilldozer.gba",
+      "zhName": "钻头推土机"
+    },
+    {
+      "id": "earthwormjim",
+      "name": "Earthworm Jim",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/earthwormjim",
+      "remoteUrl": "https://gba.js.org/binaries/earthwormjim.gba",
+      "zhName": "蚯蚓吉姆"
+    },
+    {
+      "id": "earthwormjim2",
+      "name": "Earthworm Jim 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/earthwormjim2",
+      "remoteUrl": "https://gba.js.org/binaries/earthwormjim2.gba",
+      "zhName": "蚯蚓吉姆 2"
+    },
+    {
+      "id": "ff1and2",
+      "name": "Final Fantasy 1 & 2 Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/ff1and2",
+      "remoteUrl": "https://gba.js.org/binaries/ff1and2.gba",
+      "zhName": "最终幻想 1&2 Advance"
+    },
+    {
+      "id": "ff4S",
+      "name": "Final Fantasy IV Advance (Sound Restoration Mod)",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/ff4S",
+      "remoteUrl": "https://gba.js.org/binaries/ff4S.gba",
+      "zhName": "最终幻想 4 Advance（音效修复版）"
+    },
+    {
+      "id": "ff6",
+      "name": "Final Fantasy VI Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/ff6",
+      "remoteUrl": "https://gba.js.org/binaries/ff6.gba",
+      "zhName": "最终幻想 6 Advance"
+    },
+    {
+      "id": "final_fantasy_tactics",
+      "name": "Final Fantasy Tactics Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/final_fantasy_tactics",
+      "remoteUrl": "https://gba.js.org/binaries/final_fantasy_tactics.gba",
+      "zhName": "最终幻想战略版 Advance"
+    },
+    {
+      "id": "fire_emblem",
+      "name": "Fire Emblem",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/fire_emblem",
+      "remoteUrl": "https://gba.js.org/binaries/fire_emblem.gba",
+      "zhName": "火焰之纹章"
+    },
+    {
+      "id": "frogger1",
+      "name": "Frogger Advance - The Great Quest",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/frogger1",
+      "remoteUrl": "https://gba.js.org/binaries/frogger1.gba",
+      "zhName": "青蛙过河 Advance：伟大冒险"
+    },
+    {
+      "id": "frogger2",
+      "name": "Frogger's Adventures - Temple of the Frog",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/frogger2",
+      "remoteUrl": "https://gba.js.org/binaries/frogger2.gba",
+      "zhName": "青蛙过河冒险：青蛙神殿"
+    },
+    {
+      "id": "frogger3",
+      "name": "Frogger's Adventures 2 - The Lost Wand",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/frogger3",
+      "remoteUrl": "https://gba.js.org/binaries/frogger3.gba",
+      "zhName": "青蛙过河冒险 2：失落魔杖"
+    },
+    {
+      "id": "fzero_gp",
+      "name": "F-Zero - GP Legend",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/fzero_gp",
+      "remoteUrl": "https://gba.js.org/binaries/fzero_gp.gba",
+      "zhName": "F-Zero GP 传奇"
+    },
+    {
+      "id": "fzero_max",
+      "name": "F-Zero - Maximum Velocity",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/fzero_max",
+      "remoteUrl": "https://gba.js.org/binaries/fzero_max.gba",
+      "zhName": "F-Zero 最高速度"
+    },
+    {
+      "id": "gamewatch4",
+      "name": "Game & Watch Gallery 4",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gamewatch4",
+      "remoteUrl": "https://gba.js.org/binaries/gamewatch4.gba",
+      "zhName": "掌机游戏精选集 4"
+    },
+    {
+      "id": "goldensun",
+      "name": "Golden Sun",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/goldensun",
+      "remoteUrl": "https://gba.js.org/binaries/goldensun.gba",
+      "zhName": "黄金太阳"
+    },
+    {
+      "id": "gunstar_super_heroes",
+      "name": "Gunstar Super Heroes",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gunstar_super_heroes",
+      "remoteUrl": "https://gba.js.org/binaries/gunstar_super_heroes.gba",
+      "zhName": "银河快枪手 英雄版"
+    },
+    {
+      "id": "hamtaro_heartbreak",
+      "name": "Hamtaro - Ham-Ham Heartbreak",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/hamtaro_heartbreak",
+      "remoteUrl": "https://gba.js.org/binaries/hamtaro_heartbreak.gba",
+      "zhName": "哈姆太郎：心碎大作战"
+    },
+    {
+      "id": "iridion",
+      "name": "Iridion 3D",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/iridion",
+      "remoteUrl": "https://gba.js.org/binaries/iridion.gba",
+      "zhName": "铱星战机 3D"
+    },
+    {
+      "id": "kirbymirror",
+      "name": "Kirby & The Amazing Mirror",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/kirbymirror",
+      "remoteUrl": "https://gba.js.org/binaries/kirbymirror.gba",
+      "zhName": "星之卡比 镜之大迷宫"
+    },
+    {
+      "id": "kirbynightmare",
+      "name": "Kirby: Nightmare in Dreamland",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/kirbynightmare",
+      "remoteUrl": "https://gba.js.org/binaries/kirbynightmare.gba",
+      "zhName": "星之卡比 梦之泉"
+    },
+    {
+      "id": "mariokart",
+      "name": "Mario Kart: Super Circuit",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/mariokart",
+      "remoteUrl": "https://gba.js.org/binaries/mariokart.gba",
+      "zhName": "马力欧卡丁车 超级赛道"
+    },
+    {
+      "id": "marioparty",
+      "name": "Mario Party Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/marioparty",
+      "remoteUrl": "https://gba.js.org/binaries/marioparty.gba",
+      "zhName": "马力欧派对 Advance"
+    },
+    {
+      "id": "mariopinball",
+      "name": "Mario Pinball Land",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/mariopinball",
+      "remoteUrl": "https://gba.js.org/binaries/mariopinball.gba",
+      "zhName": "马力欧弹珠台"
+    },
+    {
+      "id": "mariovsdk",
+      "name": "Mario vs Donkey Kong",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/mariovsdk",
+      "remoteUrl": "https://gba.js.org/binaries/mariovsdk.gba",
+      "zhName": "马力欧对大金刚"
+    },
+    {
+      "id": "megamanbass",
+      "name": "Megaman & Bass",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megamanbass",
+      "remoteUrl": "https://gba.js.org/binaries/megamanbass.gba",
+      "zhName": "洛克人与佛鲁迪"
+    },
+    {
+      "id": "megaman_battle1",
+      "name": "Megaman Battle Network 1",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle1",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle1.gba",
+      "zhName": "洛克人 EXE 1"
+    },
+    {
+      "id": "megaman_battle2",
+      "name": "Megaman Battle Network 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle2",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle2.gba",
+      "zhName": "洛克人 EXE 2"
+    },
+    {
+      "id": "megaman_battle3_blue",
+      "name": "Megaman Battle Network 3 Blue",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle3_blue",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle3_blue.gba",
+      "zhName": "洛克人 EXE 3 蓝版"
+    },
+    {
+      "id": "megaman_battle4_blue",
+      "name": "Megaman Battle Network 4 Blue Moon",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle4_blue",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle4_blue.gba",
+      "zhName": "洛克人 EXE 4 蓝月版"
+    },
+    {
+      "id": "megaman_battle4_red",
+      "name": "Megaman Battle Network 4 Red Sun",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle4_red",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle4_red.gba",
+      "zhName": "洛克人 EXE 4 红太阳版"
+    },
+    {
+      "id": "megaman_battle5",
+      "name": "Megaman Battle Network 5 Team Protoman",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle5",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle5.gba",
+      "zhName": "洛克人 EXE 5 普洛特曼队"
+    },
+    {
+      "id": "megaman_battle6",
+      "name": "Megaman Battle Network 6 Cybeast Falzar",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_battle6",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_battle6.gba",
+      "zhName": "洛克人 EXE 6 电脑兽法尔萨"
+    },
+    {
+      "id": "megaman_zero1",
+      "name": "Megaman Zero",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_zero1",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_zero1.gba",
+      "zhName": "洛克人 Zero"
+    },
+    {
+      "id": "megaman_zero2",
+      "name": "Megaman Zero 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_zero2",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_zero2.gba",
+      "zhName": "洛克人 Zero 2"
+    },
+    {
+      "id": "megaman_zero3",
+      "name": "Megaman Zero 3",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_zero3",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_zero3.gba",
+      "zhName": "洛克人 Zero 3"
+    },
+    {
+      "id": "megaman_zero4",
+      "name": "Megaman Zero 4",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/megaman_zero4",
+      "remoteUrl": "https://gba.js.org/binaries/megaman_zero4.gba",
+      "zhName": "洛克人 Zero 4"
+    },
+    {
+      "id": "metalslug",
+      "name": "Metal Slug Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/metalslug",
+      "remoteUrl": "https://gba.js.org/binaries/metalslug.gba",
+      "zhName": "合金弹头 Advance"
+    },
+    {
+      "id": "metroid_fusion",
+      "name": "Metroid Fusion",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/metroid_fusion",
+      "remoteUrl": "https://gba.js.org/binaries/metroid_fusion.gba",
+      "zhName": "银河战士 融合"
+    },
+    {
+      "id": "metroid_zeromission",
+      "name": "Metroid Zero Mission",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/metroid_zeromission",
+      "remoteUrl": "https://gba.js.org/binaries/metroid_zeromission.gba",
+      "zhName": "银河战士 零点任务"
+    },
+    {
+      "id": "momotarou_dentetsu",
+      "name": "Momotarou Dentetsu G Gold Deck wo Tsukure!",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/momotarou_dentetsu",
+      "remoteUrl": "https://gba.js.org/binaries/momotarou_dentetsu.gba",
+      "zhName": "桃太郎电铁 G 打造黄金卡组"
+    },
+    {
+      "id": "monopoly",
+      "name": "Monopoly",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/monopoly",
+      "remoteUrl": "https://gba.js.org/binaries/monopoly.gba",
+      "zhName": "大富翁"
+    },
+    {
+      "id": "monster_force",
+      "name": "Monster Force",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/monster_force",
+      "remoteUrl": "https://gba.js.org/binaries/monster_force.gba",
+      "zhName": "怪物力量"
+    },
+    {
+      "id": "mortal_kombat",
+      "name": "Mortal Kombat Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/mortal_kombat",
+      "remoteUrl": "https://gba.js.org/binaries/mortal_kombat.gba",
+      "zhName": "真人快打 Advance"
+    },
+    {
+      "id": "onepiece",
+      "name": "One Piece",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/onepiece",
+      "remoteUrl": "https://gba.js.org/binaries/onepiece.gba",
+      "zhName": "海贼王"
+    },
+    {
+      "id": "pacman_world",
+      "name": "Pacman World",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pacman_world",
+      "remoteUrl": "https://gba.js.org/binaries/pacman_world.gba",
+      "zhName": "吃豆人世界"
+    },
+    {
+      "id": "pacman_world2",
+      "name": "Pacman World 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pacman_world2",
+      "remoteUrl": "https://gba.js.org/binaries/pacman_world2.gba",
+      "zhName": "吃豆人世界 2"
+    },
+    {
+      "id": "pokemonflorasky",
+      "name": "Pokemon Flora Sky Rom Hack",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemonflorasky",
+      "remoteUrl": "https://gba.js.org/binaries/pokemonflorasky.gba",
+      "zhName": "宝可梦 花之天空 改版"
+    },
+    {
+      "id": "pokemonemerald",
+      "name": "Pokemon Emerald",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemonemerald",
+      "remoteUrl": "https://gba.js.org/binaries/pokemonemerald.gba",
+      "zhName": "宝可梦 绿宝石"
+    },
+    {
+      "id": "pokemongreen",
+      "name": "Pokemon Leaf Green",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemongreen",
+      "remoteUrl": "https://gba.js.org/binaries/pokemongreen.gba",
+      "zhName": "宝可梦 叶绿"
+    },
+    {
+      "id": "mysteryred",
+      "name": "Pokemon Mystery Dungeon Red",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/mysteryred",
+      "remoteUrl": "https://gba.js.org/binaries/mysteryred.gba",
+      "zhName": "宝可梦 不可思议迷宫 红之救助队"
+    },
+    {
+      "id": "pokemonruby",
+      "name": "Pokemon Ruby",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemonruby",
+      "remoteUrl": "https://gba.js.org/binaries/pokemonruby.gba",
+      "zhName": "宝可梦 红宝石"
+    },
+    {
+      "id": "pokemonsapphire",
+      "name": "Pokemon Sapphire",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemonsapphire",
+      "remoteUrl": "https://gba.js.org/binaries/pokemonsapphire.gba",
+      "zhName": "宝可梦 蓝宝石"
+    },
+    {
+      "id": "pokemonred",
+      "name": "Pokemon Fire Red",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/pokemonred",
+      "remoteUrl": "https://gba.js.org/binaries/pokemonred.gba",
+      "zhName": "宝可梦 火红"
+    },
+    {
+      "id": "gba_video_pokemon_1",
+      "name": "Pokemon Video Pak 1",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gba_video_pokemon_1",
+      "remoteUrl": "https://gba.js.org/binaries/gba_video_pokemon_1.gba",
+      "zhName": "宝可梦视频卡 1"
+    },
+    {
+      "id": "gba_video_pokemon_2",
+      "name": "Pokemon Video Pak 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gba_video_pokemon_2",
+      "remoteUrl": "https://gba.js.org/binaries/gba_video_pokemon_2.gba",
+      "zhName": "宝可梦视频卡 2"
+    },
+    {
+      "id": "gba_video_pokemon_3",
+      "name": "Pokemon Video Pak 3",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gba_video_pokemon_3",
+      "remoteUrl": "https://gba.js.org/binaries/gba_video_pokemon_3.gba",
+      "zhName": "宝可梦视频卡 3"
+    },
+    {
+      "id": "gba_video_pokemon_4",
+      "name": "Pokemon Video Pak 4",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/gba_video_pokemon_4",
+      "remoteUrl": "https://gba.js.org/binaries/gba_video_pokemon_4.gba",
+      "zhName": "宝可梦视频卡 4"
+    },
+    {
+      "id": "puyopop",
+      "name": "Puyo Pop",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/puyopop",
+      "remoteUrl": "https://gba.js.org/binaries/puyopop.gba",
+      "zhName": "噗哟噗哟"
+    },
+    {
+      "id": "sonic_advance",
+      "name": "Sonic Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sonic_advance",
+      "remoteUrl": "https://gba.js.org/binaries/sonic_advance.gba",
+      "zhName": "索尼克 Advance"
+    },
+    {
+      "id": "sonic_advance2",
+      "name": "Sonic Advance 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sonic_advance2",
+      "remoteUrl": "https://gba.js.org/binaries/sonic_advance2.gba",
+      "zhName": "索尼克 Advance 2"
+    },
+    {
+      "id": "sonic_advance3",
+      "name": "Sonic Advance 3",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sonic_advance3",
+      "remoteUrl": "https://gba.js.org/binaries/sonic_advance3.gba",
+      "zhName": "索尼克 Advance 3"
+    },
+    {
+      "id": "sonicbattle",
+      "name": "Sonic Battle",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sonicbattle",
+      "remoteUrl": "https://gba.js.org/binaries/sonicbattle.gba",
+      "zhName": "索尼克对战"
+    },
+    {
+      "id": "supermonkeyballjr",
+      "name": "Super Monkey Ball Jr",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/supermonkeyballjr",
+      "remoteUrl": "https://gba.js.org/binaries/supermonkeyballjr.gba",
+      "zhName": "超级猴子球 Jr"
+    },
+    {
+      "id": "superstar",
+      "name": "Mario & Luigi: Superstar Saga",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/superstar",
+      "remoteUrl": "https://gba.js.org/binaries/superstar.gba",
+      "zhName": "马力欧与路易吉 RPG"
+    },
+    {
+      "id": "supermarioadvance",
+      "name": "Super Mario Advance",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/supermarioadvance",
+      "remoteUrl": "https://gba.js.org/binaries/supermarioadvance.gba",
+      "zhName": "超级马力欧 Advance"
+    },
+    {
+      "id": "supermarioadvance2",
+      "name": "Super Mario Advance 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/supermarioadvance2",
+      "remoteUrl": "https://gba.js.org/binaries/supermarioadvance2.gba",
+      "zhName": "超级马力欧 Advance 2"
+    },
+    {
+      "id": "supermarioadvance3",
+      "name": "Super Mario Advance 3",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/supermarioadvance3",
+      "remoteUrl": "https://gba.js.org/binaries/supermarioadvance3.gba",
+      "zhName": "超级马力欧 Advance 3"
+    },
+    {
+      "id": "supermarioadvance4",
+      "name": "Super Mario Advance 4",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/supermarioadvance4",
+      "remoteUrl": "https://gba.js.org/binaries/supermarioadvance4.gba",
+      "zhName": "超级马力欧 Advance 4"
+    },
+    {
+      "id": "simpsons",
+      "name": "The Simpsons: Road Rage",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/simpsons",
+      "remoteUrl": "https://gba.js.org/binaries/simpsons.gba",
+      "zhName": "辛普森一家 路怒症"
+    },
+    {
+      "id": "sonicpinball",
+      "name": "Sonic Pinball",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sonicpinball",
+      "remoteUrl": "https://gba.js.org/binaries/sonicpinball.gba",
+      "zhName": "索尼克弹珠台"
+    },
+    {
+      "id": "super_street_fighter_2_turbo_revival",
+      "name": "Super Street Fighter II: Turbo Revival",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/super_street_fighter_2_turbo_revival",
+      "remoteUrl": "https://gba.js.org/binaries/super_street_fighter_2_turbo_revival.gba",
+      "zhName": "超级街头霸王 2 复苏"
+    },
+    {
+      "id": "super_street_fighter_3_alpha",
+      "name": "Super Street Fighter III: Alpha",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/super_street_fighter_3_alpha",
+      "remoteUrl": "https://gba.js.org/binaries/super_street_fighter_3_alpha.gba",
+      "zhName": "超级街头霸王 3 Alpha"
+    },
+    {
+      "id": "sword_of_mana",
+      "name": "Sword of Mana",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sword_of_mana",
+      "remoteUrl": "https://gba.js.org/binaries/sword_of_mana.gba",
+      "zhName": "圣剑传说"
+    },
+    {
+      "id": "tales_of_phantasia",
+      "name": "Tales of Phantasia",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/tales_of_phantasia",
+      "remoteUrl": "https://gba.js.org/binaries/tales_of_phantasia.gba",
+      "zhName": "幻想传说"
+    },
+    {
+      "id": "tak2_staff_of_dreams",
+      "name": "Tak 2: The Staff of Dreams",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/tak2_staff_of_dreams",
+      "remoteUrl": "https://gba.js.org/binaries/tak2_staff_of_dreams.gba",
+      "zhName": "塔克 2 梦之法杖"
+    },
+    {
+      "id": "tetris_worlds",
+      "name": "Tetris Worlds",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/tetris_worlds",
+      "remoteUrl": "https://gba.js.org/binaries/tetris_worlds.gba",
+      "zhName": "俄罗斯方块世界"
+    },
+    {
+      "id": "tmnt",
+      "name": "Teenage Mutant Ninja Turtles",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/tmnt",
+      "remoteUrl": "https://gba.js.org/binaries/tmnt.gba",
+      "zhName": "忍者神龟"
+    },
+    {
+      "id": "sims_bustin_out",
+      "name": "The Sims: Bustin' Out",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sims_bustin_out",
+      "remoteUrl": "https://gba.js.org/binaries/sims_bustin_out.gba",
+      "zhName": "模拟人生 纯属意外"
+    },
+    {
+      "id": "sims2",
+      "name": "The Sims 2",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/sims2",
+      "remoteUrl": "https://gba.js.org/binaries/sims2.gba",
+      "zhName": "模拟人生 2"
+    },
+    {
+      "id": "spyro_adventure",
+      "name": "Spyro Adventure",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/spyro_adventure",
+      "remoteUrl": "https://gba.js.org/binaries/spyro_adventure.gba",
+      "zhName": "小龙斯派罗 冒险"
+    },
+    {
+      "id": "spyro_ice",
+      "name": "Spyro: Season of Ice",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/spyro_ice",
+      "remoteUrl": "https://gba.js.org/binaries/spyro_ice.gba",
+      "zhName": "小龙斯派罗 冰雪季节"
+    },
+    {
+      "id": "spyro_flame",
+      "name": "Spyro 2: Season of Flame",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/spyro_flame",
+      "remoteUrl": "https://gba.js.org/binaries/spyro_flame.gba",
+      "zhName": "小龙斯派罗 2 烈焰季节"
+    },
+    {
+      "id": "turok_evolution",
+      "name": "Turok Evolution",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/turok_evolution",
+      "remoteUrl": "https://gba.js.org/binaries/turok_evolution.gba",
+      "zhName": "图洛克 进化"
+    },
+    {
+      "id": "ty2",
+      "name": "Ty the Tasmanian Tiger 2 - Bush Rescue",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/ty2",
+      "remoteUrl": "https://gba.js.org/binaries/ty2.gba",
+      "zhName": "袋狼大冒险 2 丛林救援"
+    },
+    {
+      "id": "ty3",
+      "name": "Ty the Tasmanian Tiger 3 - Night of the Quinkan",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/ty3",
+      "remoteUrl": "https://gba.js.org/binaries/ty3.gba",
+      "zhName": "袋狼大冒险 3 昆坎之夜"
+    },
+    {
+      "id": "warioland4",
+      "name": "Wario Land 4",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/warioland4",
+      "remoteUrl": "https://gba.js.org/binaries/warioland4.gba",
+      "zhName": "瓦力欧大陆 4"
+    },
+    {
+      "id": "wario_ware",
+      "name": "Wario Ware Inc",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/wario_ware",
+      "remoteUrl": "https://gba.js.org/binaries/wario_ware.gba",
+      "zhName": "瓦力欧制造"
+    },
+    {
+      "id": "zelda_past",
+      "name": "The Legend of Zelda: A Link to the Past",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/zelda_past",
+      "remoteUrl": "https://gba.js.org/binaries/zelda_past.gba",
+      "zhName": "塞尔达传说 众神的三角力量"
+    },
+    {
+      "id": "zelda_minish",
+      "name": "The Legend of Zelda: The Minish Cap",
+      "source": "remote",
+      "provider": "gba.js.org",
+      "url": "/api/gba/remote/zelda_minish",
+      "remoteUrl": "https://gba.js.org/binaries/zelda_minish.gba",
+      "zhName": "塞尔达传说 缩小帽"
+    }
+  ]
+}
