@@ -10,12 +10,20 @@ from ffvideo.utils import json_ok
 
 
 DEFAULT_GBA_PATH = './roms/gba'
+DEFAULT_GBA_SAVE_PATH = './roms/gba/saves'
 SUPPORTED_ROM_EXTENSIONS = ('.gba', '.agb', '.bin')
 REMOTE_GBA_CATALOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'web', 'public', 'catalogs', 'gba-js-org.json'))
 
 
 def get_gba_root_path():
     prefix = get_config_by_key('gba_path', DEFAULT_GBA_PATH) or DEFAULT_GBA_PATH
+    prefix = os.path.abspath(prefix)
+    os.makedirs(prefix, exist_ok=True)
+    return prefix
+
+
+def get_gba_save_root_path():
+    prefix = get_config_by_key('gba_save_path', DEFAULT_GBA_SAVE_PATH) or DEFAULT_GBA_SAVE_PATH
     prefix = os.path.abspath(prefix)
     os.makedirs(prefix, exist_ok=True)
     return prefix
@@ -36,6 +44,14 @@ def get_remote_gba_catalog():
         data = json.load(rf)
     items = data.get('items', []) if isinstance(data, dict) else []
     return {item.get('id'): item for item in items if item.get('id')}
+
+
+def get_save_file_path(save_key: str):
+    normalized = ''.join(ch if ch.isalnum() or ch in ['-', '_', '.'] else '_' for ch in (save_key or '').strip())
+    if not normalized:
+        abort(400)
+    root_path = get_gba_save_root_path()
+    return os.path.join(root_path, f'{normalized}.sav')
 
 
 def add_gba_route(app):
@@ -105,3 +121,23 @@ def add_gba_route(app):
             mimetype='application/octet-stream',
             download_name=f'{slug}.gba'
         )
+
+    @app.route('/api/gba/saves/<save_key>', methods=['GET'])
+    def gba_save_get(save_key):
+        save_path = get_save_file_path(save_key)
+        if not os.path.exists(save_path) or not os.path.isfile(save_path):
+            abort(404)
+        return send_file(save_path, mimetype='application/octet-stream', download_name=os.path.basename(save_path))
+
+    @app.route('/api/gba/saves/<save_key>', methods=['PUT'])
+    def gba_save_put(save_key):
+        save_path = get_save_file_path(save_key)
+        data = request.get_data()
+        if not data:
+            abort(400)
+        with open(save_path, 'wb') as wf:
+            wf.write(data)
+        return json_ok({
+            'path': save_path,
+            'size': len(data),
+        })

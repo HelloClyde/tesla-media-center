@@ -120,6 +120,80 @@ function ensureEmulator() {
 }
 
 let gbaInstance: any = null;
+let saveSyncTimer: number | null = null;
+
+function getActiveSaveKey(item?: any) {
+  const candidate = item?.id || item?.path || state.activeRomPath || state.activeRomName;
+  return String(candidate || '').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+async function loadServerSave(gba: any, item: any) {
+  const saveKey = getActiveSaveKey(item);
+  if (!saveKey) {
+    return;
+  }
+  const response = await fetch(`/api/gba/saves/${encodeURIComponent(saveKey)}`, { credentials: 'same-origin' });
+  if (!response.ok) {
+    if (response.status !== 404) {
+      throw new Error('读取服务端存档失败');
+    }
+    return;
+  }
+  const buffer = await response.arrayBuffer();
+  if (buffer.byteLength > 0) {
+    gba.setSavedata(buffer);
+  }
+}
+
+async function syncSaveToServer(force = false) {
+  if (!gbaInstance?.mmu?.save || !state.activeRomName) {
+    return;
+  }
+  const save = gbaInstance.mmu.save;
+  if (!force && !gbaInstance.mmu.saveNeedsFlush?.()) {
+    return;
+  }
+  const saveKey = getActiveSaveKey({ path: state.activeRomPath, name: state.activeRomName });
+  if (!saveKey) {
+    return;
+  }
+  const payload = save.buffer ? save.buffer.slice(0) : null;
+  if (!payload) {
+    return;
+  }
+  const response = await fetch(`/api/gba/saves/${encodeURIComponent(saveKey)}`, {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/octet-stream',
+    },
+    body: payload,
+  });
+  if (!response.ok) {
+    throw new Error('写入服务端存档失败');
+  }
+  if (gbaInstance.mmu.flushSave) {
+    gbaInstance.mmu.flushSave();
+  }
+}
+
+function startSaveSyncLoop() {
+  if (saveSyncTimer !== null) {
+    window.clearInterval(saveSyncTimer);
+  }
+  saveSyncTimer = window.setInterval(() => {
+    syncSaveToServer().catch((error: any) => {
+      console.error(error);
+    });
+  }, 3000);
+}
+
+function stopSaveSyncLoop() {
+  if (saveSyncTimer !== null) {
+    window.clearInterval(saveSyncTimer);
+    saveSyncTimer = null;
+  }
+}
 
 function createEmulator() {
   if (!window.GameBoyAdvance || !window.biosBin || !canvasRef.value) {
@@ -209,6 +283,9 @@ function pauseEmulator() {
   if (!gbaInstance) {
     return;
   }
+  syncSaveToServer(true).catch((error: any) => {
+    console.error(error);
+  });
   gbaInstance.pause();
   state.playing = false;
   state.statusText = state.activeRomName ? `已暂停《${state.activeRomName}》` : '模拟器已暂停';
@@ -230,6 +307,9 @@ function resetEmulator() {
   if (!state.activeRomPath) {
     return;
   }
+  syncSaveToServer(true).catch((error: any) => {
+    console.error(error);
+  });
   const allItems = [...state.localItems, ...state.remoteItems];
   loadRom(allItems.find((item: any) => item.path === state.activeRomPath) || {
     path: state.activeRomPath,
@@ -262,10 +342,12 @@ function loadRom(item: any) {
         reject(new Error('ROM 无法识别，请确认文件是有效的 .gba 游戏'));
       });
     });
+    await loadServerSave(gba, item);
     if (gba.audio?.context?.resume) {
       gba.audio.context.resume().catch(() => {});
     }
     gba.runStable();
+    startSaveSyncLoop();
     state.activeRomPath = item.path;
     state.activeRomName = item.name;
     state.activeRomUrl = item.url;
@@ -308,6 +390,9 @@ function enterPlayMode() {
 }
 
 function backToLibrary() {
+  syncSaveToServer(true).catch((error: any) => {
+    console.error(error);
+  });
   state.viewMode = 'library';
 }
 
@@ -318,6 +403,10 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  stopSaveSyncLoop();
+  syncSaveToServer(true).catch((error: any) => {
+    console.error(error);
+  });
   pauseEmulator();
 });
 </script>
@@ -430,6 +519,10 @@ onUnmounted(() => {
             <div class="screen-section">
             <div class="screen-bezel compact">
               <canvas ref="canvasRef" class="gba-screen" width="240" height="160"></canvas>
+              <div v-if="state.loadingRom" class="screen-overlay">
+                <strong>加载中</strong>
+                <span>{{ state.statusText || '正在准备 GBA ROM…' }}</span>
+              </div>
               <div v-if="!state.activeRomPath" class="screen-overlay">
                 <strong>从游戏库选择一个 ROM</strong>
                 <span>默认键位：方向键 / Z / X / Enter / \\ / A / S</span>
@@ -779,10 +872,12 @@ onUnmounted(() => {
   background:
     linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(15, 23, 42, 0.78));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 28px 70px rgba(15, 23, 42, 0.32);
+  display: block;
 }
 
 .gba-screen {
   width: 100%;
+  height: auto;
   aspect-ratio: 3 / 2;
   background: #020617;
   image-rendering: pixelated;
@@ -812,33 +907,39 @@ onUnmounted(() => {
 
 .play-stage {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 300px;
+  grid-template-rows: auto 260px;
   gap: 16px;
   height: 100%;
   overflow: hidden;
+  align-content: start;
 }
 
 .top-stage {
   display: flex;
   gap: 16px;
-  min-height: 0;
-  overflow: hidden;
+  min-height: fit-content;
+  overflow: visible;
   flex-wrap: nowrap;
+  align-items: flex-start;
 }
 
 .screen-section {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: fit-content;
   display: flex;
   flex-direction: column;
   justify-content: center;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .screen-bezel.compact {
   width: min(100%, 620px);
   margin: 0;
-  max-height: 100%;
+  aspect-ratio: 3 / 2;
+  height: auto;
+  max-height: none;
+  align-self: flex-start;
+  overflow: visible;
 }
 
 .utility-panel {
@@ -861,7 +962,7 @@ onUnmounted(() => {
 
 .controls-section {
   border-radius: 26px;
-  padding: 18px 20px;
+  padding: 14px 18px;
   background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   overflow: hidden;
@@ -870,7 +971,7 @@ onUnmounted(() => {
 .touch-layout {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) minmax(180px, auto) minmax(240px, 1fr);
-  gap: 20px;
+  gap: 16px;
   align-items: center;
   height: 100%;
 }
@@ -891,7 +992,7 @@ onUnmounted(() => {
 }
 
 .control-pad {
-  width: min(220px, 100%);
+  width: min(200px, 100%);
   aspect-ratio: 1;
   position: relative;
 }
@@ -908,9 +1009,9 @@ onUnmounted(() => {
 
 .control-btn {
   position: absolute;
-  width: 74px;
-  height: 74px;
-  border-radius: 22px;
+  width: 68px;
+  height: 68px;
+  border-radius: 20px;
   background: linear-gradient(145deg, #111827, #1f2937);
   color: white;
   font-size: 28px;
@@ -923,10 +1024,10 @@ onUnmounted(() => {
   transform: translateY(1px) scale(0.98);
 }
 
-.control-btn.up { top: 0; left: 73px; }
-.control-btn.left { top: 73px; left: 0; }
-.control-btn.right { top: 73px; right: 0; }
-.control-btn.down { bottom: 0; left: 73px; }
+.control-btn.up { top: 0; left: 66px; }
+.control-btn.left { top: 66px; left: 0; }
+.control-btn.right { top: 73px; right: -25px; }
+.control-btn.down { bottom: 0; left: 66px; }
 
 .mini-controls,
 .shoulder-row {
@@ -939,12 +1040,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .mini-btn {
-  min-width: 88px;
-  padding: 10px 14px;
+  min-width: 84px;
+  padding: 8px 12px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.16);
   color: var(--color-text);
@@ -960,12 +1061,12 @@ onUnmounted(() => {
 .action-buttons {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 16px;
 }
 
 .action-btn {
-  width: 92px;
-  height: 92px;
+  width: 84px;
+  height: 84px;
   border-radius: 999px;
   color: white;
   font-size: 30px;
