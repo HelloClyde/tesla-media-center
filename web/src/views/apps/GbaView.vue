@@ -565,7 +565,7 @@ onUnmounted(() => {
           <div class="utility-panel">
               <div class="bottom-status">
                 <strong>{{ state.activeRomName || '等待启动' }}</strong>
-                <span>{{ state.emulatorError || state.statusText }}</span>
+                <span><em>{{ state.emulatorError || state.statusText }}</em></span>
               </div>
               <div v-if="state.debugText || state.emulatorError" class="debug-strip">
                 <span>{{ state.emulatorError || state.debugText }}</span>
@@ -577,7 +577,6 @@ onUnmounted(() => {
                 </el-button>
                 <el-button :icon="Refresh" :disabled="!state.activeRomPath || state.loadingRom" @click="resetEmulator()">重启</el-button>
               </div>
-              <div class="hint-inline">键盘映射：方向键 / Z / X / A / S / Enter / \</div>
             </div>
           </div>
 
@@ -891,11 +890,25 @@ onUnmounted(() => {
 .bottom-status strong {
   display: block;
   margin-bottom: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bottom-status span {
+  display: block;
   color: var(--color-text-soft);
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.bottom-status em {
+  display: inline-block;
+  min-width: 100%;
+  font-style: normal;
+  padding-left: 100%;
+  animation: status-marquee 12s linear infinite;
 }
 
 .screen-bezel {
@@ -992,6 +1005,11 @@ onUnmounted(() => {
   gap: 10px;
 }
 
+.utility-actions :deep(.el-button) {
+  width: 100%;
+  margin: 0;
+}
+
 .controls-section {
   border-radius: 26px;
   padding: 14px 18px;
@@ -1009,12 +1027,14 @@ onUnmounted(() => {
 }
 
 .debug-strip {
-  margin-top: 14px;
   padding: 10px 14px;
   border-radius: 14px;
   background: rgba(15, 23, 42, 0.08);
   color: var(--color-text-soft);
   font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .control-cluster {
@@ -1114,10 +1134,13 @@ onUnmounted(() => {
   background: linear-gradient(145deg, #b45309, #f59e0b);
 }
 
-.hint-inline {
-  color: var(--color-text-soft);
-  font-size: 13px;
-  line-height: 1.5;
+@keyframes status-marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
 }
 
 @media (max-width: 1200px) {
