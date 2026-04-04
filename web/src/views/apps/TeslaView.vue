@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
-import { get, post } from '@/functions/requests';
+import { del, get, post } from '@/functions/requests';
 import getAMap from '@/functions/amapConfig';
 
 const mapContainer = ref<HTMLElement | null>(null);
@@ -39,10 +39,16 @@ const state = reactive({
   latestSample: null as any,
   trackPoints: [] as any[],
   trips: [] as any[],
+  selectedTrip: null as any,
+  rawRows: [] as any[],
+  rawTotal: 0,
+  rawPage: 1,
+  rawPageSize: 50,
   settingsLoading: false,
   statusLoading: false,
   syncLoading: false,
   tripsLoading: false,
+  rawLoading: false,
   storageLoading: false,
   mapReady: false,
   mapError: '',
@@ -55,6 +61,8 @@ const state = reactive({
     latestTimestampMs: 0,
     retentionDays: 30,
     maxStorageMb: 256,
+    effectivePollIntervalSec: 60,
+    currentBackoffSec: 0,
     backgroundSyncRunning: false,
   },
 });
@@ -200,7 +208,11 @@ function loadTrack() {
     renderTrackOnMap();
     return Promise.resolve();
   }
-  return get(`/api/tesla/history/track?vin=${encodeURIComponent(state.selectedVin)}&limit=600`, '读取轨迹失败').then((data) => {
+  let url = `/api/tesla/history/track?vin=${encodeURIComponent(state.selectedVin)}&limit=600`;
+  if (state.selectedTrip?.startTimeMs && state.selectedTrip?.endTimeMs) {
+    url += `&startMs=${state.selectedTrip.startTimeMs}&endMs=${state.selectedTrip.endTimeMs}`;
+  }
+  return get(url, '读取轨迹失败').then((data) => {
     state.trackPoints = data.points || [];
     state.latestSample = data.latest || null;
     renderTrackOnMap();
@@ -220,8 +232,64 @@ function loadTrips() {
   });
 }
 
+function loadRawRows() {
+  if (!state.selectedVin) {
+    state.rawRows = [];
+    state.rawTotal = 0;
+    return Promise.resolve();
+  }
+  state.rawLoading = true;
+  return get(
+    `/api/tesla/history/raw?vin=${encodeURIComponent(state.selectedVin)}&page=${state.rawPage}&pageSize=${state.rawPageSize}`,
+    '读取原始记录失败'
+  ).then((data) => {
+    state.rawRows = data.items || [];
+    state.rawTotal = Number(data.total) || 0;
+  }).finally(() => {
+    state.rawLoading = false;
+  });
+}
+
 function handleVehicleChange() {
-  return Promise.all([loadTrack(), loadTrips()]);
+  state.selectedTrip = null;
+  state.rawPage = 1;
+  return Promise.all([loadTrack(), loadTrips(), loadRawRows()]);
+}
+
+function openTripTrack(trip: any) {
+  state.selectedTrip = trip;
+  state.activeTab = 'track';
+  const tripPoints = (trip.samples || []).filter((item: any) => item.longitude != null && item.latitude != null);
+  state.trackPoints = tripPoints;
+  state.latestSample = (trip.samples || [])[trip.samples.length - 1] || null;
+  nextTick(() => {
+    renderTrackOnMap();
+  });
+}
+
+function showAllTrack() {
+  state.selectedTrip = null;
+  loadTrack();
+}
+
+function deleteTrip(trip: any) {
+  del('/api/tesla/history/trips', {
+    vin: state.selectedVin,
+    startTimeMs: trip.startTimeMs,
+    endTimeMs: trip.endTimeMs,
+  }, '删除行程失败').then(() => {
+    if (state.selectedTrip?.startTimeMs === trip.startTimeMs && state.selectedTrip?.endTimeMs === trip.endTimeMs) {
+      state.selectedTrip = null;
+    }
+    Promise.all([loadTrips(), loadTrack(), loadStorage()]).then(() => {
+      ElMessage.success('行程已删除');
+    });
+  });
+}
+
+function handleRawPageChange(page: number) {
+  state.rawPage = page;
+  loadRawRows();
 }
 
 function syncVehicles(showMessage = false) {
@@ -315,13 +383,13 @@ onMounted(() => {
   Promise.all([loadSettings(), loadStatus()]).then(() => {
     loadStorage();
     if (state.status.authorized) {
-      return loadVehicles().then(() => Promise.all([loadTrack(), loadTrips()]));
+      return loadVehicles().then(() => Promise.all([loadTrack(), loadTrips(), loadRawRows()]));
     }
   });
   initMap();
   autoSyncTimer = window.setInterval(() => {
     if (state.status.authorized && !state.syncLoading) {
-      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadStorage()]);
+      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()]);
     }
   }, 15000);
 });
@@ -385,10 +453,19 @@ onUnmounted(() => {
                   <p class="tesla-kicker">Track</p>
                   <h2>轨迹</h2>
                 </div>
-                <div class="status-pill">{{ state.trackPoints.length }} 点</div>
+                <div class="button-row">
+                  <div class="status-pill">{{ state.trackPoints.length }} 点</div>
+                  <el-button v-if="state.selectedTrip" round @click="showAllTrack">查看全部轨迹</el-button>
+                </div>
+              </div>
+              <div v-if="state.selectedTrip" class="trip-filter-banner">
+                当前显示行程：{{ formatTimestamp(state.selectedTrip.startTimeMs) }} - {{ formatTimestamp(state.selectedTrip.endTimeMs) }}
               </div>
               <div v-if="state.mapError" class="map-empty">{{ state.mapError }}</div>
-              <div v-else ref="mapContainer" class="map-container"></div>
+              <div v-else class="map-stage">
+                <div ref="mapContainer" class="map-container"></div>
+                <div v-if="state.trackPoints.length === 0" class="map-empty map-empty--overlay">当前范围没有轨迹点</div>
+              </div>
             </article>
           </section>
         </el-tab-pane>
@@ -428,7 +505,7 @@ onUnmounted(() => {
                     </div>
                     <div class="trip-metric">
                       <span>最高时速</span>
-                      <strong>{{ trip.maxSpeed }} km/h</strong>
+                      <strong>{{ trip.maxSpeed }} {{ trip.speedUnit || 'km/h' }}</strong>
                     </div>
                     <div class="trip-metric">
                       <span>电量变化</span>
@@ -439,8 +516,60 @@ onUnmounted(() => {
                       <strong>{{ trip.pointCount }}</strong>
                     </div>
                   </div>
+                  <div class="trip-actions">
+                    <el-button round @click="openTripTrack(trip)">查看轨迹</el-button>
+                    <el-button type="danger" plain round @click="deleteTrip(trip)">删除行程</el-button>
+                  </div>
                 </div>
               </div>
+            </article>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="原始数据" name="raw">
+          <section class="tesla-grid tesla-grid--content">
+            <article class="tesla-card" v-loading="state.rawLoading">
+              <div class="card-head">
+                <div>
+                  <p class="tesla-kicker">SQLite</p>
+                  <h2>原始记录</h2>
+                </div>
+                <div class="status-pill">{{ state.rawTotal }} 条</div>
+              </div>
+              <div v-if="state.rawRows.length === 0" class="trip-empty">
+                当前车辆还没有原始样本记录
+              </div>
+              <template v-else>
+                <el-table :data="state.rawRows" size="small" class="raw-table">
+                  <el-table-column prop="timestamp_ms" label="时间" min-width="180">
+                    <template #default="{ row }">{{ formatTimestamp(row.timestamp_ms) }}</template>
+                  </el-table-column>
+                  <el-table-column prop="vehicle_state" label="状态" min-width="100" />
+                  <el-table-column prop="shift_state" label="档位" min-width="80" />
+                  <el-table-column prop="speed" label="速度" min-width="100">
+                    <template #default="{ row }">{{ row.speed != null ? `${row.speed} ${row.speed_unit || 'km/h'}` : '-' }}</template>
+                  </el-table-column>
+                  <el-table-column prop="odometer" label="里程" min-width="120">
+                    <template #default="{ row }">{{ row.odometer != null ? `${row.odometer} ${row.distance_unit || 'km'}` : '-' }}</template>
+                  </el-table-column>
+                  <el-table-column label="坐标" min-width="220">
+                    <template #default="{ row }">{{ row.latitude != null && row.longitude != null ? `${row.latitude}, ${row.longitude}` : '-' }}</template>
+                  </el-table-column>
+                  <el-table-column prop="battery_level" label="电量" min-width="90">
+                    <template #default="{ row }">{{ row.battery_level != null ? `${row.battery_level}%` : '-' }}</template>
+                  </el-table-column>
+                </el-table>
+                <div class="raw-pagination">
+                  <el-pagination
+                    background
+                    layout="prev, pager, next"
+                    :page-size="state.rawPageSize"
+                    :total="state.rawTotal"
+                    :current-page="state.rawPage"
+                    @current-change="handleRawPageChange"
+                  />
+                </div>
+              </template>
             </article>
           </section>
         </el-tab-pane>
@@ -499,7 +628,10 @@ onUnmounted(() => {
                 <div class="meta-line"><span>车辆缓存数</span><strong>{{ state.storage.vehicleCount }}</strong></div>
                 <div class="meta-line"><span>最早记录</span><strong>{{ formatTimestamp(state.storage.oldestTimestampMs) }}</strong></div>
                 <div class="meta-line"><span>最新记录</span><strong>{{ formatTimestamp(state.storage.latestTimestampMs) }}</strong></div>
-                <div class="meta-line"><span>后台轮询</span><strong>静止 60 秒 / 行驶 10 秒</strong></div>
+                <div class="meta-line"><span>后台轮询</span><strong>行驶 2.5 秒 / 充电 5 秒 / 在线 60 秒 / 休眠 60 秒</strong></div>
+                <div class="meta-line"><span>当前有效轮询</span><strong>{{ state.storage.effectivePollIntervalSec || 0 }} 秒</strong></div>
+                <div class="meta-line"><span>当前退避</span><strong>{{ state.storage.currentBackoffSec || 0 }} 秒</strong></div>
+                <div class="meta-line"><span>记录优化</span><strong>60 秒内相同样本会自动合并</strong></div>
                 <div class="meta-line"><span>Token 续期</span><strong>离失效前 30 分钟自动刷新</strong></div>
               </div>
               <div class="form-grid">
@@ -825,6 +957,13 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+.trip-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
 .trip-metric {
   border-radius: 16px;
   border: 1px solid var(--color-border);
@@ -847,6 +986,10 @@ onUnmounted(() => {
   min-height: 560px;
 }
 
+.map-stage {
+  position: relative;
+}
+
 .map-container,
 .map-empty {
   width: 100%;
@@ -854,6 +997,29 @@ onUnmounted(() => {
   border-radius: 18px;
   overflow: hidden;
   background: var(--color-panel-muted);
+}
+
+.map-empty--overlay {
+  position: absolute;
+  inset: 0;
+}
+
+.trip-filter-banner {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel-muted);
+  color: var(--color-text-soft);
+}
+
+.raw-table {
+  margin-bottom: 16px;
+}
+
+.raw-pagination {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .map-empty {

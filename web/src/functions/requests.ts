@@ -61,3 +61,29 @@ export function post(url: string, data: any, errMsg='请求错误'): Promise<any
             return Promise.reject(resp || error);
         })
 }
+
+export function del(url: string, data: any, errMsg='请求错误'): Promise<any> {
+    return axios.delete(url, { data })
+        .then(response => {
+            const resp = response.data
+            if (resp?.status) {
+                if (resp.status == 'ok') {
+                    return Promise.resolve(resp?.data);
+                } else {
+                    const finalMsg = resp?.message || errMsg;
+                    ElMessage.error(finalMsg);
+                    return Promise.reject({ ...resp, __handled: true });
+                }
+            }
+            return Promise.resolve(response);
+        })
+        .catch((error) => {
+            if (error?.__handled) {
+                return Promise.reject(error);
+            }
+            const resp = error?.response?.data;
+            const finalMsg = resp?.message || errMsg;
+            ElMessage.error(finalMsg);
+            return Promise.reject(resp || error);
+        })
+}

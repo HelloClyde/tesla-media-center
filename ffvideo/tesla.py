@@ -5,9 +5,11 @@ import base64
 import json
 import math
 import threading
+import asyncio
 from typing import Any
 
 import requests
+import aiohttp
 from flask import request
 from loguru import logger
 
@@ -26,10 +28,19 @@ DEFAULT_TESLA_RETENTION_DAYS = 30
 DEFAULT_TESLA_MAX_STORAGE_MB = 256
 DEFAULT_TESLA_POLL_INTERVAL_SEC = 120
 TESLA_TOKEN_REFRESH_AHEAD_SEC = 30 * 60
-TESLA_IDLE_POLL_INTERVAL_SEC = 60
-TESLA_DRIVING_POLL_INTERVAL_SEC = 10
+TESLA_ASLEEP_POLL_INTERVAL_SEC = 30 * 60
+TESLA_DRIVING_POLL_INTERVAL_SEC = 2.5
+TESLA_DEFAULT_POLL_INTERVAL_SEC = 15
+TESLA_ONLINE_POLL_INTERVAL_SEC = 60
+TESLA_CHARGING_POLL_INTERVAL_SEC = 5
+TESLA_ASLEEP_PROBE_INTERVALS_SEC = [60]
+TESLA_BACKOFF_INITIAL_SEC = 10
+TESLA_BACKOFF_MAX_SEC = 30 * 60
+TESLA_STREAM_TIMEOUT_SEC = 30
 tesla_sync_thread = None
 tesla_sync_stop_event = threading.Event()
+tesla_sync_backoff_sec = 0
+tesla_asleep_streak = 0
 
 
 def get_tesla_db_path():
@@ -70,6 +81,13 @@ def ensure_tesla_storage():
         conn.execute(
             'CREATE INDEX IF NOT EXISTS idx_tesla_vehicle_samples_vin_timestamp ON tesla_vehicle_samples(vin, timestamp_ms DESC)'
         )
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(tesla_vehicle_samples)").fetchall()
+        }
+        if 'speed_unit' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN speed_unit TEXT')
+        if 'distance_unit' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN distance_unit TEXT')
         conn.execute(
             '''
             CREATE TABLE IF NOT EXISTS tesla_vehicles (
@@ -132,6 +150,10 @@ def get_tesla_api_base_url():
     return CHINA_TESLA_API_BASE if get_tesla_region() == 'chinese' else GLOBAL_TESLA_API_BASE
 
 
+def get_tesla_wss_base_url():
+    return 'wss://streaming.vn.cloud.tesla.cn' if get_tesla_region() == 'chinese' else 'wss://streaming.vn.teslamotors.com'
+
+
 def get_tesla_auth_base_url():
     auth_base = get_config_by_key('tesla_auth_base_url', DEFAULT_TESLA_AUTH_BASE) or DEFAULT_TESLA_AUTH_BASE
     auth_base = auth_base.rstrip('/')
@@ -175,12 +197,62 @@ def normalize_distance_unit(gui_settings: dict[str, Any]):
     return 'km'
 
 
-def convert_speed_to_kmh(speed: Any, distance_unit: str):
+def convert_speed_to_kmh(speed: Any):
     if not isinstance(speed, (int, float)):
         return None
-    if distance_unit == 'mi':
-        return round(float(speed) * 1.609344, 1)
-    return round(float(speed), 1)
+    return round(float(speed) * 1.609344, 1)
+
+
+def normalize_sample_units(sample: dict[str, Any]):
+    if not sample:
+        return sample
+    speed = sample.get('speed')
+    speed_unit = sample.get('speed_unit')
+    if isinstance(speed, (int, float)) and speed_unit != 'km/h':
+        sample['speed'] = convert_speed_to_kmh(speed)
+        sample['speed_unit'] = 'km/h'
+    elif speed_unit is None and speed is not None:
+        sample['speed_unit'] = 'km/h'
+    if not sample.get('distance_unit'):
+        sample['distance_unit'] = 'km'
+    return sample
+
+
+def parse_stream_value(value: str):
+    fields = value.split(',')
+    columns = [
+        'time', 'speed', 'odometer', 'soc', 'elevation', 'est_heading', 'est_lat', 'est_lng',
+        'power', 'shift_state', 'range', 'est_range', 'heading'
+    ]
+    payload: dict[str, Any] = dict(zip(columns, fields))
+
+    def to_int(name: str):
+        raw = payload.get(name)
+        if raw in ['', None]:
+            payload[name] = None
+            return
+        try:
+            payload[name] = int(raw)
+        except Exception:
+            payload[name] = None
+
+    def to_float(name: str):
+        raw = payload.get(name)
+        if raw in ['', None]:
+            payload[name] = None
+            return
+        try:
+            payload[name] = float(raw)
+        except Exception:
+            payload[name] = None
+
+    for key in ['speed', 'soc', 'elevation', 'est_heading', 'power', 'range', 'est_range', 'heading']:
+        to_int(key)
+    for key in ['odometer', 'est_lat', 'est_lng']:
+        to_float(key)
+    if payload.get('shift_state') == '':
+        payload['shift_state'] = None
+    return payload
 
 
 def derive_issuer_url_from_access_token(access_token: str):
@@ -218,6 +290,31 @@ def parse_tesla_error_message(resp: requests.Response):
 
 def tesla_tokens_configured():
     return bool(get_tesla_access_token() or get_tesla_refresh_token())
+
+
+def increase_tesla_backoff():
+    global tesla_sync_backoff_sec
+    tesla_sync_backoff_sec = min(
+        TESLA_BACKOFF_MAX_SEC,
+        tesla_sync_backoff_sec * 2 if tesla_sync_backoff_sec > 0 else TESLA_BACKOFF_INITIAL_SEC,
+    )
+    return tesla_sync_backoff_sec
+
+
+def reset_tesla_backoff():
+    global tesla_sync_backoff_sec
+    tesla_sync_backoff_sec = 0
+
+
+def increase_tesla_asleep_streak():
+    global tesla_asleep_streak
+    tesla_asleep_streak += 1
+    return tesla_asleep_streak
+
+
+def reset_tesla_asleep_streak():
+    global tesla_asleep_streak
+    tesla_asleep_streak = 0
 
 
 def save_tesla_token_payload(payload: dict[str, Any]):
@@ -303,6 +400,12 @@ def tesla_api_request(method: str, path: str, *, params=None, json_data=None, al
         logger.warning(f'tesla api error, path={path}, status={resp.status_code}, body={resp.text}')
         if resp.status_code == 401:
             return None, ('not_authorized', 'Tesla 授权已失效，请重新连接')
+        if resp.status_code == 403:
+            return None, ('permission_denied', 'Tesla 账号权限不足或当前车辆不可访问')
+        if resp.status_code == 429:
+            return None, ('rate_limited', 'Tesla 接口限流，稍后自动重试')
+        if resp.status_code == 451:
+            return None, ('wrong_region', 'Tesla 接口区域不匹配，请检查 China / Global 配置')
         return None, ('tesla_api_error', f'Tesla 接口请求失败: {resp.status_code}')
     return resp.json(), None
 
@@ -390,7 +493,7 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
         'latitude': drive_state.get('latitude'),
         'longitude': drive_state.get('longitude'),
         'heading': drive_state.get('heading'),
-        'speed': convert_speed_to_kmh(drive_state.get('speed'), distance_unit),
+        'speed': convert_speed_to_kmh(drive_state.get('speed')),
         'speed_unit': 'km/h',
         'shift_state': drive_state.get('shift_state'),
         'battery_level': charge_state.get('battery_level'),
@@ -409,17 +512,101 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
     }
 
 
+def extract_sample_from_stream_data(vin: str, display_name: str, vehicle_state: str, stream_data: dict[str, Any], previous: dict[str, Any] | None = None):
+    previous = previous or {}
+    timestamp_ms = stream_data.get('time')
+    if not isinstance(timestamp_ms, int):
+        timestamp_ms = int(time.time() * 1000)
+    return normalize_sample_units({
+        'vin': vin,
+        'display_name': display_name,
+        'vehicle_state': vehicle_state or previous.get('vehicle_state') or 'online',
+        'latitude': stream_data.get('est_lat'),
+        'longitude': stream_data.get('est_lng'),
+        'heading': stream_data.get('heading'),
+        'speed': convert_speed_to_kmh(stream_data.get('speed')),
+        'speed_unit': 'km/h',
+        'shift_state': stream_data.get('shift_state'),
+        'battery_level': stream_data.get('soc') if stream_data.get('soc') is not None else previous.get('battery_level'),
+        'usable_battery_level': previous.get('usable_battery_level'),
+        'charging_state': previous.get('charging_state'),
+        'charge_limit_soc': previous.get('charge_limit_soc'),
+        'odometer': round(float(stream_data.get('odometer')), 2) * 1.609344 if isinstance(stream_data.get('odometer'), (int, float)) else previous.get('odometer'),
+        'distance_unit': 'km',
+        'locked': previous.get('locked'),
+        'inside_temp': previous.get('inside_temp'),
+        'outside_temp': previous.get('outside_temp'),
+        'is_climate_on': previous.get('is_climate_on'),
+        'sentry_mode': previous.get('sentry_mode'),
+        'timestamp_ms': timestamp_ms,
+    })
+
+
 def insert_vehicle_sample(sample: dict[str, Any]):
     ensure_tesla_storage()
     db_path = get_tesla_db_path()
     with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        latest = conn.execute(
+            '''
+            SELECT *
+            FROM tesla_vehicle_samples
+            WHERE vin = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT 1
+            ''',
+            (sample.get('vin'),),
+        ).fetchone()
+
+        if latest:
+            latest = dict(latest)
+            timestamp_gap_ms = abs(int(sample.get('timestamp_ms') or 0) - int(latest.get('timestamp_ms') or 0))
+            same_snapshot = (
+                latest.get('vehicle_state') == sample.get('vehicle_state') and
+                latest.get('shift_state') == sample.get('shift_state') and
+                latest.get('charging_state') == sample.get('charging_state') and
+                latest.get('battery_level') == sample.get('battery_level') and
+                latest.get('speed') == sample.get('speed') and
+                latest.get('odometer') == sample.get('odometer') and
+                latest.get('latitude') == sample.get('latitude') and
+                latest.get('longitude') == sample.get('longitude')
+            )
+            if same_snapshot and timestamp_gap_ms <= 60 * 1000:
+                conn.execute(
+                    '''
+                    UPDATE tesla_vehicle_samples
+                    SET display_name = ?, heading = ?, usable_battery_level = ?, charge_limit_soc = ?,
+                        speed_unit = ?, distance_unit = ?, locked = ?, inside_temp = ?, outside_temp = ?,
+                        is_climate_on = ?, sentry_mode = ?, timestamp_ms = ?, created_at = ?
+                    WHERE id = ?
+                    ''',
+                    (
+                        sample.get('display_name'),
+                        sample.get('heading'),
+                        sample.get('usable_battery_level'),
+                        sample.get('charge_limit_soc'),
+                        sample.get('speed_unit'),
+                        sample.get('distance_unit'),
+                        1 if sample.get('locked') else 0 if sample.get('locked') is not None else None,
+                        sample.get('inside_temp'),
+                        sample.get('outside_temp'),
+                        1 if sample.get('is_climate_on') else 0 if sample.get('is_climate_on') is not None else None,
+                        1 if sample.get('sentry_mode') else 0 if sample.get('sentry_mode') is not None else None,
+                        sample.get('timestamp_ms'),
+                        int(time.time()),
+                        latest.get('id'),
+                    ),
+                )
+                conn.commit()
+                return
+
         conn.execute(
             '''
             INSERT INTO tesla_vehicle_samples (
                 vin, display_name, vehicle_state, latitude, longitude, heading, speed, shift_state,
-                battery_level, usable_battery_level, charging_state, charge_limit_soc, odometer,
+                battery_level, usable_battery_level, charging_state, charge_limit_soc, odometer, speed_unit, distance_unit,
                 locked, inside_temp, outside_temp, is_climate_on, sentry_mode, timestamp_ms, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 sample.get('vin'),
@@ -435,6 +622,8 @@ def insert_vehicle_sample(sample: dict[str, Any]):
                 sample.get('charging_state'),
                 sample.get('charge_limit_soc'),
                 sample.get('odometer'),
+                sample.get('speed_unit'),
+                sample.get('distance_unit'),
                 1 if sample.get('locked') else 0 if sample.get('locked') is not None else None,
                 sample.get('inside_temp'),
                 sample.get('outside_temp'),
@@ -445,6 +634,38 @@ def insert_vehicle_sample(sample: dict[str, Any]):
             ),
         )
         conn.commit()
+
+
+def latest_position_sample(vin: str):
+    ensure_tesla_storage()
+    db_path = get_tesla_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            '''
+            SELECT *
+            FROM tesla_vehicle_samples
+            WHERE vin = ? AND latitude IS NOT NULL AND longitude IS NOT NULL
+            ORDER BY timestamp_ms DESC
+            LIMIT 1
+            ''',
+            (vin,),
+        ).fetchone()
+    return normalize_sample_units(dict(row)) if row else None
+
+
+def restore_last_known_position(sample: dict[str, Any] | None, vin: str):
+    if not sample:
+        return sample
+    if sample.get('latitude') is not None and sample.get('longitude') is not None:
+        return sample
+    last_position = latest_position_sample(vin)
+    if not last_position:
+        return sample
+    sample['latitude'] = last_position.get('latitude')
+    sample['longitude'] = last_position.get('longitude')
+    sample['heading'] = sample.get('heading') if sample.get('heading') is not None else last_position.get('heading')
+    return sample
 
 
 def prune_tesla_storage():
@@ -489,6 +710,18 @@ def clear_tesla_storage():
         conn.execute('VACUUM')
 
 
+def delete_trip_samples(vin: str, start_ms: int, end_ms: int):
+    ensure_tesla_storage()
+    db_path = get_tesla_db_path()
+    with sqlite3.connect(db_path) as conn:
+        deleted = conn.execute(
+            'DELETE FROM tesla_vehicle_samples WHERE vin = ? AND timestamp_ms >= ? AND timestamp_ms <= ?',
+            (vin, start_ms, end_ms),
+        ).rowcount
+        conn.commit()
+    return deleted
+
+
 def tesla_storage_stats():
     ensure_tesla_storage()
     db_path = get_tesla_db_path()
@@ -509,6 +742,8 @@ def tesla_storage_stats():
         'retentionDays': get_tesla_retention_days(),
         'maxStorageMb': get_tesla_max_storage_mb(),
         'pollIntervalSec': get_tesla_poll_interval_sec(),
+        'effectivePollIntervalSec': get_recommended_poll_interval_sec(),
+        'currentBackoffSec': tesla_sync_backoff_sec,
         'backgroundSyncRunning': tesla_sync_thread is not None and tesla_sync_thread.is_alive(),
     }
 
@@ -527,7 +762,7 @@ def latest_vehicle_sample(vin: str):
             ''',
             (vin,),
         ).fetchone()
-    return dict(row) if row else None
+    return restore_last_known_position(normalize_sample_units(dict(row)) if row else None, vin)
 
 
 def recent_vehicle_track(vin: str, limit: int = 500):
@@ -535,17 +770,28 @@ def recent_vehicle_track(vin: str, limit: int = 500):
     db_path = get_tesla_db_path()
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
+        start_ms = request.args.get('startMs')
+        end_ms = request.args.get('endMs')
+        clauses = ['vin = ?', 'latitude IS NOT NULL', 'longitude IS NOT NULL']
+        params: list[Any] = [vin]
+        if start_ms:
+            clauses.append('timestamp_ms >= ?')
+            params.append(int(start_ms))
+        if end_ms:
+            clauses.append('timestamp_ms <= ?')
+            params.append(int(end_ms))
+        params.append(limit)
         rows = conn.execute(
-            '''
-            SELECT vin, display_name, latitude, longitude, heading, speed, shift_state, battery_level, vehicle_state, timestamp_ms
+            f'''
+            SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level, vehicle_state, timestamp_ms
             FROM tesla_vehicle_samples
-            WHERE vin = ? AND latitude IS NOT NULL AND longitude IS NOT NULL
+            WHERE {' AND '.join(clauses)}
             ORDER BY timestamp_ms DESC
             LIMIT ?
             ''',
-            (vin, limit),
+            tuple(params),
         ).fetchall()
-    return [dict(row) for row in reversed(rows)]
+    return [normalize_sample_units(dict(row)) for row in reversed(rows)]
 
 
 def recent_vehicle_samples(vin: str, limit: int = 2000):
@@ -555,8 +801,8 @@ def recent_vehicle_samples(vin: str, limit: int = 2000):
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             '''
-            SELECT vin, display_name, latitude, longitude, heading, speed, shift_state, battery_level,
-                   usable_battery_level, charging_state, charge_limit_soc, odometer, vehicle_state, timestamp_ms
+            SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level,
+                   usable_battery_level, charging_state, charge_limit_soc, odometer, distance_unit, vehicle_state, timestamp_ms
             FROM tesla_vehicle_samples
             WHERE vin = ?
             ORDER BY timestamp_ms DESC
@@ -564,7 +810,38 @@ def recent_vehicle_samples(vin: str, limit: int = 2000):
             ''',
             (vin, limit),
         ).fetchall()
-    return [dict(row) for row in reversed(rows)]
+    return [normalize_sample_units(dict(row)) for row in reversed(rows)]
+
+
+def paged_vehicle_samples(vin: str, page: int = 1, page_size: int = 50):
+    ensure_tesla_storage()
+    db_path = get_tesla_db_path()
+    offset = max(0, (page - 1) * page_size)
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        total = conn.execute(
+            'SELECT COUNT(*) AS c FROM tesla_vehicle_samples WHERE vin = ?',
+            (vin,),
+        ).fetchone()['c']
+        rows = conn.execute(
+            '''
+            SELECT id, vin, display_name, vehicle_state, latitude, longitude, heading, speed, speed_unit,
+                   shift_state, battery_level, usable_battery_level, charging_state, charge_limit_soc,
+                   odometer, distance_unit, locked, inside_temp, outside_temp, is_climate_on, sentry_mode,
+                   timestamp_ms, created_at
+            FROM tesla_vehicle_samples
+            WHERE vin = ?
+            ORDER BY timestamp_ms DESC
+            LIMIT ? OFFSET ?
+            ''',
+            (vin, page_size, offset),
+        ).fetchall()
+    return {
+        'items': [normalize_sample_units(dict(row)) for row in rows],
+        'total': total,
+        'page': page,
+        'pageSize': page_size,
+    }
 
 
 def tesla_point_distance_km(lat1, lon1, lat2, lon2):
@@ -609,6 +886,16 @@ def build_trip_sessions(vin: str, limit: int = 2000):
 
         start = trip_samples[0]
         end = trip_samples[-1]
+        start_odo = start.get('odometer')
+        end_odo = end.get('odometer')
+        distance_unit = end.get('distance_unit') or start.get('distance_unit') or 'km'
+        track_point_count = len([
+            sample for sample in trip_samples
+            if sample.get('latitude') is not None and sample.get('longitude') is not None
+        ])
+        if isinstance(start_odo, (int, float)) and isinstance(end_odo, (int, float)) and end_odo >= start_odo:
+            odo_delta = float(end_odo) - float(start_odo)
+            distance_km = odo_delta * 1.609344 if distance_unit == 'mi' else odo_delta
         sessions.append({
             'vin': vin,
             'displayName': end.get('display_name') or start.get('display_name'),
@@ -617,11 +904,12 @@ def build_trip_sessions(vin: str, limit: int = 2000):
             'durationSec': max(0, int((end.get('timestamp_ms') - start.get('timestamp_ms')) / 1000)),
             'distanceKm': round(distance_km, 2),
             'maxSpeed': round(max_speed, 1),
+            'speedUnit': 'km/h',
             'startBatteryLevel': start.get('battery_level'),
             'endBatteryLevel': end.get('battery_level'),
             'startPosition': {'latitude': start.get('latitude'), 'longitude': start.get('longitude')},
             'endPosition': {'latitude': end.get('latitude'), 'longitude': end.get('longitude')},
-            'pointCount': len(trip_samples),
+            'pointCount': track_point_count,
             'samples': trip_samples,
         })
         current = None
@@ -684,7 +972,36 @@ def has_active_vehicle_motion():
 
 
 def get_recommended_poll_interval_sec():
-    return TESLA_DRIVING_POLL_INTERVAL_SEC if has_active_vehicle_motion() else TESLA_IDLE_POLL_INTERVAL_SEC
+    base_interval = TESLA_DEFAULT_POLL_INTERVAL_SEC
+    vehicles = cached_vehicles()
+    latest_samples = [latest_vehicle_sample(vehicle.get('vin')) for vehicle in vehicles if vehicle.get('vin')]
+
+    for sample in latest_samples:
+        if not sample:
+            continue
+        shift_state = (sample.get('shift_state') or '').upper()
+        speed = sample.get('speed')
+        if shift_state in ['D', 'R', 'N'] or (isinstance(speed, (int, float)) and speed > 0):
+            base_interval = TESLA_DRIVING_POLL_INTERVAL_SEC
+            break
+
+    if base_interval != TESLA_DRIVING_POLL_INTERVAL_SEC:
+        for sample in latest_samples:
+            if not sample:
+                continue
+            charging_state = (sample.get('charging_state') or '').lower()
+            if charging_state and charging_state not in ['disconnected', 'complete', 'stopped', '']:
+                base_interval = TESLA_CHARGING_POLL_INTERVAL_SEC
+                break
+
+    if base_interval == TESLA_DEFAULT_POLL_INTERVAL_SEC:
+        if any((vehicle.get('state') or '').lower() in ['online'] for vehicle in vehicles):
+            base_interval = TESLA_ONLINE_POLL_INTERVAL_SEC
+        elif vehicles and all((vehicle.get('state') or '').lower() in ['asleep', 'offline'] for vehicle in vehicles):
+            streak = min(tesla_asleep_streak, len(TESLA_ASLEEP_PROBE_INTERVALS_SEC) - 1)
+            base_interval = TESLA_ASLEEP_PROBE_INTERVALS_SEC[streak]
+
+    return max(base_interval, tesla_sync_backoff_sec)
 
 
 def tesla_user_profile():
@@ -724,6 +1041,7 @@ def sync_vehicle(vin: str, display_name: str, state: str):
         return {'vin': vin, 'displayName': display_name, 'state': state, 'error': error[1]}
     payload = data.get('response') or data
     sample = extract_sample_from_vehicle_data(vin, display_name, state, payload)
+    sample = restore_last_known_position(sample, vin)
     insert_vehicle_sample(sample)
     return {
         'vin': vin,
@@ -750,20 +1068,126 @@ def sync_all_vehicles(target_vin: str | None = None):
     return synced, None
 
 
+async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int = TESLA_STREAM_TIMEOUT_SEC):
+    access_token = refresh_tesla_access_token()
+    if not access_token:
+        return 'not_authorized'
+
+    vehicle_id = str(vehicle.get('vehicleId') or vehicle.get('id') or '')
+    vin = vehicle.get('vin')
+    if not vehicle_id or not vin:
+        return 'invalid_vehicle'
+
+    url = f'{get_tesla_wss_base_url()}/streaming/'
+    subscribe_payload = {
+        'msg_type': 'data:subscribe_oauth',
+        'token': access_token,
+        'value': 'speed,odometer,soc,elevation,est_heading,est_lat,est_lng,power,shift_state,range,est_range,heading',
+        'tag': vehicle_id,
+    }
+    timeout = aiohttp.ClientTimeout(sock_connect=15, sock_read=timeout_sec + 5, total=None)
+    last_data_at = time.time()
+    previous = latest_vehicle_sample(vin) or {}
+    updates = 0
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent': DEFAULT_TESLA_USER_AGENT}) as session:
+            async with session.ws_connect(url, heartbeat=20) as ws:
+                await ws.send_json(subscribe_payload)
+                logger.info(f'tesla streaming connected, vin={vin}, vehicle_id={vehicle_id}')
+                while not tesla_sync_stop_event.is_set():
+                    try:
+                        msg = await ws.receive(timeout=1)
+                    except asyncio.TimeoutError:
+                        if time.time() - last_data_at >= timeout_sec:
+                            logger.info(f'tesla streaming inactive timeout, vin={vin}')
+                            return 'inactive'
+                        continue
+
+                    if msg.type == aiohttp.WSMsgType.TEXT:
+                        payload = json.loads(msg.data)
+                        msg_type = payload.get('msg_type')
+                        if msg_type == 'control:hello':
+                            continue
+                        if msg_type == 'data:update' and payload.get('tag') == vehicle_id and isinstance(payload.get('value'), str):
+                            stream_data = parse_stream_value(payload['value'])
+                            sample = extract_sample_from_stream_data(vin, vehicle.get('displayName'), vehicle.get('state'), stream_data, previous)
+                            insert_vehicle_sample(sample)
+                            previous = sample
+                            updates += 1
+                            last_data_at = time.time()
+                            continue
+                        if msg_type == 'data:error' and payload.get('tag') == vehicle_id:
+                            error_type = payload.get('error_type')
+                            value = payload.get('value')
+                            logger.warning(f'tesla streaming error, vin={vin}, type={error_type}, value={value}')
+                            if error_type == 'vehicle_disconnected':
+                                return 'vehicle_disconnected'
+                            if error_type == 'client_error' and isinstance(value, str) and 'validate token' in value.lower():
+                                return 'tokens_expired'
+                            if error_type == 'vehicle_error' and value == 'Vehicle is offline':
+                                return 'vehicle_offline'
+                            return 'stream_error'
+                    elif msg.type in [aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR]:
+                        logger.warning(f'tesla streaming closed, vin={vin}, type={msg.type}')
+                        return 'closed'
+    except Exception as e:
+        logger.warning(f'tesla streaming exception, vin={vin}, error={e}')
+        return 'stream_exception'
+
+    return 'updates' if updates > 0 else 'inactive'
+
+
+def stream_active_vehicles_once():
+    vehicles = [vehicle for vehicle in cached_vehicles() if vehicle.get('vin') and vehicle.get('state') not in ['asleep', 'offline']]
+    if not vehicles:
+        return None, ('no_stream_candidates', '没有可用的在线车辆用于流式采集')
+    results = []
+    for vehicle in vehicles:
+        result = asyncio.run(stream_vehicle_updates_once(vehicle))
+        results.append({'vin': vehicle.get('vin'), 'result': result})
+    return results, None
+
+
 def tesla_background_sync_loop():
     logger.info('tesla background sync thread started')
     while not tesla_sync_stop_event.is_set():
         try:
             refresh_tesla_access_token()
             if tesla_tokens_configured():
-                synced, error = sync_all_vehicles()
-                if error:
-                    logger.warning(f'tesla background sync failed: {error}')
+                used_streaming = False
+                stream_results = None
+                if has_active_vehicle_motion():
+                    stream_results, stream_error = stream_active_vehicles_once()
+                    if stream_error:
+                        logger.warning(f'tesla streaming skipped: {stream_error}')
+                    else:
+                        logger.info(f'tesla streaming finished: {stream_results}')
+                        used_streaming = any(item.get('result') == 'updates' for item in (stream_results or []))
+
+                if not used_streaming:
+                    synced, error = sync_all_vehicles()
+                    if error:
+                        backoff = increase_tesla_backoff()
+                        logger.warning(f'tesla background sync failed: {error}, backoff={backoff}s')
+                    else:
+                        reset_tesla_backoff()
+                        logger.info(f'tesla background sync finished, items={len(synced or [])}')
                 else:
-                    logger.info(f'tesla background sync finished, items={len(synced or [])}')
+                    reset_tesla_backoff()
+            else:
+                reset_tesla_backoff()
+
+            vehicles = cached_vehicles()
+            if vehicles and all((vehicle.get('state') or '').lower() in ['asleep', 'offline'] for vehicle in vehicles):
+                increase_tesla_asleep_streak()
+            else:
+                reset_tesla_asleep_streak()
             prune_tesla_storage()
         except Exception as e:
+            backoff = increase_tesla_backoff()
             logger.exception(f'tesla background sync exception: {e}')
+            logger.warning(f'tesla background sync backoff={backoff}s')
         tesla_sync_stop_event.wait(get_recommended_poll_interval_sec())
 
 
@@ -913,3 +1337,26 @@ def add_tesla_route(app):
             'vin': vin,
             'items': trips,
         })
+
+    @app.route('/api/tesla/history/trips', methods=['DELETE'])
+    @login_check
+    def tesla_trip_delete():
+        data = request.json or {}
+        vin = str(data.get('vin') or '').strip()
+        start_ms = int(data.get('startTimeMs') or 0)
+        end_ms = int(data.get('endTimeMs') or 0)
+        if not vin or start_ms <= 0 or end_ms <= 0:
+            return json_fail('trip_required', message='缺少行程标识'), 400
+        deleted = delete_trip_samples(vin, start_ms, end_ms)
+        prune_tesla_storage()
+        return json_ok({'deletedCount': deleted})
+
+    @app.route('/api/tesla/history/raw', methods=['GET'])
+    @login_check
+    def tesla_raw_history():
+        vin = request.args.get('vin', '')
+        page = max(1, int(request.args.get('page', '1')))
+        page_size = min(200, max(10, int(request.args.get('pageSize', '50'))))
+        if not vin:
+            return json_fail('vin_required', message='缺少 VIN'), 400
+        return json_ok(paged_vehicle_samples(vin, page, page_size))
