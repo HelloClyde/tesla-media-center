@@ -65,12 +65,14 @@ const selectedVehicle = computed(() => {
 
 const sampleCards = computed(() => {
   const sample = state.latestSample || {};
+  const speedUnit = sample.speed_unit || 'km/h';
+  const distanceUnit = sample.distance_unit || 'km';
   return [
-    { label: '车速', value: sample.speed != null ? `${sample.speed} km/h` : '-' },
+    { label: '车速', value: sample.speed != null ? `${sample.speed} ${speedUnit}` : '-' },
     { label: '档位', value: sample.shift_state || '-' },
     { label: '车内温度', value: sample.inside_temp != null ? `${sample.inside_temp}°C` : '-' },
     { label: '车外温度', value: sample.outside_temp != null ? `${sample.outside_temp}°C` : '-' },
-    { label: '里程', value: sample.odometer != null ? String(sample.odometer) : '-' },
+    { label: '里程', value: sample.odometer != null ? `${sample.odometer} ${distanceUnit}` : '-' },
     { label: '充电状态', value: sample.charging_state || '-' },
     { label: '充电上限', value: sample.charge_limit_soc != null ? `${sample.charge_limit_soc}%` : '-' },
     { label: '哨兵模式', value: sample.sentry_mode != null ? (sample.sentry_mode ? '开启' : '关闭') : '-' },

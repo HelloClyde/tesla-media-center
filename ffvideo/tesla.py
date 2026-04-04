@@ -166,6 +166,23 @@ def decode_jwt_payload(token: str):
         return None
 
 
+def normalize_distance_unit(gui_settings: dict[str, Any]):
+    value = str(gui_settings.get('gui_distance_units') or '').lower()
+    if 'km' in value:
+        return 'km'
+    if 'mile' in value or 'mi' in value:
+        return 'mi'
+    return 'km'
+
+
+def convert_speed_to_kmh(speed: Any, distance_unit: str):
+    if not isinstance(speed, (int, float)):
+        return None
+    if distance_unit == 'mi':
+        return round(float(speed) * 1.609344, 1)
+    return round(float(speed), 1)
+
+
 def derive_issuer_url_from_access_token(access_token: str):
     token = access_token or ''
     if token.startswith('qts-') or token.startswith('eu-') or token.startswith('cn-'):
@@ -365,6 +382,7 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
     vehicle_state_data = payload.get('vehicle_state') or {}
     gui_settings = payload.get('gui_settings') or {}
     vehicle_config = payload.get('vehicle_config') or {}
+    distance_unit = normalize_distance_unit(gui_settings)
     return {
         'vin': vin,
         'display_name': display_name,
@@ -372,13 +390,15 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
         'latitude': drive_state.get('latitude'),
         'longitude': drive_state.get('longitude'),
         'heading': drive_state.get('heading'),
-        'speed': drive_state.get('speed'),
+        'speed': convert_speed_to_kmh(drive_state.get('speed'), distance_unit),
+        'speed_unit': 'km/h',
         'shift_state': drive_state.get('shift_state'),
         'battery_level': charge_state.get('battery_level'),
         'usable_battery_level': charge_state.get('usable_battery_level'),
         'charging_state': charge_state.get('charging_state'),
         'charge_limit_soc': charge_state.get('charge_limit_soc'),
-        'odometer': vehicle_state_data.get('odometer') or gui_settings.get('gui_distance_units'),
+        'odometer': vehicle_state_data.get('odometer'),
+        'distance_unit': distance_unit,
         'locked': vehicle_state_data.get('locked'),
         'inside_temp': climate_state.get('inside_temp'),
         'outside_temp': climate_state.get('outside_temp'),
