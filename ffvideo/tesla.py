@@ -203,6 +203,12 @@ def convert_speed_to_kmh(speed: Any):
     return round(float(speed) * 1.609344, 1)
 
 
+def convert_distance_to_km(distance: Any):
+    if not isinstance(distance, (int, float)):
+        return None
+    return round(float(distance) * 1.609344, 2)
+
+
 def normalize_sample_units(sample: dict[str, Any]):
     if not sample:
         return sample
@@ -213,7 +219,14 @@ def normalize_sample_units(sample: dict[str, Any]):
         sample['speed_unit'] = 'km/h'
     elif speed_unit is None and speed is not None:
         sample['speed_unit'] = 'km/h'
-    if not sample.get('distance_unit'):
+    odometer = sample.get('odometer')
+    distance_unit = sample.get('distance_unit')
+    if isinstance(odometer, (int, float)) and distance_unit != 'km':
+        sample['odometer'] = convert_distance_to_km(odometer)
+        sample['distance_unit'] = 'km'
+    elif odometer is not None and not distance_unit:
+        sample['distance_unit'] = 'km'
+    elif not distance_unit:
         sample['distance_unit'] = 'km'
     return sample
 
@@ -485,7 +498,6 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
     vehicle_state_data = payload.get('vehicle_state') or {}
     gui_settings = payload.get('gui_settings') or {}
     vehicle_config = payload.get('vehicle_config') or {}
-    distance_unit = normalize_distance_unit(gui_settings)
     return {
         'vin': vin,
         'display_name': display_name,
@@ -500,8 +512,8 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
         'usable_battery_level': charge_state.get('usable_battery_level'),
         'charging_state': charge_state.get('charging_state'),
         'charge_limit_soc': charge_state.get('charge_limit_soc'),
-        'odometer': vehicle_state_data.get('odometer'),
-        'distance_unit': distance_unit,
+        'odometer': convert_distance_to_km(vehicle_state_data.get('odometer')),
+        'distance_unit': 'km',
         'locked': vehicle_state_data.get('locked'),
         'inside_temp': climate_state.get('inside_temp'),
         'outside_temp': climate_state.get('outside_temp'),
@@ -888,14 +900,12 @@ def build_trip_sessions(vin: str, limit: int = 2000):
         end = trip_samples[-1]
         start_odo = start.get('odometer')
         end_odo = end.get('odometer')
-        distance_unit = end.get('distance_unit') or start.get('distance_unit') or 'km'
         track_point_count = len([
             sample for sample in trip_samples
             if sample.get('latitude') is not None and sample.get('longitude') is not None
         ])
         if isinstance(start_odo, (int, float)) and isinstance(end_odo, (int, float)) and end_odo >= start_odo:
-            odo_delta = float(end_odo) - float(start_odo)
-            distance_km = odo_delta * 1.609344 if distance_unit == 'mi' else odo_delta
+            distance_km = float(end_odo) - float(start_odo)
         sessions.append({
             'vin': vin,
             'displayName': end.get('display_name') or start.get('display_name'),
