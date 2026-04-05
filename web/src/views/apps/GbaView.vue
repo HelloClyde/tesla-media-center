@@ -36,6 +36,9 @@ const state = reactive({
   playing: false,
   gamepadName: '',
   gamepadSettingsVisible: false,
+  downloadPercent: 0,
+  downloadLoadedBytes: 0,
+  downloadTotalBytes: 0,
 });
 
 const GAMEPAD_STORAGE_KEY = 'tmc:gba-gamepad-mapping';
@@ -288,6 +291,140 @@ function formatBytes(size?: number) {
   return `${(size / 1024 / 1024).toFixed(2)} MB`;
 }
 
+function formatDownloadProgress() {
+  if (!state.downloadTotalBytes) {
+    return state.downloadLoadedBytes ? `${formatBytes(state.downloadLoadedBytes)} 已下载` : '正在准备下载...';
+  }
+  return `${state.downloadPercent}% · ${formatBytes(state.downloadLoadedBytes)} / ${formatBytes(state.downloadTotalBytes)}`;
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, timeoutMs = 45000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function readResponseWithProgress(response: Response) {
+  const total = Number(response.headers.get('Content-Length') || '0') || 0;
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const buffer = await response.arrayBuffer();
+    state.downloadLoadedBytes = buffer.byteLength;
+    state.downloadTotalBytes = total || buffer.byteLength;
+    state.downloadPercent = state.downloadTotalBytes ? 100 : 0;
+    return buffer;
+  }
+  const chunks: Uint8Array[] = [];
+  let loaded = 0;
+  state.downloadLoadedBytes = 0;
+  state.downloadTotalBytes = total;
+  state.downloadPercent = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (!value) {
+      continue;
+    }
+    chunks.push(value);
+    loaded += value.byteLength;
+    state.downloadLoadedBytes = loaded;
+    if (total > 0) {
+      state.downloadPercent = Math.min(99, Math.round((loaded / total) * 100));
+      state.statusText = `正在下载《${state.activeRomName || ''}》... ${formatDownloadProgress()}`;
+    } else {
+      state.statusText = `正在下载《${state.activeRomName || ''}》... ${formatDownloadProgress()}`;
+    }
+  }
+  const merged = new Uint8Array(loaded);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  state.downloadLoadedBytes = loaded;
+  state.downloadTotalBytes = total || loaded;
+  state.downloadPercent = 100;
+  return merged.buffer;
+}
+
+async function downloadRangeChunk(url: string, start: number, end: number, attempt = 1): Promise<ArrayBuffer> {
+  try {
+    const response = await fetchWithTimeout(url, {
+      credentials: 'same-origin',
+      headers: {
+        Range: `bytes=${start}-${end}`,
+      },
+    });
+    if (!(response.status === 206 || response.status === 200)) {
+      throw new Error('ROM 分段下载失败');
+    }
+    return await response.arrayBuffer();
+  } catch (error) {
+    if (attempt >= 3) {
+      throw error;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, attempt * 600));
+    return downloadRangeChunk(url, start, end, attempt + 1);
+  }
+}
+
+async function downloadRomBuffer(url: string, romName: string) {
+  state.downloadPercent = 0;
+  state.downloadLoadedBytes = 0;
+  state.downloadTotalBytes = 0;
+  state.statusText = `正在下载《${romName}》...`;
+  let total = 0;
+  let acceptRanges = false;
+  try {
+    const headResponse = await fetchWithTimeout(url, {
+      method: 'HEAD',
+      credentials: 'same-origin',
+    }, 15000);
+    if (headResponse.ok) {
+      total = Number(headResponse.headers.get('Content-Length') || '0') || 0;
+      acceptRanges = (headResponse.headers.get('Accept-Ranges') || '').toLowerCase().includes('bytes');
+    }
+  } catch (_error) {
+    // fallback below
+  }
+
+  if (acceptRanges && total > 0) {
+    const chunkSize = 1024 * 1024;
+    const parts: Uint8Array[] = [];
+    let loaded = 0;
+    for (let start = 0; start < total; start += chunkSize) {
+      const end = Math.min(total - 1, start + chunkSize - 1);
+      state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
+      const chunk = new Uint8Array(await downloadRangeChunk(url, start, end));
+      parts.push(chunk);
+      loaded += chunk.byteLength;
+      state.downloadLoadedBytes = loaded;
+      state.downloadTotalBytes = total;
+      state.downloadPercent = Math.min(100, Math.round((loaded / total) * 100));
+      state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of parts) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged.buffer;
+  }
+
+  const response = await fetchWithTimeout(url, { credentials: 'same-origin' });
+  if (!response.ok) {
+    throw new Error('ROM 下载失败');
+  }
+  return readResponseWithProgress(response);
+}
+
 function loadRomList(path = state.currentPath) {
   state.loadingList = true;
   return get(`/api/gba/list?path=${encodeURIComponent(path)}`, '读取 GBA ROM 列表失败').then((data) => {
@@ -384,16 +521,15 @@ function loadRom(item: any) {
   state.loadingRom = true;
   state.statusText = `正在加载《${item.name}》...`;
   state.debugText = '';
+  state.activeRomName = item.name;
   state.viewMode = 'play';
   ensureEmulator().then(async () => {
     await nextTick();
     ensureSilentAudioPlayback();
     const gba = createEmulator();
-    const response = await fetch(item.url, { credentials: 'same-origin' });
-    if (!response.ok) {
-      throw new Error('ROM 下载失败');
-    }
-    const blob = await response.blob();
+    const romBuffer = await downloadRomBuffer(item.url, item.name);
+    state.statusText = `正在载入《${item.name}》...`;
+    const blob = new Blob([romBuffer], { type: 'application/octet-stream' });
     const file = new File([blob], item.name, { type: 'application/octet-stream' });
     await new Promise<void>((resolve, reject) => {
       gba.loadRomFromFile(file, (result: boolean) => {
@@ -415,6 +551,7 @@ function loadRom(item: any) {
     state.activeRomName = item.name;
     state.activeRomUrl = item.url;
     state.playing = true;
+    state.downloadPercent = 100;
     state.statusText = `正在运行《${item.name}》`;
     ElMessage.success(`已启动 ${item.name}`);
   }).catch((error: any) => {

@@ -1,4 +1,4 @@
-from flask import abort, request, send_file
+from flask import abort, request, send_file, Response, stream_with_context
 from io import BytesIO
 import json
 import os
@@ -108,7 +108,7 @@ def add_gba_route(app):
             abort(404)
         return send_file(abs_path)
 
-    @app.route('/api/gba/remote/<slug>', methods=['GET'])
+    @app.route('/api/gba/remote/<slug>', methods=['GET', 'HEAD'])
     def gba_remote_file(slug):
         item = get_remote_gba_catalog().get(slug)
         if not item:
@@ -118,14 +118,49 @@ def add_gba_route(app):
         if not remote_url:
             abort(404)
 
-        response = requests.get(remote_url, timeout=60)
-        if response.status_code != 200:
-            abort(response.status_code if response.status_code in (404, 403) else 502)
+        upstream_headers = {}
+        if request.headers.get('Range'):
+            upstream_headers['Range'] = request.headers.get('Range')
 
-        return send_file(
-            BytesIO(response.content),
-            mimetype='application/octet-stream',
-            download_name=f'{slug}.gba'
+        method = request.method.upper()
+        requester = requests.head if method == 'HEAD' else requests.get
+        response = requester(
+            remote_url,
+            headers=upstream_headers,
+            timeout=60,
+            allow_redirects=True,
+            stream=method != 'HEAD',
+        )
+
+        if response.status_code not in (200, 206):
+            abort(response.status_code if response.status_code in (404, 403, 416) else 502)
+
+        headers = {
+            'Accept-Ranges': response.headers.get('Accept-Ranges', 'bytes'),
+            'Content-Type': response.headers.get('Content-Type', 'application/octet-stream'),
+            'Content-Disposition': f'attachment; filename="{slug}.gba"',
+        }
+        if response.headers.get('Content-Length'):
+            headers['Content-Length'] = response.headers.get('Content-Length')
+        if response.headers.get('Content-Range'):
+            headers['Content-Range'] = response.headers.get('Content-Range')
+
+        if method == 'HEAD':
+            response.close()
+            return Response(status=response.status_code, headers=headers)
+
+        def generate():
+            try:
+                for chunk in response.iter_content(chunk_size=256 * 1024):
+                    if chunk:
+                        yield chunk
+            finally:
+                response.close()
+
+        return Response(
+            stream_with_context(generate()),
+            status=response.status_code,
+            headers=headers,
         )
 
     @app.route('/api/gba/saves/<save_key>', methods=['GET'])
