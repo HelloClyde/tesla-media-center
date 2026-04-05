@@ -400,30 +400,49 @@ function renderTrackOnMap() {
     vehicleMarker = null;
   }
 
-  const points = state.trackPoints
+  const rawPoints = state.trackPoints
     .filter((item: any) => item.longitude != null && item.latitude != null)
-    .map((item: any) => [item.longitude, item.latitude]);
+    .map((item: any) => [Number(item.longitude), Number(item.latitude)]);
 
-  if (points.length > 1) {
-    polyline = new gAMap.Polyline({
-      path: points,
-      strokeColor: '#409EFF',
-      strokeWeight: 6,
-      lineJoin: 'round',
-      lineCap: 'round',
-    });
-    mapInstance.add(polyline);
+  const drawPoints = (points: any[]) => {
+    if (points.length > 1) {
+      polyline = new gAMap.Polyline({
+        path: points,
+        strokeColor: '#409EFF',
+        strokeWeight: 6,
+        lineJoin: 'round',
+        lineCap: 'round',
+      });
+      mapInstance.add(polyline);
+    }
+
+    const latestPoint = points[points.length - 1];
+    if (latestPoint) {
+      vehicleMarker = new gAMap.Marker({
+        position: latestPoint,
+        title: selectedVehicle.value?.displayName || state.selectedVin,
+      });
+      mapInstance.add(vehicleMarker);
+      mapInstance.setFitView(vehicleMarker ? [vehicleMarker, polyline].filter(Boolean) : [polyline], false, [80, 80, 80, 80]);
+    }
+  };
+
+  if (rawPoints.length === 0) {
+    return;
   }
 
-  const latestPoint = points[points.length - 1];
-  if (latestPoint) {
-    vehicleMarker = new gAMap.Marker({
-      position: latestPoint,
-      title: selectedVehicle.value?.displayName || state.selectedVin,
+  if (typeof gAMap.convertFrom === 'function') {
+    gAMap.convertFrom(rawPoints, 'gps', (status: string, result: any) => {
+      if (status === 'complete' && result?.locations?.length) {
+        drawPoints(result.locations.map((item: any) => [item.lng, item.lat]));
+        return;
+      }
+      drawPoints(rawPoints);
     });
-    mapInstance.add(vehicleMarker);
-    mapInstance.setFitView(vehicleMarker ? [vehicleMarker, polyline].filter(Boolean) : [polyline], false, [80, 80, 80, 80]);
+    return;
   }
+
+  drawPoints(rawPoints);
 }
 
 onMounted(() => {
