@@ -54,6 +54,28 @@ def get_save_file_path(save_key: str):
     return os.path.join(root_path, f'{normalized}.sav')
 
 
+def infer_remote_file_size(headers):
+    content_range = headers.get('Content-Range') or ''
+    if '/' in content_range:
+        total = content_range.rsplit('/', 1)[-1].strip()
+        if total.isdigit():
+            return total
+
+    etag = headers.get('ETag') or headers.get('etag') or ''
+    if '-' in etag:
+        suffix = etag.rsplit('-', 1)[-1].strip().strip('"')
+        try:
+            return str(int(suffix, 16))
+        except ValueError:
+            return None
+
+    content_length = headers.get('Content-Length')
+    if content_length and content_length.isdigit():
+        return content_length
+
+    return None
+
+
 def add_gba_route(app):
     @app.route('/api/gba/list', methods=['GET'])
     def gba_list():
@@ -135,15 +157,22 @@ def add_gba_route(app):
         if response.status_code not in (200, 206):
             abort(response.status_code if response.status_code in (404, 403, 416) else 502)
 
+        accept_ranges = response.headers.get('Accept-Ranges')
+        file_size = infer_remote_file_size(response.headers)
         headers = {
-            'Accept-Ranges': response.headers.get('Accept-Ranges', 'bytes'),
             'Content-Type': response.headers.get('Content-Type', 'application/octet-stream'),
             'Content-Disposition': f'attachment; filename="{slug}.gba"',
         }
-        if response.headers.get('Content-Length'):
-            headers['Content-Length'] = response.headers.get('Content-Length')
+        if accept_ranges:
+            headers['Accept-Ranges'] = accept_ranges
         if response.headers.get('Content-Range'):
             headers['Content-Range'] = response.headers.get('Content-Range')
+        if file_size:
+            headers['X-File-Size'] = file_size
+        if response.status_code == 206 and response.headers.get('Content-Length'):
+            headers['Content-Length'] = response.headers.get('Content-Length')
+        elif method == 'HEAD' and file_size:
+            headers['Content-Length'] = file_size
 
         if method == 'HEAD':
             response.close()
@@ -167,7 +196,7 @@ def add_gba_route(app):
     def gba_save_get(save_key):
         save_path = get_save_file_path(save_key)
         if not os.path.exists(save_path) or not os.path.isfile(save_path):
-            abort(404)
+            return Response(status=204)
         return send_file(save_path, mimetype='application/octet-stream', download_name=os.path.basename(save_path))
 
     @app.route('/api/gba/saves/<save_key>', methods=['PUT'])

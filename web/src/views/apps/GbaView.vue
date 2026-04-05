@@ -166,26 +166,53 @@ let silentAudioUnlockHandler: (() => void) | null = null;
 let gamepadPollId: number | null = null;
 const activeGamepadKeys = new Set<string>();
 
+function logGbaLaunch(stage: string, extra?: Record<string, any>) {
+  const payload = {
+    stage,
+    activeRomName: state.activeRomName,
+    activeRomPath: state.activeRomPath,
+    loadingRom: state.loadingRom,
+    ...extra,
+  };
+  console.info('[GBA launch]', payload);
+  if (extra?.message) {
+    state.debugText = `${stage}: ${extra.message}`;
+  }
+}
+
 function getActiveSaveKey(item?: any) {
   const candidate = item?.id || item?.path || state.activeRomPath || state.activeRomName;
   return String(candidate || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
 async function loadServerSave(gba: any, item: any) {
+  if (item?.type === 'remote') {
+    logGbaLaunch('loadServerSave:skip-remote', { itemType: item?.type, itemId: item?.id || item?.path });
+    return;
+  }
   const saveKey = getActiveSaveKey(item);
   if (!saveKey) {
+    logGbaLaunch('loadServerSave:no-key');
     return;
   }
   const response = await fetch(`/api/gba/saves/${encodeURIComponent(saveKey)}`, { credentials: 'same-origin' });
+  if (response.status === 204) {
+    logGbaLaunch('loadServerSave:empty', { saveKey, status: response.status });
+    return;
+  }
   if (!response.ok) {
     if (response.status !== 404) {
+      logGbaLaunch('loadServerSave:error-response', { saveKey, status: response.status });
       throw new Error('读取服务端存档失败');
     }
+    logGbaLaunch('loadServerSave:not-found', { saveKey, status: response.status });
     return;
   }
   const buffer = await response.arrayBuffer();
+  logGbaLaunch('loadServerSave:downloaded', { saveKey, byteLength: buffer.byteLength });
   if (buffer.byteLength > 0) {
     gba.setSavedata(buffer);
+    logGbaLaunch('loadServerSave:applied', { saveKey, byteLength: buffer.byteLength });
   }
 }
 
@@ -308,8 +335,8 @@ async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit, ti
   }
 }
 
-async function readResponseWithProgress(response: Response) {
-  const total = Number(response.headers.get('Content-Length') || '0') || 0;
+async function readResponseWithProgress(response: Response, expectedTotal = 0) {
+  const total = Number(response.headers.get('Content-Length') || '0') || expectedTotal || 0;
   const reader = response.body?.getReader();
   if (!reader) {
     const buffer = await response.arrayBuffer();
@@ -353,6 +380,20 @@ async function readResponseWithProgress(response: Response) {
   return merged.buffer;
 }
 
+async function readResponseFully(response: Response, expectedTotal = 0) {
+  const buffer = await response.arrayBuffer();
+  const total = expectedTotal || buffer.byteLength;
+  state.downloadLoadedBytes = buffer.byteLength;
+  state.downloadTotalBytes = total;
+  state.downloadPercent = total ? 100 : 0;
+  logGbaLaunch('download:completed', {
+    responseTotal: total,
+    byteLength: buffer.byteLength,
+    mode: 'arrayBuffer',
+  });
+  return buffer;
+}
+
 async function downloadRangeChunk(url: string, start: number, end: number, attempt = 1): Promise<ArrayBuffer> {
   try {
     const response = await fetchWithTimeout(url, {
@@ -361,11 +402,14 @@ async function downloadRangeChunk(url: string, start: number, end: number, attem
         Range: `bytes=${start}-${end}`,
       },
     });
-    if (!(response.status === 206 || response.status === 200)) {
-      throw new Error('ROM 分段下载失败');
+    if (response.status !== 206) {
+      throw new Error('range_not_supported');
     }
     return await response.arrayBuffer();
   } catch (error) {
+    if ((error as Error)?.message === 'range_not_supported') {
+      throw error;
+    }
     if (attempt >= 3) {
       throw error;
     }
@@ -374,55 +418,90 @@ async function downloadRangeChunk(url: string, start: number, end: number, attem
   }
 }
 
-async function downloadRomBuffer(url: string, romName: string) {
+async function downloadRomBuffer(url: string, romName: string, itemType = 'local') {
   state.downloadPercent = 0;
   state.downloadLoadedBytes = 0;
   state.downloadTotalBytes = 0;
   state.statusText = `正在下载《${romName}》...`;
+  const preferSingleRequest = itemType === 'remote';
   let total = 0;
   let acceptRanges = false;
-  try {
-    const headResponse = await fetchWithTimeout(url, {
-      method: 'HEAD',
-      credentials: 'same-origin',
-    }, 15000);
-    if (headResponse.ok) {
-      total = Number(headResponse.headers.get('Content-Length') || '0') || 0;
-      acceptRanges = (headResponse.headers.get('Accept-Ranges') || '').toLowerCase().includes('bytes');
+  logGbaLaunch('download:start', { url, romName, itemType });
+  if (!preferSingleRequest) {
+    try {
+      const headResponse = await fetchWithTimeout(url, {
+        method: 'HEAD',
+        credentials: 'same-origin',
+      }, 15000);
+      if (headResponse.ok) {
+        total = Number(headResponse.headers.get('X-File-Size') || headResponse.headers.get('Content-Length') || '0') || 0;
+        acceptRanges = (headResponse.headers.get('Accept-Ranges') || '').toLowerCase().includes('bytes');
+        logGbaLaunch('download:head', {
+          status: headResponse.status,
+          total,
+          acceptRanges,
+          contentLength: headResponse.headers.get('Content-Length'),
+          fileSize: headResponse.headers.get('X-File-Size'),
+        });
+      }
+    } catch (_error) {
+      logGbaLaunch('download:head-failed', { message: (_error as Error)?.message || String(_error) });
+      // fallback below
     }
-  } catch (_error) {
-    // fallback below
   }
 
   if (acceptRanges && total > 0) {
     const chunkSize = 1024 * 1024;
     const parts: Uint8Array[] = [];
     let loaded = 0;
-    for (let start = 0; start < total; start += chunkSize) {
-      const end = Math.min(total - 1, start + chunkSize - 1);
-      state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
-      const chunk = new Uint8Array(await downloadRangeChunk(url, start, end));
-      parts.push(chunk);
-      loaded += chunk.byteLength;
-      state.downloadLoadedBytes = loaded;
-      state.downloadTotalBytes = total;
-      state.downloadPercent = Math.min(100, Math.round((loaded / total) * 100));
-      state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
+    try {
+      for (let start = 0; start < total; start += chunkSize) {
+        const end = Math.min(total - 1, start + chunkSize - 1);
+        state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
+        const chunk = new Uint8Array(await downloadRangeChunk(url, start, end));
+        parts.push(chunk);
+        loaded += chunk.byteLength;
+        state.downloadLoadedBytes = loaded;
+        state.downloadTotalBytes = total;
+        state.downloadPercent = Math.min(100, Math.round((loaded / total) * 100));
+        state.statusText = `正在下载《${romName}》... ${formatDownloadProgress()}`;
+      }
+      const merged = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of parts) {
+        merged.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return merged.buffer;
+    } catch (error) {
+      logGbaLaunch('download:range-fallback', { message: (error as Error)?.message || String(error), total });
+      console.warn('range download fallback', error);
     }
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of parts) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return merged.buffer;
   }
 
   const response = await fetchWithTimeout(url, { credentials: 'same-origin' });
   if (!response.ok) {
+    logGbaLaunch('download:response-error', { status: response.status, statusText: response.statusText });
     throw new Error('ROM 下载失败');
   }
-  return readResponseWithProgress(response);
+  const responseTotal = Number(response.headers.get('X-File-Size') || response.headers.get('Content-Length') || '0') || total;
+  logGbaLaunch('download:response', {
+    status: response.status,
+    responseTotal,
+    contentLength: response.headers.get('Content-Length'),
+    fileSize: response.headers.get('X-File-Size'),
+    transferEncoding: response.headers.get('Transfer-Encoding'),
+  });
+  if (preferSingleRequest) {
+    return readResponseFully(response, responseTotal);
+  }
+  const buffer = await readResponseWithProgress(response, responseTotal);
+  logGbaLaunch('download:completed', {
+    responseTotal,
+    byteLength: buffer.byteLength,
+    mode: 'stream',
+  });
+  return buffer;
 }
 
 function loadRomList(path = state.currentPath) {
@@ -523,24 +602,42 @@ function loadRom(item: any) {
   state.debugText = '';
   state.activeRomName = item.name;
   state.viewMode = 'play';
+  logGbaLaunch('loadRom:start', {
+    name: item?.name,
+    path: item?.path,
+    type: item?.type,
+    url: item?.url,
+  });
   ensureEmulator().then(async () => {
     await nextTick();
     ensureSilentAudioPlayback();
     const gba = createEmulator();
-    const romBuffer = await downloadRomBuffer(item.url, item.name);
-    state.statusText = `正在载入《${item.name}》...`;
-    const blob = new Blob([romBuffer], { type: 'application/octet-stream' });
-    const file = new File([blob], item.name, { type: 'application/octet-stream' });
-    await new Promise<void>((resolve, reject) => {
-      gba.loadRomFromFile(file, (result: boolean) => {
-        if (result) {
-          state.debugText = `${gba.mmu?.cart?.title || item.name} 已载入`;
-          resolve();
-          return;
-        }
-        reject(new Error('ROM 无法识别，请确认文件是有效的 .gba 游戏'));
-      });
+    logGbaLaunch('loadRom:emulator-ready', {
+      hasCanvas: !!canvasRef.value,
+      hasBios: !!window.biosBin,
+      hasCore: !!window.GameBoyAdvance,
     });
+    const romBuffer = await downloadRomBuffer(item.url, item.name, item.type);
+    state.statusText = `正在载入《${item.name}》...`;
+    if (!(romBuffer instanceof ArrayBuffer) || romBuffer.byteLength <= 0) {
+      logGbaLaunch('loadRom:invalid-buffer', {
+        constructor: (romBuffer as any)?.constructor?.name,
+        byteLength: (romBuffer as any)?.byteLength,
+      });
+      throw new Error('ROM 下载结果无效');
+    }
+    logGbaLaunch('loadRom:setRom:before', { byteLength: romBuffer.byteLength });
+    const result = gba.setRom(romBuffer);
+    logGbaLaunch('loadRom:setRom:after', {
+      result,
+      cartTitle: gba.mmu?.cart?.title,
+      cartCode: gba.mmu?.cart?.code,
+      cartSaveType: gba.mmu?.cart?.saveType,
+    });
+    if (!result) {
+      throw new Error('ROM 无法识别，请确认文件是有效的 .gba 游戏');
+    }
+    state.debugText = `${gba.mmu?.cart?.title || item.name} 已载入`;
     await loadServerSave(gba, item);
     if (gba.audio?.context?.resume) {
       gba.audio.context.resume().catch(() => {});
@@ -553,10 +650,15 @@ function loadRom(item: any) {
     state.playing = true;
     state.downloadPercent = 100;
     state.statusText = `正在运行《${item.name}》`;
+    logGbaLaunch('loadRom:runStable', { name: item.name, path: item.path });
     ElMessage.success(`已启动 ${item.name}`);
   }).catch((error: any) => {
     state.playing = false;
     state.statusText = error?.message || 'ROM 加载失败';
+    logGbaLaunch('loadRom:error', {
+      message: error?.message || String(error),
+      stack: error?.stack,
+    });
     ElMessage.error(error?.message || 'ROM 加载失败');
   }).finally(() => {
     state.loadingRom = false;
@@ -860,10 +962,6 @@ onUnmounted(() => {
               <div v-if="state.loadingRom" class="screen-overlay">
                 <strong>加载中</strong>
                 <span>{{ state.statusText || '正在准备 GBA ROM…' }}</span>
-              </div>
-              <div v-if="!state.activeRomPath" class="screen-overlay">
-                <strong>从游戏库选择一个 ROM</strong>
-                <span>默认键位：方向键 / Z / X / Enter / \\ / A / S</span>
               </div>
             </div>
           </div>
@@ -1483,8 +1581,8 @@ onUnmounted(() => {
 
 .control-btn.up { top: 0; left: 66px; }
 .control-btn.left { top: 66px; left: 0; }
-.control-btn.right { top: 73px; right: -25px; }
-.control-btn.down { bottom: 0; left: 66px; }
+.control-btn.right { top: 66px; left: 132px; }
+.control-btn.down { top: 132px; left: 66px; }
 
 .mini-controls,
 .shoulder-row {

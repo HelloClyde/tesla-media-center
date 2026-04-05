@@ -106,12 +106,30 @@ class GameBoyAdvance {
 	}
 	setRom(rom) {
 		this.reset();
+		console.info("[GBA core] setRom:start", {
+			constructor: rom && rom.constructor ? rom.constructor.name : typeof rom,
+			byteLength: rom && typeof rom.byteLength === "number" ? rom.byteLength : null
+		});
 
 		this.rom = this.mmu.loadRom(rom, true);
 		if (!this.rom) {
+			console.info("[GBA core] setRom:invalid");
 			return false;
 		}
-		this.retrieveSavedata();
+		console.info("[GBA core] setRom:loaded", {
+			title: this.mmu && this.mmu.cart ? this.mmu.cart.title : null,
+			code: this.mmu && this.mmu.cart ? this.mmu.cart.code : null,
+			saveType: this.mmu && this.mmu.cart ? this.mmu.cart.saveType : null
+		});
+		try {
+			var restored = this.retrieveSavedata();
+			console.info("[GBA core] setRom:retrieveSavedata", {
+				restored: restored
+			});
+		} catch (error) {
+			console.error("[GBA core] setRom:retrieveSavedata:error", error);
+			throw error;
+		}
 		return true;
 	}
 	hasRom() {
