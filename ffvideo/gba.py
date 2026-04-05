@@ -58,8 +58,12 @@ def add_gba_route(app):
     @app.route('/api/gba/list', methods=['GET'])
     def gba_list():
         root_path = get_gba_root_path()
+        save_root_path = get_gba_save_root_path()
         current_path = request.args.get('path', '')
         abs_path, normalized = safe_join(root_path, current_path)
+
+        if abs_path == save_root_path or abs_path.startswith(f'{save_root_path}{os.sep}'):
+            abort(404)
 
         if not os.path.exists(abs_path) or not os.path.isdir(abs_path):
             abort(404)
@@ -67,6 +71,8 @@ def add_gba_route(app):
         items = []
         for entry in sorted(os.listdir(abs_path), key=lambda item: item.lower()):
             full_path = os.path.join(abs_path, entry)
+            if full_path == save_root_path:
+                continue
             rel_path = os.path.normpath(os.path.join(normalized, entry))
             normalized_rel_path = '' if rel_path == '.' else rel_path.replace('\\', '/')
             if os.path.isdir(full_path):
