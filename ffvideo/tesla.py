@@ -47,6 +47,7 @@ tesla_sync_backoff_sec = 0
 tesla_asleep_streak = 0
 tesla_collection_mode = 'rest'
 tesla_last_stream_result = ''
+tesla_stream_phase = 'idle'
 
 
 def get_tesla_db_path():
@@ -497,6 +498,21 @@ def cached_vehicles():
     } for row in rows]
 
 
+def fetch_products_vehicles():
+    data, error = tesla_api_request('GET', '/api/1/products')
+    if error:
+        return None, error
+    products = data.get('response') or []
+    logger.info(
+        f'tesla products fetched, total={len(products)}, '
+        f'vehicle_items={len([item for item in products if item.get("vehicle_id")])}'
+    )
+    vehicles = [normalize_vehicle_record(item) for item in products if item.get('vehicle_id')]
+    for vehicle in vehicles:
+        upsert_vehicle_cache(vehicle)
+    return vehicles, None
+
+
 def extract_vehicle_location(payload: dict[str, Any]):
     drive_state = payload.get('drive_state') or {}
     location_data = payload.get('location_data') or {}
@@ -787,6 +803,7 @@ def tesla_storage_stats():
         'backgroundSyncRunning': tesla_sync_thread is not None and tesla_sync_thread.is_alive(),
         'collectionMode': tesla_collection_mode,
         'lastStreamResult': tesla_last_stream_result,
+        'streamPhase': tesla_stream_phase,
     }
 
 
@@ -1011,13 +1028,14 @@ def has_active_vehicle_motion():
     return False
 
 
-def has_stream_candidates():
-    return any((vehicle.get('state') or '').lower() == 'online' for vehicle in cached_vehicles())
+def has_stream_candidates(vehicles: list[dict[str, Any]] | None = None):
+    source = vehicles if vehicles is not None else cached_vehicles()
+    return any((vehicle.get('state') or '').lower() == 'online' for vehicle in source)
 
 
-def get_recommended_poll_interval_sec():
+def get_recommended_poll_interval_sec(vehicles: list[dict[str, Any]] | None = None):
     base_interval = TESLA_DEFAULT_POLL_INTERVAL_SEC
-    vehicles = cached_vehicles()
+    vehicles = vehicles if vehicles is not None else cached_vehicles()
     latest_samples = [latest_vehicle_sample(vehicle.get('vin')) for vehicle in vehicles if vehicle.get('vin')]
 
     for sample in latest_samples:
@@ -1134,14 +1152,9 @@ def sync_vehicle(vin: str, display_name: str, state: str):
 
 
 def sync_all_vehicles(target_vin: str | None = None):
-    data, error = tesla_api_request('GET', '/api/1/products')
+    vehicles, error = fetch_products_vehicles()
     if error:
         return None, error
-    products = data.get('response') or []
-    logger.info(f'tesla products fetched, total={len(products)}, vehicle_items={len([item for item in products if item.get("vehicle_id")])}')
-    vehicles = [normalize_vehicle_record(item) for item in products if item.get('vehicle_id')]
-    for vehicle in vehicles:
-        upsert_vehicle_cache(vehicle)
     if target_vin:
         vehicles = [item for item in vehicles if item.get('vin') == target_vin]
     synced = [sync_vehicle(item['vin'], item['displayName'], item.get('state')) for item in vehicles if item.get('vin')]
@@ -1151,13 +1164,16 @@ def sync_all_vehicles(target_vin: str | None = None):
 
 
 async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int = TESLA_STREAM_TIMEOUT_SEC):
+    global tesla_stream_phase
     access_token = refresh_tesla_access_token()
     if not access_token:
+        tesla_stream_phase = 'not_authorized'
         return 'not_authorized'
 
     vehicle_id = str(vehicle.get('vehicleId') or vehicle.get('id') or '')
     vin = vehicle.get('vin')
     if not vehicle_id or not vin:
+        tesla_stream_phase = 'invalid_vehicle'
         return 'invalid_vehicle'
 
     url = f'{get_tesla_wss_base_url()}/streaming/'
@@ -1174,14 +1190,17 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
 
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent': DEFAULT_TESLA_USER_AGENT}) as session:
+            tesla_stream_phase = 'connecting'
             async with session.ws_connect(url, heartbeat=20) as ws:
                 await ws.send_json(subscribe_payload)
+                tesla_stream_phase = 'subscribed'
                 logger.info(f'tesla streaming connected, vin={vin}, vehicle_id={vehicle_id}')
                 while not tesla_sync_stop_event.is_set():
                     try:
                         msg = await ws.receive(timeout=1)
                     except asyncio.TimeoutError:
                         if time.time() - last_data_at >= timeout_sec:
+                            tesla_stream_phase = 'inactive'
                             logger.info(f'tesla streaming inactive timeout, vin={vin}')
                             return 'inactive'
                         continue
@@ -1192,6 +1211,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                         if msg_type == 'control:hello':
                             continue
                         if msg_type == 'data:update' and payload.get('tag') == vehicle_id and isinstance(payload.get('value'), str):
+                            tesla_stream_phase = 'updates'
                             stream_data = parse_stream_value(payload['value'])
                             sample = extract_sample_from_stream_data(vin, vehicle.get('displayName'), vehicle.get('state'), stream_data, previous)
                             insert_vehicle_sample(sample)
@@ -1202,6 +1222,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                         if msg_type == 'data:error' and payload.get('tag') == vehicle_id:
                             error_type = payload.get('error_type')
                             value = payload.get('value')
+                            tesla_stream_phase = f'error:{error_type or "unknown"}'
                             logger.warning(f'tesla streaming error, vin={vin}, type={error_type}, value={value}')
                             if error_type == 'vehicle_disconnected':
                                 return 'vehicle_disconnected'
@@ -1211,9 +1232,11 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                                 return 'vehicle_offline'
                             return 'stream_error'
                     elif msg.type in [aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.ERROR]:
+                        tesla_stream_phase = 'closed'
                         logger.warning(f'tesla streaming closed, vin={vin}, type={msg.type}')
                         return 'closed'
     except Exception as e:
+        tesla_stream_phase = 'exception'
         logger.warning(f'tesla streaming exception, vin={vin}, error={e}')
         return 'stream_exception'
 
@@ -1234,17 +1257,22 @@ def stream_active_vehicles_once():
 def tesla_background_sync_loop():
     global tesla_collection_mode
     global tesla_last_stream_result
+    global tesla_stream_phase
     logger.info('tesla background sync thread started')
     while not tesla_sync_stop_event.is_set():
         try:
             refresh_tesla_access_token()
             if tesla_tokens_configured():
+                vehicles, products_error = fetch_products_vehicles()
+                if products_error:
+                    raise Exception(products_error[1])
                 used_streaming = False
                 stream_results = None
-                if has_stream_candidates():
+                if has_stream_candidates(vehicles):
                     stream_results, stream_error = stream_active_vehicles_once()
                     if stream_error:
                         tesla_last_stream_result = stream_error[0]
+                        tesla_stream_phase = f'fallback:{stream_error[0]}'
                         logger.warning(f'tesla streaming skipped: {stream_error}')
                     else:
                         logger.info(f'tesla streaming finished: {stream_results}')
@@ -1254,14 +1282,21 @@ def tesla_background_sync_loop():
                         used_streaming = any(item.get('result') == 'updates' for item in (stream_results or []))
                         if used_streaming:
                             tesla_collection_mode = 'streaming'
+                        else:
+                            tesla_stream_phase = f'fallback:{tesla_last_stream_result or "inactive"}'
+                else:
+                    tesla_stream_phase = 'no_online_vehicle'
 
                 if not used_streaming:
                     tesla_collection_mode = 'rest'
-                    synced, error = sync_all_vehicles()
+                    synced = [sync_vehicle(item['vin'], item['displayName'], item.get('state')) for item in vehicles if item.get('vin')]
+                    error = None
                     if error:
                         backoff = increase_tesla_backoff()
                         logger.warning(f'tesla background sync failed: {error}, backoff={backoff}s')
                     else:
+                        put_config_by_key('tesla_last_sync_at', int(time.time()))
+                        prune_tesla_storage()
                         reset_tesla_backoff()
                         logger.info(f'tesla background sync finished, items={len(synced or [])}')
                 else:
@@ -1269,6 +1304,7 @@ def tesla_background_sync_loop():
             else:
                 tesla_collection_mode = 'idle'
                 tesla_last_stream_result = ''
+                tesla_stream_phase = 'idle'
                 reset_tesla_backoff()
 
             vehicles = cached_vehicles()
@@ -1281,7 +1317,7 @@ def tesla_background_sync_loop():
             backoff = increase_tesla_backoff()
             logger.exception(f'tesla background sync exception: {e}')
             logger.warning(f'tesla background sync backoff={backoff}s')
-        tesla_sync_stop_event.wait(get_recommended_poll_interval_sec())
+        tesla_sync_stop_event.wait(get_recommended_poll_interval_sec(cached_vehicles()))
 
 
 def start_tesla_background_sync():

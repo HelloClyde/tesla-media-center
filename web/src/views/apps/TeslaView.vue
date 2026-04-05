@@ -67,6 +67,7 @@ const state = reactive({
     backgroundSyncRunning: false,
     collectionMode: 'rest',
     lastStreamResult: '',
+    streamPhase: 'idle',
   },
 });
 
@@ -681,6 +682,7 @@ onUnmounted(() => {
                 <div class="meta-line"><span>当前有效轮询</span><strong>{{ state.storage.effectivePollIntervalSec || 0 }} 秒</strong></div>
                 <div class="meta-line"><span>当前退避</span><strong>{{ state.storage.currentBackoffSec || 0 }} 秒</strong></div>
                 <div class="meta-line"><span>当前采集模式</span><strong>{{ state.storage.collectionMode || 'rest' }}</strong></div>
+                <div class="meta-line"><span>流式阶段</span><strong>{{ state.storage.streamPhase || 'idle' }}</strong></div>
                 <div class="meta-line"><span>最近流式结果</span><strong>{{ state.storage.lastStreamResult || '-' }}</strong></div>
                 <div class="meta-line"><span>记录优化</span><strong>60 秒内相同样本会自动合并</strong></div>
                 <div class="meta-line"><span>Token 续期</span><strong>离失效前 30 分钟自动刷新</strong></div>
