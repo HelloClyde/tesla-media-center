@@ -90,7 +90,13 @@ function getStreamUrl(startMs = 0) {
 }
 
 function getStreamInfoUrl(startMs = 0) {
-    return `${getStreamUrl(startMs)}/info`;
+    const baseUrl = props.type === 'bangumi_ss'
+        ? `/api/bilibili/bangumi_ep/${state.epid}/${state.cid}/info`
+        : `/api/bilibili/bv/${state.bvid}/${state.cid}/info`;
+    if (startMs > 0) {
+        return `${baseUrl}?start_ms=${Math.floor(startMs)}`;
+    }
+    return baseUrl;
 }
 
 function clearDanmuScreen() {
@@ -142,10 +148,14 @@ async function ensurePlayable(startMs = 0) {
 }
 
 async function playCurrentVideo(startMs = 0) {
+    if (videoPlayer && videoPlayer.getState && videoPlayer.getState() !== 0) {
+        videoPlayer.stop();
+    }
+    videoPlayer?.showLoading?.();
+    state.isPlay = false;
     await ensurePlayable(startMs);
     const streamUrl = getStreamUrl(startMs);
     logPlayback('play:start', { startMs, streamUrl });
-    videoPlayer.stop();
     videoPlayer.play(`stream://${streamUrl}`, playerCanvas.value, function (e: any) {
         console.error(e);
         console.error("play error " + e.error + " status " + e.status + ".");
@@ -161,7 +171,7 @@ async function playCurrentVideo(startMs = 0) {
         }
     }, waitHeaderLength, true);
     videoPlayer.streamBaseOffset = startMs / 1000;
-    videoPlayer.beginTimeOffset = startMs / 1000;
+    videoPlayer.beginTimeOffset = 0;
     if (timeTrack.value) {
         timeTrack.value.value = String(startMs);
     }

@@ -71,6 +71,7 @@ function Player() {
     this.isStream           = false;
     this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
+    this.firstVideoFrame    = true;
     this.fetchController    = null;
     this.streamPauseParam   = null;
     this.logger             = new Logger("Player");
@@ -229,6 +230,11 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
         this.canvas = canvas;
         this.callback = callback;
         this.waitHeaderLength = waitHeaderLength || this.waitHeaderLength;
+        this.downloading = false;
+        this.downloadSwitch = true;
+        this.streamReceivedLen = 0;
+        this.seekReceivedLen = 0;
+        this.decoderState = decoderStateIdle;
         this.playerState = playerStatePlaying;
         this.isStream = isStream;
         this.startTrackTimer();
@@ -443,9 +449,12 @@ Player.prototype.stop = function () {
     this.buffering          = false;
     this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
+    this.firstVideoFrame    = true;
     this.urgent             = false;
     this.seekReceivedLen    = 0;
     this.downloadSeqNo      = 0;
+    this.downloading        = false;
+    this.downloadSwitch     = true;
     this.finishNotified     = false;
 
     if (this.pcmPlayer) {
@@ -893,7 +902,12 @@ Player.prototype.displayAudioFrame = function (frame) {
 
     if (this.isStream && this.firstAudioFrame) {
         this.firstAudioFrame = false;
-        this.beginTimeOffset = this.streamBaseOffset + frame.s;
+        this.beginTimeOffset = frame.s;
+        this.logger.logInfo(
+            "stream sync first audio frame.s=" + frame.s +
+            " streamBaseOffset=" + this.streamBaseOffset +
+            " beginTimeOffset=" + this.beginTimeOffset
+        );
     }
 
     this.pcmPlayer.play(new Uint8Array(frame.d));
@@ -940,7 +954,26 @@ Player.prototype.displayVideoFrame = function (frame) {
     var audioTimestamp = audioCurTs + this.beginTimeOffset;
     var delay = frame.s - audioTimestamp;
 
-    // this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
+    if (this.isStream && this.firstVideoFrame) {
+        this.firstVideoFrame = false;
+        this.logger.logInfo(
+            "stream sync first video frame.s=" + frame.s +
+            " audioCurTs=" + audioCurTs +
+            " beginTimeOffset=" + this.beginTimeOffset +
+            " audioTimestamp=" + audioTimestamp +
+            " delay=" + delay
+        );
+    }
+
+    if (this.isStream && (delay < -1 || delay > 1)) {
+        this.logger.logInfo(
+            "stream sync drift frame.s=" + frame.s +
+            " audioCurTs=" + audioCurTs +
+            " beginTimeOffset=" + this.beginTimeOffset +
+            " audioTimestamp=" + audioTimestamp +
+            " delay=" + delay
+        );
+    }
 
     if (audioTimestamp <= 0 || delay <= 0) {
         var data = new Uint8Array(frame.d);
@@ -1148,6 +1181,9 @@ Player.prototype.stopTrackTimer = function () {
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
+        if (this.isStream) {
+            currentPlayTime = this.pcmPlayer.getTimestamp() + this.streamBaseOffset;
+        }
         var maxPlayTime = this.duration > 0 ? this.duration / 1000 : 0;
         if (maxPlayTime > 0 && currentPlayTime > maxPlayTime) {
             currentPlayTime = maxPlayTime;

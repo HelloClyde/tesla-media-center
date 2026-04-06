@@ -291,6 +291,9 @@ def get_output_video_path(bvid, cid, start_ms=0):
     return os.path.join(cache_dir, f'bv_output_{bvid}_{cid}.flv')
 
 
+SEEK_READY_MIN_SIZE = 2 * 1024 * 1024
+
+
 def make_job_safe_name(job_key):
     return re.sub(r'[^a-zA-Z0-9._-]+', '_', str(job_key))
 
@@ -318,11 +321,15 @@ def has_active_ffmpeg_tasks():
     return any(task.is_alive() for task in ffmpeg_jobs.tasks)
 
 
-def wait_for_output_file(output_video_path, timeout=30):
+def wait_for_output_file(output_video_path, timeout=30, min_size=1):
     start_time = time.time()
     while True:
         if os.path.exists(output_video_path):
-            return True
+            try:
+                if os.path.getsize(output_video_path) >= min_size:
+                    return True
+            except FileNotFoundError:
+                pass
         if time.time() - start_time > timeout:
             return False
         time.sleep(0.1)
@@ -679,14 +686,20 @@ def add_bv_route(app):
         ffmpeg_cmd = [
             FFMPEG_PATH,
             '-headers', make_ffmpeg_headers(),
-            '-ss', str(start_sec),
             '-i', video_url,
             '-headers', make_ffmpeg_headers(),
-            '-ss', str(start_sec),
             '-i', audio_url,
+            '-ss', str(start_sec),
+            '-fflags', '+genpts',
+            '-avoid_negative_ts', 'make_zero',
+            '-map', '0:v:0',
+            '-map', '1:a:0',
+            '-vf', 'setpts=PTS-STARTPTS',
+            '-af', 'asetpts=PTS-STARTPTS',
             '-c:v', 'libx264',
             '-x264-params', 'keyint=30:scenecut=0',
-            '-c:a', 'copy',
+            '-c:a', 'aac',
+            '-shortest',
             '-f', 'flv',
             output_video_path,
             '-y'
@@ -838,6 +851,7 @@ def add_bv_route(app):
         CHECK_INTERVAL = 0.1  # 检查间隔（秒）
         
         start_time = time.time()
+        min_ready_size = SEEK_READY_MIN_SIZE if start_ms > 0 else 1
         while True:
             # 超时检查
             if time.time() - start_time > MAX_WAIT:
@@ -845,7 +859,7 @@ def add_bv_route(app):
                 return json_fail('Video generation timeout')
             
             # 等待文件创建
-            if os.path.exists(output_video_path):
+            if os.path.exists(output_video_path) and os.path.getsize(output_video_path) >= min_ready_size:
                 break
             time.sleep(CHECK_INTERVAL)
         size = os.path.getsize(output_video_path)
@@ -938,7 +952,8 @@ def add_bv_route(app):
             for task in ffmpeg_jobs.tasks:
                 task.start()
 
-        if not wait_for_output_file(output_video_path):
+        min_ready_size = SEEK_READY_MIN_SIZE if start_ms > 0 else 1
+        if not wait_for_output_file(output_video_path, min_size=min_ready_size):
             return json_fail('Video generation timeout'), 504
 
         payload = {
@@ -1108,7 +1123,8 @@ def add_bv_route(app):
 
         if not os.path.exists(output_video_path):
             return_bv_stream(bvid, cid, start_ms)
-        if not wait_for_output_file(output_video_path):
+        min_ready_size = SEEK_READY_MIN_SIZE if start_ms > 0 else 1
+        if not wait_for_output_file(output_video_path, min_size=min_ready_size):
             return json_fail('Video generation timeout'), 504
         
         final_size = -1
