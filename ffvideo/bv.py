@@ -22,11 +22,12 @@ ffplay_stop_event = threading.Event()
 FFMPEG_PATH = imageio_ffmpeg.get_ffmpeg_exe()
 
 class FFMPEGJobs:
-    def __init__(self, bv=None, tasks=None, stop_event=None, size_map={}):
+    def __init__(self, bv=None, tasks=None, stop_event=None, size_map=None, temp_paths=None):
         self.bv = bv
         self.tasks = tasks if tasks is not None else []
         self.stop_event = stop_event if stop_event is not None else threading.Event()
-        self.size_map = size_map
+        self.size_map = size_map if size_map is not None else {}
+        self.temp_paths = temp_paths if temp_paths is not None else []
         
     def __repr__(self):
         return f"FFMPEGJobs(bv={self.bv}, tasks={self.tasks}, stop_event={self.stop_event.is_set()}, size_map={self.size_map})"
@@ -37,6 +38,7 @@ ffmpeg_jobs_dict = {
     'tasks': [], 
     'stop_event': threading.Event(),
     'size_map': {},
+    'temp_paths': [],
 }
 ffmpeg_jobs = FFMPEGJobs(**ffmpeg_jobs_dict)
 qr_login = None
@@ -289,6 +291,33 @@ def get_output_video_path(bvid, cid, start_ms=0):
     return os.path.join(cache_dir, f'bv_output_{bvid}_{cid}.flv')
 
 
+def make_job_safe_name(job_key):
+    return re.sub(r'[^a-zA-Z0-9._-]+', '_', str(job_key))
+
+
+def get_job_pipe_paths(job_key):
+    safe_name = make_job_safe_name(job_key)
+    return (
+        f'/tmp/{safe_name}_video_pipe.m4s',
+        f'/tmp/{safe_name}_audio_pipe.m4s',
+    )
+
+
+def cleanup_paths(paths):
+    for path in paths or []:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.warning(f'cleanup path failed, path={path}, error={e}')
+
+
+def has_active_ffmpeg_tasks():
+    return any(task.is_alive() for task in ffmpeg_jobs.tasks)
+
+
 def wait_for_output_file(output_video_path, timeout=30):
     start_time = time.time()
     while True:
@@ -305,6 +334,8 @@ def stop_current_jobs():
     for task in ffmpeg_jobs.tasks:
         task.join()
     ffmpeg_jobs.tasks = []
+    cleanup_paths(ffmpeg_jobs.temp_paths)
+    ffmpeg_jobs.temp_paths = []
 
 
 def make_ffmpeg_headers():
@@ -600,6 +631,8 @@ def add_bv_route(app):
         DONE_FILE = get_cache_done_path(output_video_path)
         if os.path.exists(DONE_FILE):
             os.remove(DONE_FILE)
+        if os.path.exists(output_video_path):
+            os.remove(output_video_path)
             
         # ffmpeg_cmd = f'{FFMPEG_PATH} -re -i {input_video_pipe}  -i {input_audio_pipe} -c copy  -movflags faststart -f flv {output_video_path} -y'
         # ffmpeg_cmd = f'{FFMPEG_PATH} -re -i {input_video_pipe}  -i {input_audio_pipe} -c:v libx264 -x264-params keyint=30:scenecut=0 -c:a aac -movflags faststart -f flv {output_video_path} -y'
@@ -758,11 +791,16 @@ def add_bv_route(app):
         done_file_path = get_cache_done_path(output_video_path)
         job_key = f'{bvid}_{cid}_{start_ms}'
         enforce_bilibili_cache_limit(exclude_paths={output_video_path, done_file_path})
-        
-        if ffmpeg_jobs.bv == job_key:
+
+        has_done_file = os.path.exists(done_file_path)
+        if os.path.exists(output_video_path) and not has_done_file and ffmpeg_jobs.bv != job_key:
+            cleanup_paths([output_video_path])
+
+        if ffmpeg_jobs.bv == job_key and (has_done_file or has_active_ffmpeg_tasks()):
             pass
         else:
             stop_current_jobs()
+            cleanup_paths([output_video_path, done_file_path])
             
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
             selected_video, selected_audio, stream_error = select_preferred_streams(detecter, source_label=f'bv:{bvid}')
@@ -775,6 +813,7 @@ def add_bv_route(app):
             ffmpeg_jobs.stop_event.clear()
             ffmpeg_jobs.size_map = {}
             if start_ms > 0:
+                ffmpeg_jobs.temp_paths = []
                 ffmpeg_jobs.tasks = [
                     threading.Thread(
                         target=ffmpeg_seek_streams,
@@ -782,14 +821,11 @@ def add_bv_route(app):
                     ),
                 ]
             else:
-                input_video_pipe = f'/tmp/bv_video_{bvid}_{cid}.m4s'
-                input_audio_pipe = f'/tmp/bv_audio_{bvid}_{cid}.m4s'
-                if os.path.exists(input_video_pipe):
-                    os.remove(input_video_pipe)
-                if os.path.exists(input_audio_pipe):
-                    os.remove(input_audio_pipe)
+                input_video_pipe, input_audio_pipe = get_job_pipe_paths(job_key)
+                cleanup_paths([input_video_pipe, input_audio_pipe])
                 os.mkfifo(input_video_pipe)
                 os.mkfifo(input_audio_pipe)
+                ffmpeg_jobs.temp_paths = [input_video_pipe, input_audio_pipe]
                 ffmpeg_jobs.tasks = [
                     threading.Thread(target=download_stream, args=(selected_video.url, input_video_pipe)),
                     threading.Thread(target=download_stream, args=(selected_audio.url, input_audio_pipe)),
@@ -812,7 +848,6 @@ def add_bv_route(app):
             if os.path.exists(output_video_path):
                 break
             time.sleep(CHECK_INTERVAL)
-        time.sleep(5)
         size = os.path.getsize(output_video_path)
         merge_size = sum(ffmpeg_jobs.size_map.values()) if ffmpeg_jobs.size_map else size
         data = {
@@ -852,8 +887,13 @@ def add_bv_route(app):
         job_key = f'ep_{epid}_{cid}_{start_ms}'
         enforce_bilibili_cache_limit(exclude_paths={output_video_path, done_file_path})
 
-        if ffmpeg_jobs.bv != job_key:
+        has_done_file = os.path.exists(done_file_path)
+        if os.path.exists(output_video_path) and not has_done_file and ffmpeg_jobs.bv != job_key:
+            cleanup_paths([output_video_path])
+
+        if ffmpeg_jobs.bv != job_key or (not has_done_file and not has_active_ffmpeg_tasks()):
             stop_current_jobs()
+            cleanup_paths([output_video_path, done_file_path])
 
             detecter = video.VideoDownloadURLDataDetecter(data=download_url_data)
             selected_video, selected_audio, stream_error = select_preferred_streams(detecter, source_label=f'bangumi:{epid}')
@@ -867,6 +907,7 @@ def add_bv_route(app):
             ffmpeg_jobs.size_map = {}
             if detecter.check_video_and_audio_stream():
                 if start_ms > 0:
+                    ffmpeg_jobs.temp_paths = []
                     ffmpeg_jobs.tasks = [
                         threading.Thread(
                             target=ffmpeg_seek_streams,
@@ -874,20 +915,18 @@ def add_bv_route(app):
                         ),
                     ]
                 else:
-                    input_video_pipe = '/tmp/input_video_pipe'
-                    input_audio_pipe = '/tmp/input_audio_pipe'
-                    if os.path.exists(input_video_pipe):
-                        os.remove(input_video_pipe)
-                    if os.path.exists(input_audio_pipe):
-                        os.remove(input_audio_pipe)
+                    input_video_pipe, input_audio_pipe = get_job_pipe_paths(job_key)
+                    cleanup_paths([input_video_pipe, input_audio_pipe])
                     os.mkfifo(input_video_pipe)
                     os.mkfifo(input_audio_pipe)
+                    ffmpeg_jobs.temp_paths = [input_video_pipe, input_audio_pipe]
                     ffmpeg_jobs.tasks = [
                         threading.Thread(target=download_stream, args=(selected_video.url, input_video_pipe)),
                         threading.Thread(target=download_stream, args=(selected_audio.url, input_audio_pipe)),
                         threading.Thread(target=ffmpeg, args=(input_video_pipe, input_audio_pipe, output_video_path)),
                     ]
             elif selected_video and getattr(selected_video, 'url', None):
+                ffmpeg_jobs.temp_paths = []
                 ffmpeg_jobs.tasks = [
                     threading.Thread(
                         target=ffmpeg_single_stream,

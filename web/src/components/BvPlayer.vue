@@ -36,6 +36,7 @@ const state = reactive({
     cid: null as string | null,
     title: null as string | null,
     desc: null as string| null,
+    switchingEp: false,
     danmuArea: DEFAULT_DANMU_AREA,
     danmuMaxCount: DEFAULT_DANMU_MAX_COUNT,
     danmuOpacity: DEFAULT_DANMU_OPACITY,
@@ -51,6 +52,18 @@ const currentEpIndex = computed(() => {
         return ep.bvid === state.bvid && String(ep.cid) === String(state.cid);
     });
 });
+
+function logPlayback(stage: string, extra?: Record<string, any>) {
+    console.info('[Bili player]', {
+        stage,
+        type: props.type,
+        title: getCurrentEpisodeLabel(),
+        epid: state.epid,
+        bvid: state.bvid,
+        cid: state.cid,
+        ...extra,
+    });
+}
 
 function playOrPause() {
     // const currentState = videoPlayer.getState();
@@ -74,6 +87,10 @@ function getStreamUrl(startMs = 0) {
         return `${baseUrl}?start_ms=${Math.floor(startMs)}`;
     }
     return baseUrl;
+}
+
+function getStreamInfoUrl(startMs = 0) {
+    return `${getStreamUrl(startMs)}/info`;
 }
 
 function clearDanmuScreen() {
@@ -104,14 +121,43 @@ function loadDanmuForCurrentPosition(startSec = 0) {
     });
 }
 
-function playCurrentVideo(startMs = 0) {
+function getCurrentEpisodeLabel() {
+    return state.epList[currentEpIndex.value]?.title || state.title || '当前视频';
+}
+
+async function ensurePlayable(startMs = 0) {
+    if ((!state.bvid && !state.epid) || !state.cid) {
+        throw new Error('当前分集缺少播放参数');
+    }
+    const infoUrl = getStreamInfoUrl(startMs);
+    logPlayback('ensurePlayable:start', { startMs, infoUrl });
+    try {
+        const data = await get(infoUrl, `获取《${getCurrentEpisodeLabel()}》播放地址失败`);
+        logPlayback('ensurePlayable:success', { startMs, infoUrl, size: data?.size, file: data?.file });
+        return data;
+    } catch (error: any) {
+        logPlayback('ensurePlayable:error', { startMs, infoUrl, message: error?.message || error?.status || String(error) });
+        throw error;
+    }
+}
+
+async function playCurrentVideo(startMs = 0) {
+    await ensurePlayable(startMs);
     const streamUrl = getStreamUrl(startMs);
+    logPlayback('play:start', { startMs, streamUrl });
     videoPlayer.stop();
     videoPlayer.play(`stream://${streamUrl}`, playerCanvas.value, function (e: any) {
         console.error(e);
         console.error("play error " + e.error + " status " + e.status + ".");
         if (e.error == 1) {
             console.info("Finished.");
+            logPlayback('play:finished', { startMs, streamUrl });
+            return;
+        }
+        if (e.error) {
+            state.isPlay = false;
+            logPlayback('play:error', { startMs, streamUrl, error: e.error, status: e.status, message: e.message });
+            ElMessage.error(e.message || `播放失败（error=${e.error}, status=${e.status || 0}）`);
         }
     }, waitHeaderLength, true);
     videoPlayer.streamBaseOffset = startMs / 1000;
@@ -130,7 +176,10 @@ function seekVideo(ms: number) {
     if ((!state.bvid && !state.epid) || !state.cid) {
         return;
     }
-    playCurrentVideo(ms);
+    playCurrentVideo(ms).catch((error) => {
+        console.error('seek video failed', error);
+        state.isPlay = false;
+    });
 }
 
 function playNextEp() {
@@ -195,6 +244,16 @@ function getVisibleDanmuCount() {
 
 onMounted(() => {
     videoPlayer = new Player();
+    const originalLogInfo = videoPlayer.logger.logInfo.bind(videoPlayer.logger);
+    videoPlayer.logger.logInfo = function (line: string) {
+        if (
+            line.includes('trigger downloadOneChunk.') ||
+            line.includes('startDownloadTimer.')
+        ) {
+            return;
+        }
+        originalLogInfo(line);
+    };
     videoPlayer.setLoadingDiv(videoLoading.value);
     videoPlayer.setFinishCallback(() => {
         state.isPlay = false;
@@ -239,7 +298,7 @@ onMounted(() => {
             })
         }
     }).then(url => {
-        console.log('url', url);
+        logPlayback('init:ready', { url });
         return playCurrentVideo(0);
     }).then(() => {
         if (timeTrack.value) {
@@ -256,6 +315,7 @@ onMounted(() => {
         }
     }).catch((error) => {
         console.error('init bilibili player failed', error);
+        logPlayback('init:error', { message: error?.message || String(error) });
         state.isPlay = false;
         props.onClose?.();
     });
@@ -354,11 +414,33 @@ function switchDanmu(){
     state.dmSwitch = !state.dmSwitch;
 }
 
-function switchEp(ep: any){
+async function switchEp(ep: any){
+    if (state.switchingEp) {
+        return;
+    }
+    const previous = {
+        epid: state.epid,
+        bvid: state.bvid,
+        cid: state.cid,
+    };
+    state.switchingEp = true;
     state.epid = ep.epid ?? null;
     state.bvid = ep.bvid;
     state.cid = ep.cid;
-    playCurrentVideo(0);
+    try {
+        logPlayback('switchEp:start', { targetTitle: ep?.title, targetEpid: ep?.epid, targetBvid: ep?.bvid, targetCid: ep?.cid });
+        await playCurrentVideo(0);
+        logPlayback('switchEp:success', { targetTitle: ep?.title, targetEpid: ep?.epid, targetBvid: ep?.bvid, targetCid: ep?.cid });
+    } catch (error) {
+        console.error('switch episode failed', error);
+        logPlayback('switchEp:error', { targetTitle: ep?.title, targetEpid: ep?.epid, targetBvid: ep?.bvid, targetCid: ep?.cid, message: (error as any)?.message || String(error) });
+        state.epid = previous.epid;
+        state.bvid = previous.bvid;
+        state.cid = previous.cid;
+        state.isPlay = false;
+    } finally {
+        state.switchingEp = false;
+    }
 }
 
 function isCurrentEp(ep: any) {
