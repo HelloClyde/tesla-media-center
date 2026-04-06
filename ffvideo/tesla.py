@@ -37,6 +37,8 @@ TESLA_ASLEEP_PROBE_INTERVALS_SEC = [60]
 TESLA_BACKOFF_INITIAL_SEC = 10
 TESLA_BACKOFF_MAX_SEC = 30 * 60
 TESLA_STREAM_TIMEOUT_SEC = 30
+TESLA_STREAM_RETRY_RESULTS = {'inactive', 'closed', 'vehicle_disconnected', 'stream_exception'}
+TESLA_STREAM_RETRY_DELAYS_SEC = [2, 4, 8]
 TESLA_VEHICLE_DATA_ENDPOINTS = (
     'charge_state;climate_state;closures_state;drive_state;gui_settings;'
     'location_data;vehicle_config;vehicle_state;vehicle_data_combo'
@@ -1057,7 +1059,9 @@ def get_recommended_poll_interval_sec(vehicles: list[dict[str, Any]] | None = No
                 break
 
     if base_interval == TESLA_DEFAULT_POLL_INTERVAL_SEC:
-        if any((vehicle.get('state') or '').lower() in ['online'] for vehicle in vehicles):
+        if any((vehicle.get('state') or '').lower() in ['online'] for vehicle in vehicles) and str(tesla_stream_phase).startswith('fallback:'):
+            base_interval = TESLA_DEFAULT_POLL_INTERVAL_SEC
+        elif any((vehicle.get('state') or '').lower() in ['online'] for vehicle in vehicles):
             base_interval = TESLA_ONLINE_POLL_INTERVAL_SEC
         elif vehicles and all((vehicle.get('state') or '').lower() in ['asleep', 'offline'] for vehicle in vehicles):
             streak = min(tesla_asleep_streak, len(TESLA_ASLEEP_PROBE_INTERVALS_SEC) - 1)
@@ -1187,6 +1191,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
     last_data_at = time.time()
     previous = latest_vehicle_sample(vin) or {}
     updates = 0
+    message_debug_count = 0
 
     try:
         async with aiohttp.ClientSession(timeout=timeout, headers={'User-Agent': DEFAULT_TESLA_USER_AGENT}) as session:
@@ -1208,6 +1213,16 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                     if msg.type == aiohttp.WSMsgType.TEXT:
                         payload = json.loads(msg.data)
                         msg_type = payload.get('msg_type')
+                        if message_debug_count < 5:
+                            logger.info(
+                                'tesla streaming message, '
+                                f'vin={vin}, '
+                                f'msg_type={msg_type}, '
+                                f'tag={payload.get("tag")}, '
+                                f'error_type={payload.get("error_type")}, '
+                                f'value={str(payload.get("value"))[:120]}'
+                            )
+                            message_debug_count += 1
                         if msg_type == 'control:hello':
                             continue
                         if msg_type == 'data:update' and payload.get('tag') == vehicle_id and isinstance(payload.get('value'), str):
@@ -1250,6 +1265,15 @@ def stream_active_vehicles_once():
     results = []
     for vehicle in vehicles:
         result = asyncio.run(stream_vehicle_updates_once(vehicle))
+        if result in TESLA_STREAM_RETRY_RESULTS:
+            for delay in TESLA_STREAM_RETRY_DELAYS_SEC:
+                if tesla_sync_stop_event.wait(delay):
+                    break
+                logger.info(f'tesla streaming retry, vin={vehicle.get("vin")}, last_result={result}, delay={delay}s')
+                retried = asyncio.run(stream_vehicle_updates_once(vehicle))
+                result = retried
+                if result == 'updates':
+                    break
         results.append({'vin': vehicle.get('vin'), 'result': result})
     return results, None
 
