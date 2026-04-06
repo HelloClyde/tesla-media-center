@@ -236,6 +236,16 @@ def add_gba_route(app):
             'size': len(data),
         })
 
+    @app.route('/api/gba/saves/<save_key>', methods=['DELETE'])
+    def gba_save_delete(save_key):
+        save_path = get_save_file_path(save_key)
+        if os.path.exists(save_path) and os.path.isfile(save_path):
+            os.remove(save_path)
+        return json_ok({
+            'path': save_path,
+            'deleted': True,
+        })
+
     @app.route('/api/gba/states/<save_key>', methods=['GET'])
     def gba_state_list(save_key):
         normalize_state_key(save_key)
