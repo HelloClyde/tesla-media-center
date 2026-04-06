@@ -853,8 +853,29 @@ class GameBoyAdvanceSoftwareRenderer {
 		}
 	}
 	freeze() {
+		var palette = new Uint16Array(0x200);
+		for (var i = 0; i < 0x100; ++i) {
+			palette[i] = this.palette.colors[0][i] || 0;
+			palette[i + 0x100] = this.palette.colors[1][i] || 0;
+		}
+		return {
+			palette: Serializer.prefix(palette.buffer),
+			vram: Serializer.prefix(this.vram.buffer.buffer),
+			oam: Serializer.prefix(this.oam.buffer.buffer)
+		};
 	}
 	defrost(frost) {
+		if (frost.palette) {
+			this.palette.overwrite(new Uint16Array(frost.palette));
+		}
+		if (frost.vram) {
+			this.vram.insert(0, new Uint16Array(frost.vram));
+		}
+		if (frost.oam) {
+			this.oam.overwrite(new Uint16Array(frost.oam));
+			this.oam.video = this;
+		}
+		this.resetLayers();
 	}
 	setBacking(backing) {
 		this.pixelData = backing;

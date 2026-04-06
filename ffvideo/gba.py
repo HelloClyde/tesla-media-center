@@ -11,8 +11,10 @@ from ffvideo.utils import json_ok
 
 DEFAULT_GBA_PATH = './roms/gba'
 DEFAULT_GBA_SAVE_PATH = './roms/gba/saves'
+DEFAULT_GBA_STATE_PATH = './roms/gba/states'
 SUPPORTED_ROM_EXTENSIONS = ('.gba', '.agb', '.bin')
 REMOTE_GBA_CATALOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'web', 'public', 'catalogs', 'gba-js-org.json'))
+MAX_GBA_STATE_SLOTS = 5
 
 
 def get_gba_root_path():
@@ -24,6 +26,13 @@ def get_gba_root_path():
 
 def get_gba_save_root_path():
     prefix = get_config_by_key('gba_save_path', DEFAULT_GBA_SAVE_PATH) or DEFAULT_GBA_SAVE_PATH
+    prefix = os.path.abspath(prefix)
+    os.makedirs(prefix, exist_ok=True)
+    return prefix
+
+
+def get_gba_state_root_path():
+    prefix = get_config_by_key('gba_state_path', DEFAULT_GBA_STATE_PATH) or DEFAULT_GBA_STATE_PATH
     prefix = os.path.abspath(prefix)
     os.makedirs(prefix, exist_ok=True)
     return prefix
@@ -52,6 +61,21 @@ def get_save_file_path(save_key: str):
         abort(400)
     root_path = get_gba_save_root_path()
     return os.path.join(root_path, f'{normalized}.sav')
+
+
+def normalize_state_key(save_key: str):
+    normalized = ''.join(ch if ch.isalnum() or ch in ['-', '_', '.'] else '_' for ch in (save_key or '').strip())
+    if not normalized:
+        abort(400)
+    return normalized
+
+
+def get_state_file_path(save_key: str, slot: int):
+    if slot < 1 or slot > MAX_GBA_STATE_SLOTS:
+        abort(400)
+    root_path = get_gba_state_root_path()
+    normalized = normalize_state_key(save_key)
+    return os.path.join(root_path, f'{normalized}.slot{slot}.state')
 
 
 def infer_remote_file_size(headers):
@@ -210,4 +234,57 @@ def add_gba_route(app):
         return json_ok({
             'path': save_path,
             'size': len(data),
+        })
+
+    @app.route('/api/gba/states/<save_key>', methods=['GET'])
+    def gba_state_list(save_key):
+        normalize_state_key(save_key)
+        slots = []
+        for slot in range(1, MAX_GBA_STATE_SLOTS + 1):
+            state_path = get_state_file_path(save_key, slot)
+            exists = os.path.exists(state_path) and os.path.isfile(state_path)
+            slots.append({
+                'slot': slot,
+                'exists': exists,
+                'size': os.path.getsize(state_path) if exists else 0,
+                'updatedAt': int(os.path.getmtime(state_path) * 1000) if exists else None,
+            })
+        return json_ok({
+            'slots': slots,
+            'maxSlots': MAX_GBA_STATE_SLOTS,
+        })
+
+    @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['GET'])
+    def gba_state_get(save_key, slot):
+        state_path = get_state_file_path(save_key, slot)
+        if not os.path.exists(state_path) or not os.path.isfile(state_path):
+            return Response(status=204)
+        return send_file(
+            state_path,
+            mimetype='application/octet-stream',
+            download_name=os.path.basename(state_path),
+        )
+
+    @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['PUT'])
+    def gba_state_put(save_key, slot):
+        state_path = get_state_file_path(save_key, slot)
+        data = request.get_data()
+        if not data:
+            abort(400)
+        with open(state_path, 'wb') as wf:
+            wf.write(data)
+        return json_ok({
+            'path': state_path,
+            'slot': slot,
+            'size': len(data),
+        })
+
+    @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['DELETE'])
+    def gba_state_delete(save_key, slot):
+        state_path = get_state_file_path(save_key, slot)
+        if os.path.exists(state_path) and os.path.isfile(state_path):
+            os.remove(state_path)
+        return json_ok({
+            'slot': slot,
+            'deleted': True,
         })

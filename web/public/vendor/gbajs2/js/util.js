@@ -75,7 +75,7 @@ class Serializer {
 	serialize(stream) {
 		var parts = [];
 		var size = 4;
-		for (i in stream) {
+		for (var i in stream) {
 			if (stream.hasOwnProperty(i)) {
 				var tag;
 				var head = Serializer.prefix(i);
@@ -289,3 +289,20 @@ class Serializer {
 		reader.readAsDataURL(blob);
 	}
 }
+
+const serializerInstance = new Serializer();
+Serializer.TAG_INT = serializerInstance.TAG_INT;
+Serializer.TAG_STRING = serializerInstance.TAG_STRING;
+Serializer.TAG_STRUCT = serializerInstance.TAG_STRUCT;
+Serializer.TAG_BLOB = serializerInstance.TAG_BLOB;
+Serializer.TAG_BOOLEAN = serializerInstance.TAG_BOOLEAN;
+Serializer.TYPE = serializerInstance.TYPE;
+Serializer.pack = serializerInstance.pack.bind(serializerInstance);
+Serializer.pack8 = serializerInstance.pack8.bind(serializerInstance);
+Serializer.prefix = serializerInstance.prefix.bind(serializerInstance);
+Serializer.serialize = serializerInstance.serialize.bind(serializerInstance);
+Serializer.deserialize = serializerInstance.deserialize.bind(serializerInstance);
+Serializer.deserealizeStream = serializerInstance.deserealizeStream.bind(serializerInstance);
+Serializer.serializePNG = serializerInstance.serializePNG.bind(serializerInstance);
+Serializer.deserializePNG = serializerInstance.deserializePNG.bind(serializerInstance);
+window.Serializer = Serializer;

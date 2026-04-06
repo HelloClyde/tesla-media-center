@@ -2,13 +2,14 @@
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { CaretRight, FolderOpened, RefreshRight, Refresh, VideoPause } from '@element-plus/icons-vue';
-import { get } from '@/functions/requests';
+import { del, get } from '@/functions/requests';
 import { generateSilentWav } from '@/functions/audioUtils';
 
 declare global {
   interface Window {
     GameBoyAdvance?: any;
     biosBin?: ArrayBuffer;
+    Serializer?: any;
     __gbaScriptsPromise?: Promise<void>;
   }
 }
@@ -36,6 +37,9 @@ const state = reactive({
   playing: false,
   gamepadName: '',
   gamepadSettingsVisible: false,
+  saveStatesVisible: false,
+  loadingStateSlots: false,
+  saveSlots: [] as any[],
   downloadPercent: 0,
   downloadLoadedBytes: 0,
   downloadTotalBytes: 0,
@@ -185,69 +189,6 @@ function getActiveSaveKey(item?: any) {
   return String(candidate || '').replace(/[^a-zA-Z0-9._-]/g, '_');
 }
 
-async function loadServerSave(gba: any, item: any) {
-  if (item?.type === 'remote') {
-    logGbaLaunch('loadServerSave:skip-remote', { itemType: item?.type, itemId: item?.id || item?.path });
-    return;
-  }
-  const saveKey = getActiveSaveKey(item);
-  if (!saveKey) {
-    logGbaLaunch('loadServerSave:no-key');
-    return;
-  }
-  const response = await fetch(`/api/gba/saves/${encodeURIComponent(saveKey)}`, { credentials: 'same-origin' });
-  if (response.status === 204) {
-    logGbaLaunch('loadServerSave:empty', { saveKey, status: response.status });
-    return;
-  }
-  if (!response.ok) {
-    if (response.status !== 404) {
-      logGbaLaunch('loadServerSave:error-response', { saveKey, status: response.status });
-      throw new Error('读取服务端存档失败');
-    }
-    logGbaLaunch('loadServerSave:not-found', { saveKey, status: response.status });
-    return;
-  }
-  const buffer = await response.arrayBuffer();
-  logGbaLaunch('loadServerSave:downloaded', { saveKey, byteLength: buffer.byteLength });
-  if (buffer.byteLength > 0) {
-    gba.setSavedata(buffer);
-    logGbaLaunch('loadServerSave:applied', { saveKey, byteLength: buffer.byteLength });
-  }
-}
-
-async function syncSaveToServer(force = false) {
-  if (!gbaInstance?.mmu?.save || !state.activeRomName) {
-    return;
-  }
-  const save = gbaInstance.mmu.save;
-  if (!force && !gbaInstance.mmu.saveNeedsFlush?.()) {
-    return;
-  }
-  const saveKey = getActiveSaveKey({ path: state.activeRomPath, name: state.activeRomName });
-  if (!saveKey) {
-    return;
-  }
-  const payload = save.buffer ? save.buffer.slice(0) : null;
-  if (!payload) {
-    return;
-  }
-  const response = await fetch(`/api/gba/saves/${encodeURIComponent(saveKey)}`, {
-    method: 'PUT',
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/octet-stream',
-    },
-    body: payload,
-  });
-  if (!response.ok) {
-    throw new Error('写入服务端存档失败');
-  }
-  if (gbaInstance.mmu.flushSave) {
-    gbaInstance.mmu.flushSave();
-  }
-}
-
 function ensureSilentAudioPlayback() {
   const audio = silentAudioRef.value;
   if (!audio) {
@@ -268,22 +209,127 @@ function ensureSilentAudioPlayback() {
   });
 }
 
-function startSaveSyncLoop() {
-  if (saveSyncTimer !== null) {
-    window.clearInterval(saveSyncTimer);
-  }
-  saveSyncTimer = window.setInterval(() => {
-    syncSaveToServer().catch((error: any) => {
-      console.error(error);
-    });
-  }, 3000);
-}
-
 function stopSaveSyncLoop() {
   if (saveSyncTimer !== null) {
     window.clearInterval(saveSyncTimer);
     saveSyncTimer = null;
   }
+}
+
+function getStateKey() {
+  return getActiveSaveKey({ path: state.activeRomPath, name: state.activeRomName });
+}
+
+async function refreshSaveSlots() {
+  const saveKey = getStateKey();
+  if (!saveKey) {
+    state.saveSlots = [];
+    return;
+  }
+  state.loadingStateSlots = true;
+  try {
+    const data = await get(`/api/gba/states/${encodeURIComponent(saveKey)}`, '读取即时存档列表失败');
+    state.saveSlots = Array.isArray(data?.slots) ? data.slots : [];
+  } finally {
+    state.loadingStateSlots = false;
+  }
+}
+
+function openSaveStatesDialog() {
+  if (!state.activeRomPath || !gbaInstance) {
+    ElMessage.warning('请先启动一个 ROM');
+    return;
+  }
+  state.saveStatesVisible = true;
+  refreshSaveSlots().catch((error) => {
+    console.error(error);
+  });
+}
+
+function serializeFreezeState(): Blob {
+  const serializer = window.Serializer;
+  if (!serializer || !gbaInstance) {
+    throw new Error('即时存档内核未准备就绪');
+  }
+  return serializer.serialize(gbaInstance.freeze());
+}
+
+async function saveStateToSlot(slot: number) {
+  if (!gbaInstance || !state.activeRomPath) {
+    throw new Error('当前没有正在运行的 ROM');
+  }
+  const saveKey = getStateKey();
+  const wasPlaying = state.playing;
+  if (wasPlaying) {
+    gbaInstance.pause();
+    state.playing = false;
+  }
+  try {
+    const payload = serializeFreezeState();
+    const response = await fetch(`/api/gba/states/${encodeURIComponent(saveKey)}/${slot}`, {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+      },
+      body: payload,
+    });
+    if (!response.ok) {
+      throw new Error('写入即时存档失败');
+    }
+    ElMessage.success(`已保存到槽位 ${slot}`);
+    await refreshSaveSlots();
+  } finally {
+    if (wasPlaying) {
+      resumeEmulator();
+    }
+  }
+}
+
+async function loadStateFromSlot(slot: number) {
+  if (!gbaInstance || !state.activeRomPath) {
+    throw new Error('当前没有正在运行的 ROM');
+  }
+  const saveKey = getStateKey();
+  const response = await fetch(`/api/gba/states/${encodeURIComponent(saveKey)}/${slot}`, {
+    credentials: 'same-origin',
+  });
+  if (response.status === 204) {
+    throw new Error(`槽位 ${slot} 还没有即时存档`);
+  }
+  if (!response.ok) {
+    throw new Error('读取即时存档失败');
+  }
+  const blob = await response.blob();
+  const serializer = window.Serializer;
+  if (!serializer) {
+    throw new Error('即时存档内核未准备就绪');
+  }
+  gbaInstance.pause();
+  await new Promise<void>((resolve, reject) => {
+    serializer.deserialize(blob, (frost: any) => {
+      try {
+        gbaInstance.defrost(frost);
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+  if (gbaInstance.audio?.context?.resume) {
+    gbaInstance.audio.context.resume().catch(() => {});
+  }
+  gbaInstance.runStable();
+  state.playing = true;
+  state.statusText = `已读取槽位 ${slot} 的即时存档`;
+  ElMessage.success(`已读取槽位 ${slot}`);
+}
+
+async function deleteStateSlot(slot: number) {
+  const saveKey = getStateKey();
+  await del(`/api/gba/states/${encodeURIComponent(saveKey)}/${slot}`, {}, '删除即时存档失败');
+  ElMessage.success(`已删除槽位 ${slot}`);
+  await refreshSaveSlots();
 }
 
 function createEmulator() {
@@ -560,9 +606,6 @@ function pauseEmulator() {
   if (!gbaInstance) {
     return;
   }
-  syncSaveToServer(true).catch((error: any) => {
-    console.error(error);
-  });
   gbaInstance.pause();
   state.playing = false;
   state.statusText = state.activeRomName ? `已暂停《${state.activeRomName}》` : '模拟器已暂停';
@@ -585,9 +628,6 @@ function resetEmulator() {
   if (!state.activeRomPath) {
     return;
   }
-  syncSaveToServer(true).catch((error: any) => {
-    console.error(error);
-  });
   const allItems = [...state.localItems, ...state.remoteItems];
   loadRom(allItems.find((item: any) => item.path === state.activeRomPath) || {
     path: state.activeRomPath,
@@ -638,12 +678,10 @@ function loadRom(item: any) {
       throw new Error('ROM 无法识别，请确认文件是有效的 .gba 游戏');
     }
     state.debugText = `${gba.mmu?.cart?.title || item.name} 已载入`;
-    await loadServerSave(gba, item);
     if (gba.audio?.context?.resume) {
       gba.audio.context.resume().catch(() => {});
     }
     gba.runStable();
-    startSaveSyncLoop();
     state.activeRomPath = item.path;
     state.activeRomName = item.name;
     state.activeRomUrl = item.url;
@@ -816,9 +854,6 @@ function enterPlayMode() {
 }
 
 function backToLibrary() {
-  syncSaveToServer(true).catch((error: any) => {
-    console.error(error);
-  });
   state.viewMode = 'library';
 }
 
@@ -836,9 +871,6 @@ onMounted(() => {
 onUnmounted(() => {
   stopGamepadPolling();
   stopSaveSyncLoop();
-  syncSaveToServer(true).catch((error: any) => {
-    console.error(error);
-  });
   pauseEmulator();
   window.removeEventListener('gamepadconnected', handleGamepadConnected);
   window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected);
@@ -983,6 +1015,7 @@ onUnmounted(() => {
                   {{ state.playing ? '暂停' : '继续' }}
                 </el-button>
                 <el-button :icon="Refresh" :disabled="!state.activeRomPath || state.loadingRom" @click="resetEmulator()">重启</el-button>
+                <el-button :disabled="!state.activeRomPath || state.loadingRom" @click="openSaveStatesDialog()">存档菜单</el-button>
                 <el-button @click="state.gamepadSettingsVisible = true">手柄设置</el-button>
               </div>
             </div>
@@ -1058,6 +1091,31 @@ onUnmounted(() => {
           <el-button @click="resetGamepadSettings()">恢复默认</el-button>
           <el-button @click="state.gamepadSettingsVisible = false">取消</el-button>
           <el-button type="primary" @click="saveGamepadSettings()">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="state.saveStatesVisible" title="即时存档" width="560px">
+      <div class="save-state-list">
+        <div v-for="slot in state.saveSlots" :key="slot.slot" class="save-state-item">
+          <div class="save-state-meta">
+            <strong>槽位 {{ slot.slot }}</strong>
+            <span>{{ slot.exists ? `${new Date(slot.updatedAt).toLocaleString()} · ${formatBytes(slot.size)}` : '空槽位' }}</span>
+          </div>
+          <div class="save-state-actions">
+            <el-button size="small" type="primary" @click="saveStateToSlot(slot.slot)">保存</el-button>
+            <el-button size="small" :disabled="!slot.exists" @click="loadStateFromSlot(slot.slot)">读取</el-button>
+            <el-button size="small" :disabled="!slot.exists" @click="deleteStateSlot(slot.slot)">删除</el-button>
+          </div>
+        </div>
+        <div v-if="!state.loadingStateSlots && state.saveSlots.length === 0" class="empty-card compact">
+          <strong>当前没有可用槽位</strong>
+          <span>启动 ROM 后再试一次。</span>
+        </div>
+      </div>
+      <template #footer>
+        <div class="dialog-actions">
+          <el-button @click="refreshSaveSlots()">刷新</el-button>
+          <el-button @click="state.saveStatesVisible = false">关闭</el-button>
         </div>
       </template>
     </el-dialog>
@@ -1496,6 +1554,49 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.save-state-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.save-state-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.save-state-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.save-state-meta strong {
+  font-size: 14px;
+}
+
+.save-state-meta span {
+  font-size: 12px;
+  color: var(--color-text-soft);
+}
+
+.save-state-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.empty-card.compact {
+  min-height: 0;
+  padding: 20px 16px;
 }
 
 .settings-tip {

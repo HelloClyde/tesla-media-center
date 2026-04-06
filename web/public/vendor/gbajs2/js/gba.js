@@ -332,27 +332,9 @@ class GameBoyAdvance {
 		}
 	}
 	storeSavedata() {
-		var sram = this.mmu.save;
-		try {
-			var storage = window.localStorage;
-			storage[this.SYS_ID + "." + this.mmu.cart.code] = this.encodeBase64(
-				sram.view
-			);
-		} catch (e) {
-			this.WARN("Could not store savedata! " + e);
-		}
+		return;
 	}
 	retrieveSavedata() {
-		try {
-			var storage = window.localStorage;
-			var data = storage[this.SYS_ID + "." + this.mmu.cart.code];
-			if (data) {
-				this.decodeSavedata(data);
-				return true;
-			}
-		} catch (e) {
-			this.WARN("Could not retrieve savedata! " + e);
-		}
 		return false;
 	}
 	freeze() {
@@ -368,10 +350,69 @@ class GameBoyAdvance {
 	defrost(frost) {
 		this.cpu.defrost(frost.cpu);
 		this.mmu.defrost(frost.mmu);
-		this.audio.defrost(frost.audio);
 		this.video.defrost(frost.video);
 		this.irq.defrost(frost.irq);
+		var now = this.cpu.cycles;
+		this.audio.clear();
+		this.audio.nextEvent = Infinity;
+		this.audio.nextSample = now + this.audio.sampleInterval;
 		this.io.defrost(frost.io);
+		if (frost.io && frost.io.registers) {
+			var ioRegisters = new Uint16Array(frost.io.registers);
+			var replaySoundRegister = function (offset) {
+				this.io.store16(offset, ioRegisters[offset >> 1]);
+			}.bind(this);
+			replaySoundRegister(this.io.WAVE_RAM0_LO);
+			replaySoundRegister(this.io.WAVE_RAM0_HI);
+			replaySoundRegister(this.io.WAVE_RAM1_LO);
+			replaySoundRegister(this.io.WAVE_RAM1_HI);
+			replaySoundRegister(this.io.WAVE_RAM2_LO);
+			replaySoundRegister(this.io.WAVE_RAM2_HI);
+			replaySoundRegister(this.io.WAVE_RAM3_LO);
+			replaySoundRegister(this.io.WAVE_RAM3_HI);
+			replaySoundRegister(this.io.SOUND1CNT_LO);
+			replaySoundRegister(this.io.SOUND1CNT_HI);
+			replaySoundRegister(this.io.SOUND1CNT_X);
+			replaySoundRegister(this.io.SOUND2CNT_LO);
+			replaySoundRegister(this.io.SOUND2CNT_HI);
+			replaySoundRegister(this.io.SOUND3CNT_LO);
+			replaySoundRegister(this.io.SOUND3CNT_HI);
+			replaySoundRegister(this.io.SOUND3CNT_X);
+			replaySoundRegister(this.io.SOUND4CNT_LO);
+			replaySoundRegister(this.io.SOUND4CNT_HI);
+			replaySoundRegister(this.io.SOUNDBIAS);
+			replaySoundRegister(this.io.SOUNDCNT_LO);
+			replaySoundRegister(this.io.SOUNDCNT_HI);
+			replaySoundRegister(this.io.SOUNDCNT_X);
+		}
+		this.video.inHblank = false;
+		this.video.inVblank = false;
+		this.video.vcount = 0;
+		this.video.vcounter = this.video.vcountSetting === 0;
+		this.video.vcount = 0;
+		this.video.lastHblank = now;
+		this.video.nextHblank = now + this.video.HDRAW_LENGTH;
+		this.video.nextEvent = this.video.nextHblank;
+		this.video.nextHblankIRQ = this.video.nextHblank;
+		this.video.nextVblankIRQ =
+			now + this.video.VERTICAL_PIXELS * this.video.HORIZONTAL_LENGTH;
+		this.video.nextVcounterIRQ = 0;
+		if (this.io && this.io.registers) {
+			this.io.registers[this.io.VCOUNT >> 1] = 0;
+			this.video.writeDisplayStat(this.io.registers[this.io.DISPSTAT >> 1]);
+		}
+		if (this.irq) {
+			this.irq.nextEvent = 0;
+			this.irq.pollNextEvent();
+		}
+		if (this.video && this.video.renderPath && this.video.context) {
+			this.video.renderPath.startDraw();
+			for (var y = 0; y < this.video.VERTICAL_PIXELS; ++y) {
+				this.video.renderPath.drawScanline(y);
+			}
+			this.video.renderPath.finishDraw(this.video);
+			this.seenFrame = true;
+		}
 	}
 	log(level, message) {}
 	setLogger(logger) {
