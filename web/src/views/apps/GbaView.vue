@@ -173,6 +173,7 @@ let silentAudioUnlockHandler: (() => void) | null = null;
 let gamepadPollId: number | null = null;
 let pendingManualGameSaveData: ArrayBuffer | null = null;
 const activeGamepadKeys = new Set<string>();
+const activeVirtualPointers = new Map<string, number>();
 
 function logGbaLaunch(stage: string, extra?: Record<string, any>) {
   const payload = {
@@ -833,6 +834,22 @@ function updateVirtualKey(keyName: string, pressed: boolean) {
 
 function handleVirtualControl(keyName: string, pressed: boolean, event?: Event) {
   event?.preventDefault();
+  event?.stopPropagation?.();
+  const pointerEvent = event as PointerEvent | undefined;
+  const target = pointerEvent?.currentTarget as HTMLElement | null;
+  if (pressed && typeof pointerEvent?.pointerId === 'number') {
+    activeVirtualPointers.set(keyName, pointerEvent.pointerId);
+    target?.setPointerCapture?.(pointerEvent.pointerId);
+  } else if (typeof pointerEvent?.pointerId === 'number') {
+    const activePointerId = activeVirtualPointers.get(keyName);
+    if (typeof activePointerId === 'number' && activePointerId !== pointerEvent.pointerId) {
+      return;
+    }
+    activeVirtualPointers.delete(keyName);
+    if (target?.hasPointerCapture?.(pointerEvent.pointerId)) {
+      target.releasePointerCapture(pointerEvent.pointerId);
+    }
+  }
   updateVirtualKey(keyName, pressed);
 }
 
@@ -1140,28 +1157,28 @@ onUnmounted(() => {
             <div class="touch-layout">
               <div class="control-cluster">
                 <div class="control-pad">
-                  <button class="control-btn up" @pointerdown="handleVirtualControl('UP', true, $event)" @pointerup="handleVirtualControl('UP', false, $event)" @pointerleave="handleVirtualControl('UP', false, $event)" @pointercancel="handleVirtualControl('UP', false, $event)">▲</button>
-                  <button class="control-btn left" @pointerdown="handleVirtualControl('LEFT', true, $event)" @pointerup="handleVirtualControl('LEFT', false, $event)" @pointerleave="handleVirtualControl('LEFT', false, $event)" @pointercancel="handleVirtualControl('LEFT', false, $event)">◀</button>
-                  <button class="control-btn right" @pointerdown="handleVirtualControl('RIGHT', true, $event)" @pointerup="handleVirtualControl('RIGHT', false, $event)" @pointerleave="handleVirtualControl('RIGHT', false, $event)" @pointercancel="handleVirtualControl('RIGHT', false, $event)">▶</button>
-                  <button class="control-btn down" @pointerdown="handleVirtualControl('DOWN', true, $event)" @pointerup="handleVirtualControl('DOWN', false, $event)" @pointerleave="handleVirtualControl('DOWN', false, $event)" @pointercancel="handleVirtualControl('DOWN', false, $event)">▼</button>
+                  <button class="control-btn up" @pointerdown="handleVirtualControl('UP', true, $event)" @pointerup="handleVirtualControl('UP', false, $event)" @pointercancel="handleVirtualControl('UP', false, $event)">▲</button>
+                  <button class="control-btn left" @pointerdown="handleVirtualControl('LEFT', true, $event)" @pointerup="handleVirtualControl('LEFT', false, $event)" @pointercancel="handleVirtualControl('LEFT', false, $event)">◀</button>
+                  <button class="control-btn right" @pointerdown="handleVirtualControl('RIGHT', true, $event)" @pointerup="handleVirtualControl('RIGHT', false, $event)" @pointercancel="handleVirtualControl('RIGHT', false, $event)">▶</button>
+                  <button class="control-btn down" @pointerdown="handleVirtualControl('DOWN', true, $event)" @pointerup="handleVirtualControl('DOWN', false, $event)" @pointercancel="handleVirtualControl('DOWN', false, $event)">▼</button>
                 </div>
               </div>
 
               <div class="center-controls">
                 <div class="shoulder-row">
-                  <button class="mini-btn shoulder" @pointerdown="handleVirtualControl('L', true, $event)" @pointerup="handleVirtualControl('L', false, $event)" @pointerleave="handleVirtualControl('L', false, $event)" @pointercancel="handleVirtualControl('L', false, $event)">L</button>
-                  <button class="mini-btn shoulder" @pointerdown="handleVirtualControl('R', true, $event)" @pointerup="handleVirtualControl('R', false, $event)" @pointerleave="handleVirtualControl('R', false, $event)" @pointercancel="handleVirtualControl('R', false, $event)">R</button>
+                  <button class="mini-btn shoulder" @pointerdown="handleVirtualControl('L', true, $event)" @pointerup="handleVirtualControl('L', false, $event)" @pointercancel="handleVirtualControl('L', false, $event)">L</button>
+                  <button class="mini-btn shoulder" @pointerdown="handleVirtualControl('R', true, $event)" @pointerup="handleVirtualControl('R', false, $event)" @pointercancel="handleVirtualControl('R', false, $event)">R</button>
                 </div>
                 <div class="mini-controls">
-                  <button class="mini-btn" @pointerdown="handleVirtualControl('SELECT', true, $event)" @pointerup="handleVirtualControl('SELECT', false, $event)" @pointerleave="handleVirtualControl('SELECT', false, $event)" @pointercancel="handleVirtualControl('SELECT', false, $event)">SELECT</button>
-                  <button class="mini-btn" @pointerdown="handleVirtualControl('START', true, $event)" @pointerup="handleVirtualControl('START', false, $event)" @pointerleave="handleVirtualControl('START', false, $event)" @pointercancel="handleVirtualControl('START', false, $event)">START</button>
+                  <button class="mini-btn" @pointerdown="handleVirtualControl('SELECT', true, $event)" @pointerup="handleVirtualControl('SELECT', false, $event)" @pointercancel="handleVirtualControl('SELECT', false, $event)">SELECT</button>
+                  <button class="mini-btn" @pointerdown="handleVirtualControl('START', true, $event)" @pointerup="handleVirtualControl('START', false, $event)" @pointercancel="handleVirtualControl('START', false, $event)">START</button>
                 </div>
               </div>
 
               <div class="control-cluster action-cluster">
                 <div class="action-buttons">
-                  <button class="action-btn b" @pointerdown="handleVirtualControl('B', true, $event)" @pointerup="handleVirtualControl('B', false, $event)" @pointerleave="handleVirtualControl('B', false, $event)" @pointercancel="handleVirtualControl('B', false, $event)">B</button>
-                  <button class="action-btn a" @pointerdown="handleVirtualControl('A', true, $event)" @pointerup="handleVirtualControl('A', false, $event)" @pointerleave="handleVirtualControl('A', false, $event)" @pointercancel="handleVirtualControl('A', false, $event)">A</button>
+                  <button class="action-btn b" @pointerdown="handleVirtualControl('B', true, $event)" @pointerup="handleVirtualControl('B', false, $event)" @pointercancel="handleVirtualControl('B', false, $event)">B</button>
+                  <button class="action-btn a" @pointerdown="handleVirtualControl('A', true, $event)" @pointerup="handleVirtualControl('A', false, $event)" @pointercancel="handleVirtualControl('A', false, $event)">A</button>
                 </div>
               </div>
             </div>
