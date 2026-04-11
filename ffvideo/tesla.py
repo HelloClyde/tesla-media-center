@@ -97,6 +97,14 @@ def ensure_tesla_storage():
             conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN speed_unit TEXT')
         if 'distance_unit' not in existing_columns:
             conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN distance_unit TEXT')
+        if 'coord_type' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN coord_type TEXT')
+        if 'native_lat' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN native_lat REAL')
+        if 'native_lng' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN native_lng REAL')
+        if 'native_heading' not in existing_columns:
+            conn.execute('ALTER TABLE tesla_vehicle_samples ADD COLUMN native_heading REAL')
         conn.execute(
             '''
             CREATE TABLE IF NOT EXISTS tesla_vehicles (
@@ -248,11 +256,47 @@ def normalize_sample_units(sample: dict[str, Any]):
 
 def parse_stream_value(value: str):
     fields = value.split(',')
-    columns = [
-        'time', 'speed', 'odometer', 'soc', 'elevation', 'est_heading', 'est_lat', 'est_lng',
-        'power', 'shift_state', 'range', 'est_range', 'heading'
-    ]
-    payload: dict[str, Any] = dict(zip(columns, fields))
+    payload: dict[str, Any]
+
+    # Legacy Owner API streaming payload used by TeslaMate:
+    # time,speed,odometer,soc,elevation,est_heading,est_lat,est_lng,power,shift_state,range,est_range,heading
+    if len(fields) == 13:
+        columns = [
+            'time', 'speed', 'odometer', 'soc', 'elevation', 'est_heading', 'est_lat', 'est_lng',
+            'power', 'shift_state', 'range', 'est_range', 'heading'
+        ]
+        payload = dict(zip(columns, fields))
+    # Newer China-region payload observed in production:
+    # time,speed,odometer,power,native_lat,native_lng,native_heading,est_lat,est_lng,lat,lng,heading,coord_type,native_location_supported
+    elif len(fields) >= 14 and fields[-2] in ['gcj', 'wgs84', 'wgs', 'bd']:
+        payload = {
+            'time': fields[0],
+            'speed': fields[1],
+            'odometer': fields[2],
+            'power': fields[3],
+            'native_lat': fields[4],
+            'native_lng': fields[5],
+            'native_heading': fields[6],
+            'est_lat': fields[7],
+            'est_lng': fields[8],
+            'latitude': fields[9],
+            'longitude': fields[10],
+            'heading': fields[11],
+            'coord_type': fields[12],
+            'native_location_supported': fields[13],
+            'shift_state': None,
+            'soc': None,
+            'elevation': None,
+            'est_heading': fields[11],
+            'range': None,
+            'est_range': None,
+        }
+    else:
+        columns = [
+            'time', 'speed', 'odometer', 'soc', 'elevation', 'est_heading', 'est_lat', 'est_lng',
+            'power', 'shift_state', 'range', 'est_range', 'heading'
+        ]
+        payload = dict(zip(columns, fields))
 
     def to_int(name: str):
         raw = payload.get(name)
@@ -274,12 +318,14 @@ def parse_stream_value(value: str):
         except Exception:
             payload[name] = None
 
-    for key in ['speed', 'soc', 'elevation', 'est_heading', 'power', 'range', 'est_range', 'heading']:
+    for key in ['speed', 'soc', 'elevation', 'est_heading', 'power', 'range', 'est_range', 'heading', 'native_heading', 'native_location_supported']:
         to_int(key)
-    for key in ['odometer', 'est_lat', 'est_lng']:
+    for key in ['odometer', 'est_lat', 'est_lng', 'latitude', 'longitude', 'native_lat', 'native_lng']:
         to_float(key)
     if payload.get('shift_state') == '':
         payload['shift_state'] = None
+    if payload.get('coord_type') == '':
+        payload['coord_type'] = None
     return payload
 
 
@@ -560,6 +606,10 @@ def extract_sample_from_vehicle_data(vin: str, display_name: str, vehicle_state:
         'vehicle_state': vehicle_state,
         'latitude': location.get('latitude'),
         'longitude': location.get('longitude'),
+        'coord_type': None,
+        'native_lat': None,
+        'native_lng': None,
+        'native_heading': None,
         'heading': location.get('heading'),
         'speed': convert_speed_to_kmh(drive_state.get('speed')),
         'speed_unit': 'km/h',
@@ -585,13 +635,30 @@ def extract_sample_from_stream_data(vin: str, display_name: str, vehicle_state: 
     timestamp_ms = stream_data.get('time')
     if not isinstance(timestamp_ms, int):
         timestamp_ms = int(time.time() * 1000)
+    latitude = stream_data.get('latitude')
+    longitude = stream_data.get('longitude')
+    if latitude is None or longitude is None:
+        latitude = stream_data.get('est_lat')
+        longitude = stream_data.get('est_lng')
+    if latitude is None or longitude is None:
+        latitude = stream_data.get('native_lat')
+        longitude = stream_data.get('native_lng')
+    heading = stream_data.get('heading')
+    if heading is None:
+        heading = stream_data.get('est_heading')
+    if heading is None:
+        heading = stream_data.get('native_heading')
     return normalize_sample_units({
         'vin': vin,
         'display_name': display_name,
         'vehicle_state': vehicle_state or previous.get('vehicle_state') or 'online',
-        'latitude': stream_data.get('est_lat'),
-        'longitude': stream_data.get('est_lng'),
-        'heading': stream_data.get('heading'),
+        'latitude': latitude,
+        'longitude': longitude,
+        'coord_type': stream_data.get('coord_type'),
+        'native_lat': stream_data.get('native_lat'),
+        'native_lng': stream_data.get('native_lng'),
+        'native_heading': stream_data.get('native_heading'),
+        'heading': heading,
         'speed': convert_speed_to_kmh(stream_data.get('speed')),
         'speed_unit': 'km/h',
         'shift_state': stream_data.get('shift_state'),
@@ -644,7 +711,8 @@ def insert_vehicle_sample(sample: dict[str, Any]):
                     '''
                     UPDATE tesla_vehicle_samples
                     SET display_name = ?, heading = ?, usable_battery_level = ?, charge_limit_soc = ?,
-                        speed_unit = ?, distance_unit = ?, locked = ?, inside_temp = ?, outside_temp = ?,
+                        speed_unit = ?, distance_unit = ?, coord_type = ?, native_lat = ?, native_lng = ?, native_heading = ?,
+                        locked = ?, inside_temp = ?, outside_temp = ?,
                         is_climate_on = ?, sentry_mode = ?, timestamp_ms = ?, created_at = ?
                     WHERE id = ?
                     ''',
@@ -655,6 +723,10 @@ def insert_vehicle_sample(sample: dict[str, Any]):
                         sample.get('charge_limit_soc'),
                         sample.get('speed_unit'),
                         sample.get('distance_unit'),
+                        sample.get('coord_type'),
+                        sample.get('native_lat'),
+                        sample.get('native_lng'),
+                        sample.get('native_heading'),
                         1 if sample.get('locked') else 0 if sample.get('locked') is not None else None,
                         sample.get('inside_temp'),
                         sample.get('outside_temp'),
@@ -673,8 +745,9 @@ def insert_vehicle_sample(sample: dict[str, Any]):
             INSERT INTO tesla_vehicle_samples (
                 vin, display_name, vehicle_state, latitude, longitude, heading, speed, shift_state,
                 battery_level, usable_battery_level, charging_state, charge_limit_soc, odometer, speed_unit, distance_unit,
-                locked, inside_temp, outside_temp, is_climate_on, sentry_mode, timestamp_ms, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                coord_type, native_lat, native_lng, native_heading, locked, inside_temp, outside_temp, is_climate_on,
+                sentry_mode, timestamp_ms, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 sample.get('vin'),
@@ -692,6 +765,10 @@ def insert_vehicle_sample(sample: dict[str, Any]):
                 sample.get('odometer'),
                 sample.get('speed_unit'),
                 sample.get('distance_unit'),
+                sample.get('coord_type'),
+                sample.get('native_lat'),
+                sample.get('native_lng'),
+                sample.get('native_heading'),
                 1 if sample.get('locked') else 0 if sample.get('locked') is not None else None,
                 sample.get('inside_temp'),
                 sample.get('outside_temp'),
@@ -855,6 +932,7 @@ def recent_vehicle_track(vin: str, limit: int = 500):
         rows = conn.execute(
             f'''
             SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level, vehicle_state, timestamp_ms
+                 , coord_type, native_lat, native_lng, native_heading
             FROM tesla_vehicle_samples
             WHERE {' AND '.join(clauses)}
             ORDER BY timestamp_ms DESC
@@ -873,7 +951,8 @@ def recent_vehicle_samples(vin: str, limit: int = 2000):
         rows = conn.execute(
             '''
             SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level,
-                   usable_battery_level, charging_state, charge_limit_soc, odometer, distance_unit, vehicle_state, timestamp_ms
+                   usable_battery_level, charging_state, charge_limit_soc, odometer, distance_unit, vehicle_state, timestamp_ms,
+                   coord_type, native_lat, native_lng, native_heading
             FROM tesla_vehicle_samples
             WHERE vin = ?
             ORDER BY timestamp_ms DESC
@@ -898,7 +977,8 @@ def paged_vehicle_samples(vin: str, page: int = 1, page_size: int = 50):
             '''
             SELECT id, vin, display_name, vehicle_state, latitude, longitude, heading, speed, speed_unit,
                    shift_state, battery_level, usable_battery_level, charging_state, charge_limit_soc,
-                   odometer, distance_unit, locked, inside_temp, outside_temp, is_climate_on, sentry_mode,
+                   odometer, distance_unit, coord_type, native_lat, native_lng, native_heading,
+                   locked, inside_temp, outside_temp, is_climate_on, sentry_mode,
                    timestamp_ms, created_at
             FROM tesla_vehicle_samples
             WHERE vin = ?
