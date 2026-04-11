@@ -102,6 +102,7 @@ def ensure_tesla_storage():
             CREATE TABLE IF NOT EXISTS tesla_vehicles (
                 vin TEXT PRIMARY KEY,
                 vehicle_id TEXT,
+                vid TEXT,
                 display_name TEXT,
                 state TEXT,
                 in_service INTEGER,
@@ -111,6 +112,11 @@ def ensure_tesla_storage():
             )
             '''
         )
+        vehicle_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(tesla_vehicles)").fetchall()
+        }
+        if 'vid' not in vehicle_columns:
+            conn.execute('ALTER TABLE tesla_vehicles ADD COLUMN vid TEXT')
         conn.commit()
 
 
@@ -436,6 +442,7 @@ def normalize_vehicle_record(vehicle: dict[str, Any]):
     return {
         'id': vehicle.get('id') or vehicle.get('vehicle_id'),
         'vehicleId': vehicle.get('vehicle_id') or vehicle.get('id'),
+        'vid': vehicle.get('vehicle_id'),
         'vin': vehicle.get('vin'),
         'displayName': vehicle.get('display_name') or vehicle.get('displayName') or vehicle.get('vin'),
         'state': vehicle.get('state'),
@@ -451,10 +458,11 @@ def upsert_vehicle_cache(vehicle: dict[str, Any]):
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             '''
-            INSERT INTO tesla_vehicles(vin, vehicle_id, display_name, state, in_service, calendar_enabled, api_version, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tesla_vehicles(vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vin) DO UPDATE SET
               vehicle_id=excluded.vehicle_id,
+              vid=excluded.vid,
               display_name=excluded.display_name,
               state=excluded.state,
               in_service=excluded.in_service,
@@ -465,6 +473,7 @@ def upsert_vehicle_cache(vehicle: dict[str, Any]):
             (
                 vehicle.get('vin'),
                 str(vehicle.get('vehicleId') or ''),
+                str(vehicle.get('vid') or ''),
                 vehicle.get('displayName'),
                 vehicle.get('state'),
                 1 if vehicle.get('inService') else 0 if vehicle.get('inService') is not None else None,
@@ -483,7 +492,7 @@ def cached_vehicles():
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             '''
-            SELECT vin, vehicle_id, display_name, state, in_service, calendar_enabled, api_version, updated_at
+            SELECT vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, updated_at
             FROM tesla_vehicles
             ORDER BY updated_at DESC
             '''
@@ -492,6 +501,7 @@ def cached_vehicles():
         'vin': row['vin'],
         'id': row['vehicle_id'],
         'vehicleId': row['vehicle_id'],
+        'vid': row['vid'],
         'displayName': row['display_name'],
         'state': row['state'],
         'inService': None if row['in_service'] is None else bool(row['in_service']),
@@ -1174,18 +1184,18 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
         tesla_stream_phase = 'not_authorized'
         return 'not_authorized'
 
-    vehicle_id = str(vehicle.get('vehicleId') or vehicle.get('id') or '')
+    stream_identifier = str(vehicle.get('vid') or vehicle.get('vehicleId') or vehicle.get('id') or '')
     vin = vehicle.get('vin')
-    if not vehicle_id or not vin:
+    if not stream_identifier or not vin:
         tesla_stream_phase = 'invalid_vehicle'
         return 'invalid_vehicle'
 
-    url = f'{get_tesla_wss_base_url()}/streaming/'
+    url = f'{get_tesla_wss_base_url()}/streaming/{access_token}'
     subscribe_payload = {
         'msg_type': 'data:subscribe_oauth',
         'token': access_token,
         'value': 'speed,odometer,soc,elevation,est_heading,est_lat,est_lng,power,shift_state,range,est_range,heading',
-        'tag': vehicle_id,
+        'tag': stream_identifier,
     }
     timeout = aiohttp.ClientTimeout(sock_connect=15, sock_read=timeout_sec + 5, total=None)
     last_data_at = time.time()
@@ -1199,7 +1209,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
             async with session.ws_connect(url, heartbeat=20) as ws:
                 await ws.send_json(subscribe_payload)
                 tesla_stream_phase = 'subscribed'
-                logger.info(f'tesla streaming connected, vin={vin}, vehicle_id={vehicle_id}')
+                logger.info(f'tesla streaming connected, vin={vin}, stream_identifier={stream_identifier}, vehicle_id={vehicle.get("vehicleId")}, vid={vehicle.get("vid")}')
                 while not tesla_sync_stop_event.is_set():
                     try:
                         msg = await ws.receive(timeout=1)
@@ -1210,10 +1220,20 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                             return 'inactive'
                         continue
 
-                    if msg.type == aiohttp.WSMsgType.TEXT:
-                        payload = json.loads(msg.data)
+                    if message_debug_count < 5:
+                        logger.info(
+                            'tesla streaming frame, '
+                            f'vin={vin}, '
+                            f'type={msg.type}, '
+                            f'data={str(getattr(msg, "data", ""))[:120]}'
+                        )
+                        message_debug_count += 1
+
+                    if msg.type in [aiohttp.WSMsgType.TEXT, aiohttp.WSMsgType.BINARY]:
+                        raw_data = msg.data.decode('utf-8') if msg.type == aiohttp.WSMsgType.BINARY and isinstance(msg.data, (bytes, bytearray)) else msg.data
+                        payload = json.loads(raw_data)
                         msg_type = payload.get('msg_type')
-                        if message_debug_count < 5:
+                        if message_debug_count < 10:
                             logger.info(
                                 'tesla streaming message, '
                                 f'vin={vin}, '
@@ -1225,7 +1245,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                             message_debug_count += 1
                         if msg_type == 'control:hello':
                             continue
-                        if msg_type == 'data:update' and payload.get('tag') == vehicle_id and isinstance(payload.get('value'), str):
+                        if msg_type == 'data:update' and payload.get('tag') == stream_identifier and isinstance(payload.get('value'), str):
                             tesla_stream_phase = 'updates'
                             stream_data = parse_stream_value(payload['value'])
                             sample = extract_sample_from_stream_data(vin, vehicle.get('displayName'), vehicle.get('state'), stream_data, previous)
@@ -1234,7 +1254,7 @@ async def stream_vehicle_updates_once(vehicle: dict[str, Any], timeout_sec: int 
                             updates += 1
                             last_data_at = time.time()
                             continue
-                        if msg_type == 'data:error' and payload.get('tag') == vehicle_id:
+                        if msg_type == 'data:error' and payload.get('tag') == stream_identifier:
                             error_type = payload.get('error_type')
                             value = payload.get('value')
                             tesla_stream_phase = f'error:{error_type or "unknown"}'
