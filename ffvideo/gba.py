@@ -105,10 +105,16 @@ def add_gba_route(app):
     def gba_list():
         root_path = get_gba_root_path()
         save_root_path = get_gba_save_root_path()
+        state_root_path = get_gba_state_root_path()
         current_path = request.args.get('path', '')
         abs_path, normalized = safe_join(root_path, current_path)
 
-        if abs_path == save_root_path or abs_path.startswith(f'{save_root_path}{os.sep}'):
+        if (
+            abs_path == save_root_path
+            or abs_path.startswith(f'{save_root_path}{os.sep}')
+            or abs_path == state_root_path
+            or abs_path.startswith(f'{state_root_path}{os.sep}')
+        ):
             abort(404)
 
         if not os.path.exists(abs_path) or not os.path.isdir(abs_path):
@@ -117,7 +123,7 @@ def add_gba_route(app):
         items = []
         for entry in sorted(os.listdir(abs_path), key=lambda item: item.lower()):
             full_path = os.path.join(abs_path, entry)
-            if full_path == save_root_path:
+            if full_path == save_root_path or full_path == state_root_path:
                 continue
             rel_path = os.path.normpath(os.path.join(normalized, entry))
             normalized_rel_path = '' if rel_path == '.' else rel_path.replace('\\', '/')
@@ -149,7 +155,16 @@ def add_gba_route(app):
     @app.route('/api/gba/files/<path:filepath>', methods=['GET'])
     def gba_files(filepath):
         root_path = get_gba_root_path()
+        save_root_path = get_gba_save_root_path()
+        state_root_path = get_gba_state_root_path()
         abs_path, _ = safe_join(root_path, filepath)
+        if (
+            abs_path == save_root_path
+            or abs_path.startswith(f'{save_root_path}{os.sep}')
+            or abs_path == state_root_path
+            or abs_path.startswith(f'{state_root_path}{os.sep}')
+        ):
+            abort(404)
         if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
             abort(404)
         return send_file(abs_path)
