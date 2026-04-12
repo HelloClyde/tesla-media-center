@@ -9,7 +9,7 @@ const rawTableWrapRef = ref<HTMLElement | null>(null);
 const rawTableRef = ref<any>(null);
 
 let mapInstance: any = null;
-let polyline: any = null;
+let polylines: any[] = [];
 let vehicleMarker: any = null;
 let autoSyncTimer: number | null = null;
 let gAMap: any = null;
@@ -321,14 +321,27 @@ function loadTrack() {
   });
 }
 
+function syncSelectedTripWithTrips() {
+  const trips = state.trips || [];
+  if (trips.length === 0) {
+    state.selectedTrip = null;
+    return;
+  }
+  const selectedKey = state.selectedTrip ? `${state.selectedTrip.startTimeMs}-${state.selectedTrip.endTimeMs}` : '';
+  const matched = trips.find((trip: any) => `${trip.startTimeMs}-${trip.endTimeMs}` === selectedKey);
+  state.selectedTrip = matched || trips[0];
+}
+
 function loadTrips() {
   if (!state.selectedVin) {
     state.trips = [];
+    state.selectedTrip = null;
     return Promise.resolve();
   }
   state.tripsLoading = true;
-  return get(`/api/tesla/history/trips?vin=${encodeURIComponent(state.selectedVin)}&limit=2000`, '读取行程失败').then((data) => {
+  return get(`/api/tesla/history/trips?vin=${encodeURIComponent(state.selectedVin)}&limit=20000`, '读取行程失败').then((data) => {
     state.trips = data.items || [];
+    syncSelectedTripWithTrips();
   }).finally(() => {
     state.tripsLoading = false;
   });
@@ -355,7 +368,7 @@ function loadRawRows() {
 function handleVehicleChange() {
   state.selectedTrip = null;
   state.rawPage = 1;
-  return Promise.all([loadTrack(), loadTrips(), loadRawRows()]);
+  return Promise.all([loadTrips(), loadRawRows()]).then(() => loadTrack());
 }
 
 function openTripTrack(trip: any) {
@@ -383,7 +396,9 @@ function deleteTrip(trip: any) {
     if (state.selectedTrip?.startTimeMs === trip.startTimeMs && state.selectedTrip?.endTimeMs === trip.endTimeMs) {
       state.selectedTrip = null;
     }
-    Promise.all([loadTrips(), loadTrack(), loadStorage()]).then(() => {
+    Promise.all([loadTrips(), loadStorage()]).then(() => {
+      return loadTrack();
+    }).then(() => {
       ElMessage.success('行程已删除');
     });
   });
@@ -489,9 +504,9 @@ function renderTrackOnMap() {
   if (!mapInstance || !gAMap) {
     return;
   }
-  if (polyline) {
-    mapInstance.remove(polyline);
-    polyline = null;
+  if (polylines.length > 0) {
+    mapInstance.remove(polylines);
+    polylines = [];
   }
   if (vehicleMarker) {
     mapInstance.remove(vehicleMarker);
@@ -503,28 +518,49 @@ function renderTrackOnMap() {
     .map((item: any) => ({
       point: [Number(item.longitude), Number(item.latitude)],
       coordType: String(item.coord_type || '').toLowerCase(),
+      timestampMs: Number(item.timestamp_ms || 0),
     }));
 
   const drawPoints = (points: any[]) => {
-    if (points.length > 1) {
-      polyline = new gAMap.Polyline({
-        path: points,
+    const segments: any[][] = [];
+    let currentSegment: any[] = [];
+    const segmentGapMs = 10 * 60 * 1000;
+
+    points.forEach((item: any, index: number) => {
+      const prev = points[index - 1];
+      const gapMs = prev ? Math.abs((item.timestampMs || 0) - (prev.timestampMs || 0)) : 0;
+      if (currentSegment.length > 0 && gapMs > segmentGapMs) {
+        segments.push(currentSegment);
+        currentSegment = [];
+      }
+      currentSegment.push(item.point);
+    });
+    if (currentSegment.length > 0) {
+      segments.push(currentSegment);
+    }
+
+    polylines = segments
+      .filter((segment) => segment.length > 1)
+      .map((segment) => new gAMap.Polyline({
+        path: segment,
         strokeColor: '#409EFF',
         strokeWeight: 6,
         lineJoin: 'round',
         lineCap: 'round',
-      });
-      mapInstance.add(polyline);
+      }));
+
+    if (polylines.length > 0) {
+      mapInstance.add(polylines);
     }
 
-    const latestPoint = points[points.length - 1];
+    const latestPoint = points[points.length - 1]?.point;
     if (latestPoint) {
       vehicleMarker = new gAMap.Marker({
         position: latestPoint,
         title: selectedVehicle.value?.displayName || state.selectedVin,
       });
       mapInstance.add(vehicleMarker);
-      mapInstance.setFitView(vehicleMarker ? [vehicleMarker, polyline].filter(Boolean) : [polyline], false, [80, 80, 80, 80]);
+      mapInstance.setFitView([vehicleMarker, ...polylines].filter(Boolean), false, [80, 80, 80, 80]);
     }
   };
 
@@ -532,7 +568,7 @@ function renderTrackOnMap() {
     return;
   }
 
-  const finalPoints = rawPoints.map((item) => item.point);
+  const finalPoints = rawPoints.map((item) => ({ ...item }));
   const gpsPoints = rawPoints
     .map((item, index) => ({ ...item, index }))
     .filter((item) => !['gcj', 'gcj02', 'gcj-02'].includes(item.coordType));
@@ -545,7 +581,10 @@ function renderTrackOnMap() {
   gAMap.convertFrom(gpsPoints.map((item) => item.point), 'gps', (status: string, result: any) => {
     if (status === 'complete' && result?.locations?.length === gpsPoints.length) {
       result.locations.forEach((item: any, idx: number) => {
-        finalPoints[gpsPoints[idx].index] = [item.lng, item.lat];
+        finalPoints[gpsPoints[idx].index] = {
+          ...finalPoints[gpsPoints[idx].index],
+          point: [item.lng, item.lat],
+        };
       });
     }
     drawPoints(finalPoints);
@@ -557,14 +596,16 @@ onMounted(() => {
     loadStorage();
     if (state.status.authorized) {
       return loadVehicles()
-        .then(() => Promise.all([loadTrack(), loadTrips(), loadRawRows()]))
+        .then(() => Promise.all([loadTrips(), loadRawRows()]))
+        .then(() => loadTrack())
         .then(() => maybeForceFreshSync());
     }
   });
   initMap();
   autoSyncTimer = window.setInterval(() => {
     if (state.status.authorized && !state.syncLoading) {
-      Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()])
+      Promise.all([loadStatus(), loadVehicles(), loadTrips(), loadRawRows(), loadStorage()])
+        .then(() => loadTrack())
         .then(() => maybeForceFreshSync());
     }
   }, 15000);

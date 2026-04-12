@@ -943,7 +943,7 @@ def recent_vehicle_track(vin: str, limit: int = 500):
     return [normalize_sample_units(dict(row)) for row in reversed(rows)]
 
 
-def recent_vehicle_samples(vin: str, limit: int = 2000):
+def recent_vehicle_samples(vin: str, limit: int = 20000):
     ensure_tesla_storage()
     db_path = get_tesla_db_path()
     with sqlite3.connect(db_path) as conn:
@@ -1013,7 +1013,7 @@ def is_trip_sample(sample: dict[str, Any]):
     return shift_state in ['D', 'R', 'N'] or (isinstance(speed, (int, float)) and speed > 0)
 
 
-def build_trip_sessions(vin: str, limit: int = 2000):
+def build_trip_sessions(vin: str, limit: int = 20000):
     samples = recent_vehicle_samples(vin, limit)
     sessions = []
     current = None
@@ -1582,7 +1582,7 @@ def add_tesla_route(app):
     @login_check
     def tesla_trips():
         vin = request.args.get('vin', '')
-        limit = min(5000, max(100, int(request.args.get('limit', '2000'))))
+        limit = min(50000, max(500, int(request.args.get('limit', '20000'))))
         if not vin:
             return json_fail('vin_required', message='缺少 VIN'), 400
         trips = build_trip_sessions(vin, limit)
