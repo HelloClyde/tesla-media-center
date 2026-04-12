@@ -5,6 +5,8 @@ import { del, get, post } from '@/functions/requests';
 import getAMap from '@/functions/amapConfig';
 
 const mapContainer = ref<HTMLElement | null>(null);
+const rawTableWrapRef = ref<HTMLElement | null>(null);
+const rawTableRef = ref<any>(null);
 
 let mapInstance: any = null;
 let polyline: any = null;
@@ -45,6 +47,8 @@ const state = reactive({
   rawTotal: 0,
   rawPage: 1,
   rawPageSize: 50,
+  rawDetailVisible: false,
+  rawDetailRow: null as any,
   settingsLoading: false,
   statusLoading: false,
   syncLoading: false,
@@ -73,6 +77,78 @@ const state = reactive({
 
 const selectedVehicle = computed(() => {
   return state.vehicles.find((item: any) => item.vin === state.selectedVin) || null;
+});
+
+const RAW_COLUMN_ORDER = [
+  'timestamp_ms',
+  'id',
+  'vin',
+  'display_name',
+  'vehicle_state',
+  'latitude',
+  'longitude',
+  'coord_type',
+  'native_lat',
+  'native_lng',
+  'heading',
+  'native_heading',
+  'speed',
+  'speed_unit',
+  'shift_state',
+  'battery_level',
+  'usable_battery_level',
+  'charging_state',
+  'charge_limit_soc',
+  'odometer',
+  'distance_unit',
+  'locked',
+  'inside_temp',
+  'outside_temp',
+  'is_climate_on',
+  'sentry_mode',
+  'created_at',
+];
+
+const RAW_PREVIEW_COLUMNS = [
+  'timestamp_ms',
+  'vehicle_state',
+  'shift_state',
+  'speed',
+  'battery_level',
+];
+
+const rawColumns = computed(() => {
+  const keySet = new Set<string>();
+  for (const row of state.rawRows) {
+    Object.keys(row || {}).forEach((key) => keySet.add(key));
+  }
+  const keys = Array.from(keySet);
+  return keys.sort((a, b) => {
+    const aIndex = RAW_COLUMN_ORDER.indexOf(a);
+    const bIndex = RAW_COLUMN_ORDER.indexOf(b);
+    if (aIndex !== -1 || bIndex !== -1) {
+      return (aIndex === -1 ? Number.MAX_SAFE_INTEGER : aIndex) - (bIndex === -1 ? Number.MAX_SAFE_INTEGER : bIndex);
+    }
+    return a.localeCompare(b);
+  });
+});
+
+const rawPreviewColumns = computed(() => {
+  const keySet = new Set<string>();
+  for (const row of state.rawRows) {
+    Object.keys(row || {}).forEach((key) => keySet.add(key));
+  }
+  return RAW_PREVIEW_COLUMNS.filter((key) => keySet.has(key));
+});
+
+const rawDetailEntries = computed(() => {
+  const row = state.rawDetailRow || {};
+  return rawColumns.value
+    .filter((key) => Object.prototype.hasOwnProperty.call(row, key))
+    .map((key) => ({
+      key,
+      value: formatRawCell(row, key),
+    }));
 });
 
 const sampleCards = computed(() => {
@@ -110,6 +186,28 @@ function formatDuration(totalSec?: number) {
     return `${hours}小时${minutes}分钟`;
   }
   return `${minutes}分钟`;
+}
+
+function formatRawCell(row: any, key: string) {
+  const value = row?.[key];
+  if (value == null || value === '') {
+    return '-';
+  }
+  if (key === 'timestamp_ms') {
+    return formatTimestamp(Number(value));
+  }
+  if (key === 'created_at') {
+    return formatTimestamp(Number(value) * 1000);
+  }
+  if (typeof value === 'boolean') {
+    return value ? 'true' : 'false';
+  }
+  return String(value);
+}
+
+function openRawRowDetail(row: any) {
+  state.rawDetailRow = row;
+  state.rawDetailVisible = true;
 }
 
 function loadSettings() {
@@ -402,7 +500,10 @@ function renderTrackOnMap() {
 
   const rawPoints = state.trackPoints
     .filter((item: any) => item.longitude != null && item.latitude != null)
-    .map((item: any) => [Number(item.longitude), Number(item.latitude)]);
+    .map((item: any) => ({
+      point: [Number(item.longitude), Number(item.latitude)],
+      coordType: String(item.coord_type || '').toLowerCase(),
+    }));
 
   const drawPoints = (points: any[]) => {
     if (points.length > 1) {
@@ -431,18 +532,24 @@ function renderTrackOnMap() {
     return;
   }
 
-  if (typeof gAMap.convertFrom === 'function') {
-    gAMap.convertFrom(rawPoints, 'gps', (status: string, result: any) => {
-      if (status === 'complete' && result?.locations?.length) {
-        drawPoints(result.locations.map((item: any) => [item.lng, item.lat]));
-        return;
-      }
-      drawPoints(rawPoints);
-    });
+  const finalPoints = rawPoints.map((item) => item.point);
+  const gpsPoints = rawPoints
+    .map((item, index) => ({ ...item, index }))
+    .filter((item) => !['gcj', 'gcj02', 'gcj-02'].includes(item.coordType));
+
+  if (gpsPoints.length === 0 || typeof gAMap.convertFrom !== 'function') {
+    drawPoints(finalPoints);
     return;
   }
 
-  drawPoints(rawPoints);
+  gAMap.convertFrom(gpsPoints.map((item) => item.point), 'gps', (status: string, result: any) => {
+    if (status === 'complete' && result?.locations?.length === gpsPoints.length) {
+      result.locations.forEach((item: any, idx: number) => {
+        finalPoints[gpsPoints[idx].index] = [item.lng, item.lat];
+      });
+    }
+    drawPoints(finalPoints);
+  });
 }
 
 onMounted(() => {
@@ -598,36 +705,30 @@ onUnmounted(() => {
         <el-tab-pane label="原始数据" name="raw">
           <section class="tesla-grid tesla-grid--content">
             <article class="tesla-card" v-loading="state.rawLoading">
-              <div class="card-head">
-                <div>
-                  <p class="tesla-kicker">SQLite</p>
-                  <h2>原始记录</h2>
-                </div>
-                <div class="status-pill">{{ state.rawTotal }} 条</div>
-              </div>
               <div v-if="state.rawRows.length === 0" class="trip-empty">
                 当前车辆还没有原始样本记录
               </div>
               <template v-else>
-                <el-table :data="state.rawRows" size="small" class="raw-table">
-                  <el-table-column prop="timestamp_ms" label="时间" min-width="180">
-                    <template #default="{ row }">{{ formatTimestamp(row.timestamp_ms) }}</template>
-                  </el-table-column>
-                  <el-table-column prop="vehicle_state" label="状态" min-width="100" />
-                  <el-table-column prop="shift_state" label="档位" min-width="80" />
-                  <el-table-column prop="speed" label="速度" min-width="100">
-                    <template #default="{ row }">{{ row.speed != null ? `${row.speed} ${row.speed_unit || 'km/h'}` : '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="odometer" label="里程" min-width="120">
-                    <template #default="{ row }">{{ row.odometer != null ? `${row.odometer} ${row.distance_unit || 'km'}` : '-' }}</template>
-                  </el-table-column>
-                  <el-table-column label="坐标" min-width="220">
-                    <template #default="{ row }">{{ row.latitude != null && row.longitude != null ? `${row.latitude}, ${row.longitude}` : '-' }}</template>
-                  </el-table-column>
-                  <el-table-column prop="battery_level" label="电量" min-width="90">
-                    <template #default="{ row }">{{ row.battery_level != null ? `${row.battery_level}%` : '-' }}</template>
-                  </el-table-column>
-                </el-table>
+                <div ref="rawTableWrapRef" class="raw-table-wrap">
+                  <el-table ref="rawTableRef" :data="state.rawRows" size="small" class="raw-table">
+                    <el-table-column
+                      v-for="key of rawPreviewColumns"
+                      :key="key"
+                      :prop="key"
+                      :label="key"
+                      :fixed="key === 'timestamp_ms' ? 'left' : false"
+                      min-width="140"
+                      show-overflow-tooltip
+                    >
+                      <template #default="{ row }">{{ formatRawCell(row, key) }}</template>
+                    </el-table-column>
+                    <el-table-column label="详情" fixed="right" width="100">
+                      <template #default="{ row }">
+                        <el-button link type="primary" @click.stop="openRawRowDetail(row)">详情</el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
                 <div class="raw-pagination">
                   <el-pagination
                     background
@@ -746,6 +847,15 @@ onUnmounted(() => {
         </el-tab-pane>
       </el-tabs>
     </section>
+
+    <el-dialog v-model="state.rawDetailVisible" title="原始记录详情" width="min(960px, 92vw)">
+      <div class="raw-detail-grid">
+        <div v-for="item of rawDetailEntries" :key="item.key" class="raw-detail-item">
+          <span>{{ item.key }}</span>
+          <strong>{{ item.value }}</strong>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -1085,13 +1195,53 @@ onUnmounted(() => {
   color: var(--color-text-soft);
 }
 
-.raw-table {
+.raw-toolbar {
+  margin-bottom: 12px;
+  color: var(--color-text-soft);
+  font-size: 13px;
+}
+
+.raw-table-wrap {
   margin-bottom: 16px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x;
+}
+
+.raw-table {
+  min-width: max-content;
 }
 
 .raw-pagination {
   display: flex;
   justify-content: flex-end;
+}
+
+.raw-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.raw-detail-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+}
+
+.raw-detail-item span {
+  color: var(--color-text-soft);
+  font-size: 12px;
+}
+
+.raw-detail-item strong {
+  color: var(--color-heading);
+  word-break: break-all;
 }
 
 .map-empty {
