@@ -931,8 +931,10 @@ def recent_vehicle_track(vin: str, limit: int = 500):
         params.append(limit)
         rows = conn.execute(
             f'''
-            SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level, vehicle_state, timestamp_ms
-                 , coord_type, native_lat, native_lng, native_heading
+            SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level,
+                   usable_battery_level, charging_state, charge_limit_soc, odometer, distance_unit, vehicle_state,
+                   locked, inside_temp, outside_temp, is_climate_on, sentry_mode, timestamp_ms,
+                   coord_type, native_lat, native_lng, native_heading
             FROM tesla_vehicle_samples
             WHERE {' AND '.join(clauses)}
             ORDER BY timestamp_ms DESC
@@ -961,6 +963,27 @@ def recent_vehicle_samples(vin: str, limit: int = 20000):
             (vin, limit),
         ).fetchall()
     return [normalize_sample_units(dict(row)) for row in reversed(rows)]
+
+
+def vehicle_samples_in_range(vin: str, start_ms: int, end_ms: int, limit: int = 20000):
+    ensure_tesla_storage()
+    db_path = get_tesla_db_path()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            '''
+            SELECT id, vin, display_name, latitude, longitude, heading, speed, speed_unit, shift_state, battery_level,
+                   usable_battery_level, charging_state, charge_limit_soc, odometer, distance_unit, vehicle_state, timestamp_ms,
+                   locked, inside_temp, outside_temp, is_climate_on, sentry_mode,
+                   coord_type, native_lat, native_lng, native_heading
+            FROM tesla_vehicle_samples
+            WHERE vin = ? AND timestamp_ms >= ? AND timestamp_ms <= ?
+            ORDER BY timestamp_ms ASC
+            LIMIT ?
+            ''',
+            (vin, start_ms, end_ms, limit),
+        ).fetchall()
+    return [normalize_sample_units(dict(row)) for row in rows]
 
 
 def paged_vehicle_samples(vin: str, page: int = 1, page_size: int = 50):
@@ -1013,7 +1036,7 @@ def is_trip_sample(sample: dict[str, Any]):
     return shift_state in ['D', 'R', 'N'] or (isinstance(speed, (int, float)) and speed > 0)
 
 
-def build_trip_sessions(vin: str, limit: int = 20000):
+def build_trip_sessions(vin: str, limit: int = 20000, include_samples: bool = False):
     samples = recent_vehicle_samples(vin, limit)
     sessions = []
     current = None
@@ -1059,8 +1082,9 @@ def build_trip_sessions(vin: str, limit: int = 20000):
             'startPosition': {'latitude': start.get('latitude'), 'longitude': start.get('longitude')},
             'endPosition': {'latitude': end.get('latitude'), 'longitude': end.get('longitude')},
             'pointCount': track_point_count,
-            'samples': trip_samples,
         })
+        if include_samples:
+            sessions[-1]['samples'] = trip_samples
         current = None
 
     for sample in samples:
@@ -1572,10 +1596,12 @@ def add_tesla_route(app):
         limit = min(2000, max(10, int(request.args.get('limit', '500'))))
         if not vin:
             return json_fail('vin_required', message='缺少 VIN'), 400
+        points = recent_vehicle_track(vin, limit)
+        latest = points[-1] if (request.args.get('startMs') or request.args.get('endMs')) and points else latest_vehicle_sample(vin)
         return json_ok({
             'vin': vin,
-            'points': recent_vehicle_track(vin, limit),
-            'latest': latest_vehicle_sample(vin),
+            'points': points,
+            'latest': latest,
         })
 
     @app.route('/api/tesla/history/trips', methods=['GET'])
@@ -1589,6 +1615,31 @@ def add_tesla_route(app):
         return json_ok({
             'vin': vin,
             'items': trips,
+        })
+
+    @app.route('/api/tesla/history/trips/detail', methods=['GET'])
+    @login_check
+    def tesla_trip_detail():
+        vin = request.args.get('vin', '')
+        start_ms = int(request.args.get('startMs', '0') or 0)
+        end_ms = int(request.args.get('endMs', '0') or 0)
+        limit = min(50000, max(100, int(request.args.get('limit', '20000'))))
+        if not vin:
+            return json_fail('vin_required', message='缺少 VIN'), 400
+        if start_ms <= 0 or end_ms <= 0 or end_ms < start_ms:
+            return json_fail('trip_required', message='缺少行程标识'), 400
+        samples = vehicle_samples_in_range(vin, start_ms, end_ms, limit)
+        latest = samples[-1] if samples else None
+        return json_ok({
+            'vin': vin,
+            'startTimeMs': start_ms,
+            'endTimeMs': end_ms,
+            'items': samples,
+            'latest': latest,
+            'pointCount': len([
+                item for item in samples
+                if item.get('latitude') is not None and item.get('longitude') is not None
+            ]),
         })
 
     @app.route('/api/tesla/history/trips', methods=['DELETE'])

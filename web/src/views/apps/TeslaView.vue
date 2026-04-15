@@ -1,9 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { del, get, post } from '@/functions/requests';
 import getAMap from '@/functions/amapConfig';
 
+const pageRef = ref<HTMLElement | null>(null);
+const vehicleVisualRef = ref<HTMLElement | null>(null);
 const mapContainer = ref<HTMLElement | null>(null);
 const rawTableWrapRef = ref<HTMLElement | null>(null);
 const rawTableRef = ref<any>(null);
@@ -12,8 +18,43 @@ let mapInstance: any = null;
 let polylines: any[] = [];
 let vehicleMarker: any = null;
 let autoSyncTimer: number | null = null;
+let pageObserver: IntersectionObserver | null = null;
 let gAMap: any = null;
 let lastForcedSyncAt = 0;
+let tabPollInFlight = false;
+let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean } | null = null;
+let vehicleScene: THREE.Scene | null = null;
+let vehicleCamera: THREE.PerspectiveCamera | null = null;
+let vehicleRenderer: THREE.WebGLRenderer | null = null;
+let vehicleModelRoot: THREE.Group | null = null;
+let vehicleModelPivot: THREE.Group | null = null;
+let vehicleControls: OrbitControls | null = null;
+let resizeHandler: (() => void) | null = null;
+let vehicleViewerInitialized = false;
+let vehicleResetViewTimer: number | null = null;
+let vehicleAnimationFrame: number | null = null;
+let vehicleRenderLoopFrame: number | null = null;
+let vehicleViewTween: {
+  startTime: number;
+  durationMs: number;
+  fromPosition: THREE.Vector3;
+  toPosition: THREE.Vector3;
+  fromTarget: THREE.Vector3;
+  toTarget: THREE.Vector3;
+} | null = null;
+
+const DEFAULT_VEHICLE_CAMERA_POSITION = new THREE.Vector3(0, 3.4, 8.2);
+const DEFAULT_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.35, 0);
+
+type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
+
+const ACTIVE_TAB_POLL_INTERVAL_MS: Record<TeslaTabName, number> = {
+  status: 1000,
+  track: 1000,
+  trip: 15000,
+  raw: 1000,
+  settings: 10000,
+};
 
 const state = reactive({
   activeTab: 'status',
@@ -53,10 +94,13 @@ const state = reactive({
   statusLoading: false,
   syncLoading: false,
   tripsLoading: false,
+  tripTrackLoading: false,
   rawLoading: false,
   storageLoading: false,
   mapReady: false,
   mapError: '',
+  visualError: '',
+  visualLoading: false,
   storage: {
     dbPath: '',
     dbSizeMb: 0,
@@ -73,10 +117,61 @@ const state = reactive({
     lastStreamResult: '',
     streamPhase: 'idle',
   },
+  documentVisible: typeof document === 'undefined' ? true : document.visibilityState === 'visible',
+  pageExposed: true,
 });
 
 const selectedVehicle = computed(() => {
   return state.vehicles.find((item: any) => item.vin === state.selectedVin) || null;
+});
+
+const debugShiftState = computed(() => {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+  const searchParams = new URLSearchParams(window.location.search);
+  const hashQuery = window.location.hash.includes('?')
+    ? window.location.hash.slice(window.location.hash.indexOf('?') + 1)
+    : '';
+  const hashParams = new URLSearchParams(hashQuery);
+  const shift = String(hashParams.get('shift') || searchParams.get('shift') || '').toUpperCase();
+  return ['P', 'D', 'R'].includes(shift) ? shift : '';
+});
+
+const currentShiftState = computed(() => {
+  if (debugShiftState.value) {
+    return debugShiftState.value;
+  }
+  const shift = String(state.latestSample?.shift_state || '').toUpperCase();
+  if (shift === 'D' || shift === 'R' || shift === 'P') {
+    return shift;
+  }
+  if (String(state.latestSample?.vehicle_state || '').toLowerCase() === 'driving') {
+    return 'D';
+  }
+  return 'P';
+});
+
+const vehicleVisualStatus = computed(() => {
+  if (currentShiftState.value === 'D') {
+    return {
+      label: 'D 档',
+      description: '行驶状态，车头朝前。',
+      accent: 'status-pill--ok',
+    };
+  }
+  if (currentShiftState.value === 'R') {
+    return {
+      label: 'R 档',
+      description: '倒车状态，车尾朝前。',
+      accent: 'status-pill--warn',
+    };
+  }
+  return {
+    label: 'P 档',
+    description: '展示模式，车辆横向停放。',
+    accent: '',
+  };
 });
 
 const RAW_COLUMN_ORDER = [
@@ -205,6 +300,16 @@ function formatRawCell(row: any, key: string) {
   return String(value);
 }
 
+function getVehicleOrientationByShift(shiftState: string) {
+  if (shiftState === 'D') {
+    return Math.PI;
+  }
+  if (shiftState === 'R') {
+    return 0;
+  }
+  return Math.PI / 2;
+}
+
 function openRawRowDetail(row: any) {
   state.rawDetailRow = row;
   state.rawDetailVisible = true;
@@ -278,6 +383,8 @@ function clearStorage() {
     state.trackPoints = [];
     state.trips = [];
     state.latestSample = null;
+    state.selectedTrip = null;
+    state.tripTrackLoading = false;
     renderTrackOnMap();
     ElMessage.success('Tesla SQLite 记录已清理');
   }).finally(() => {
@@ -297,13 +404,14 @@ function loadStatus() {
 function loadVehicles() {
   return get('/api/tesla/vehicles', '读取车辆列表失败').then((data) => {
     state.vehicles = data || [];
-    if (!state.selectedVin && state.vehicles.length > 0) {
-      state.selectedVin = state.vehicles[0].vin;
+    if (!state.vehicles.some((item: any) => item.vin === state.selectedVin)) {
+      state.selectedVin = state.vehicles[0]?.vin || '';
     }
   });
 }
 
 function loadTrack() {
+  state.tripTrackLoading = false;
   if (!state.selectedVin) {
     state.trackPoints = [];
     state.latestSample = null;
@@ -336,6 +444,7 @@ function loadTrips() {
   if (!state.selectedVin) {
     state.trips = [];
     state.selectedTrip = null;
+    state.tripTrackLoading = false;
     return Promise.resolve();
   }
   state.tripsLoading = true;
@@ -368,22 +477,32 @@ function loadRawRows() {
 function handleVehicleChange() {
   state.selectedTrip = null;
   state.rawPage = 1;
+  state.tripTrackLoading = false;
   return Promise.all([loadTrips(), loadRawRows()]).then(() => loadTrack());
 }
 
 function openTripTrack(trip: any) {
   state.selectedTrip = trip;
   state.activeTab = 'track';
-  const tripPoints = (trip.samples || []).filter((item: any) => item.longitude != null && item.latitude != null);
-  state.trackPoints = tripPoints;
-  state.latestSample = (trip.samples || [])[trip.samples.length - 1] || null;
-  nextTick(() => {
-    renderTrackOnMap();
+  state.tripTrackLoading = true;
+  return get(
+    `/api/tesla/history/trips/detail?vin=${encodeURIComponent(state.selectedVin)}&startMs=${trip.startTimeMs}&endMs=${trip.endTimeMs}&limit=20000`,
+    '读取行程轨迹失败'
+  ).then((data) => {
+    const items = data.items || [];
+    state.trackPoints = items.filter((item: any) => item.longitude != null && item.latitude != null);
+    state.latestSample = data.latest || items[items.length - 1] || null;
+    nextTick(() => {
+      renderTrackOnMap();
+    });
+  }).finally(() => {
+    state.tripTrackLoading = false;
   });
 }
 
 function showAllTrack() {
   state.selectedTrip = null;
+  state.tripTrackLoading = false;
   loadTrack();
 }
 
@@ -440,7 +559,7 @@ function shouldForceFreshSync() {
   return ageMs > 2 * 60 * 1000;
 }
 
-function maybeForceFreshSync() {
+function maybeForceFreshSync(tabName: TeslaTabName = state.activeTab as TeslaTabName): Promise<void> {
   const now = Date.now();
   if (!shouldForceFreshSync()) {
     return Promise.resolve();
@@ -449,15 +568,143 @@ function maybeForceFreshSync() {
     return Promise.resolve();
   }
   lastForcedSyncAt = now;
-  return syncVehicles(false);
+  return syncVehicles(false, tabName);
 }
 
-function syncVehicles(showMessage = false) {
+function clearTabData(_tabName: TeslaTabName) {
+  state.vehicles = [];
+  state.selectedVin = '';
+  state.trackPoints = [];
+  state.latestSample = null;
+  state.trips = [];
+  state.selectedTrip = null;
+  state.tripTrackLoading = false;
+  state.rawRows = [];
+  state.rawTotal = 0;
+  renderTrackOnMap();
+  updateVehicleVisualState();
+}
+
+function refreshTabData(tabName: TeslaTabName, options?: { allowForceSync?: boolean; includeStorage?: boolean }): Promise<void> {
+  const allowForceSync = options?.allowForceSync ?? true;
+  const includeStorage = options?.includeStorage ?? tabName === 'settings';
+
+  const baseTasks: Promise<any>[] = [loadStatus()];
+  if (includeStorage) {
+    baseTasks.push(loadStorage());
+  }
+
+  return Promise.all(baseTasks).then(() => {
+    if (!state.status.authorized) {
+      clearTabData(tabName);
+      return;
+    }
+    return loadVehicles().then(() => {
+      if (tabName === 'status' || tabName === 'track') {
+        return loadTrack();
+      }
+      if (tabName === 'trip') {
+        return loadTrips();
+      }
+      if (tabName === 'raw') {
+        return loadRawRows();
+      }
+      return Promise.resolve();
+    });
+  }).then(() => {
+    if (allowForceSync && (tabName === 'status' || tabName === 'track')) {
+      return maybeForceFreshSync(tabName);
+    }
+    return Promise.resolve();
+  });
+}
+
+function isTeslaPageVisible() {
+  return state.documentVisible && state.pageExposed;
+}
+
+function stopAutoSyncTimer() {
+  if (autoSyncTimer !== null) {
+    window.clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+}
+
+function refreshActiveTabData(options?: { allowForceSync?: boolean; immediate?: boolean }): Promise<void> {
+  const allowForceSync = options?.allowForceSync ?? true;
+  const immediate = options?.immediate ?? false;
+
+  if (!immediate && !isTeslaPageVisible()) {
+    return Promise.resolve();
+  }
+  if (tabPollInFlight) {
+    pendingTabRefreshOptions = {
+      allowForceSync: (pendingTabRefreshOptions?.allowForceSync ?? false) || allowForceSync,
+      immediate: (pendingTabRefreshOptions?.immediate ?? false) || immediate,
+    };
+    return Promise.resolve();
+  }
+  tabPollInFlight = true;
+  return refreshTabData(state.activeTab as TeslaTabName, { allowForceSync }).finally(() => {
+    tabPollInFlight = false;
+    const pending = pendingTabRefreshOptions;
+    pendingTabRefreshOptions = null;
+    if (pending) {
+      void refreshActiveTabData(pending);
+    }
+  });
+}
+
+function startAutoSyncTimer() {
+  stopAutoSyncTimer();
+  if (!isTeslaPageVisible()) {
+    return;
+  }
+  autoSyncTimer = window.setInterval(() => {
+    refreshActiveTabData();
+  }, ACTIVE_TAB_POLL_INTERVAL_MS[state.activeTab as TeslaTabName]);
+}
+
+function restartAutoSyncTimer() {
+  startAutoSyncTimer();
+}
+
+function handleDocumentVisibilityChange() {
+  state.documentVisible = document.visibilityState === 'visible';
+  restartAutoSyncTimer();
+  if (isTeslaPageVisible()) {
+    refreshActiveTabData({ immediate: true });
+  }
+}
+
+function observePageExposure() {
+  if (!pageRef.value || typeof IntersectionObserver === 'undefined') {
+    state.pageExposed = true;
+    restartAutoSyncTimer();
+    return;
+  }
+  pageObserver = new IntersectionObserver((entries) => {
+    const entry = entries[0];
+    state.pageExposed = Boolean(entry?.isIntersecting && entry.intersectionRatio >= 0.15);
+    restartAutoSyncTimer();
+    if (isTeslaPageVisible()) {
+      refreshActiveTabData({ immediate: true });
+    }
+  }, {
+    threshold: [0, 0.15, 0.5],
+  });
+  pageObserver.observe(pageRef.value);
+}
+
+function syncVehicles(showMessage = false, tabName: TeslaTabName = state.activeTab as TeslaTabName): Promise<void> {
   state.syncLoading = true;
   return post('/api/tesla/sync', {
     vin: state.selectedVin || undefined,
   }, '同步 Tesla 数据失败').then(() => {
-    return Promise.all([loadStatus(), loadVehicles(), loadTrack(), loadTrips(), loadRawRows(), loadStorage()]).then(() => {
+    return refreshTabData(tabName, {
+      allowForceSync: false,
+      includeStorage: true,
+    }).then(() => {
       if (showMessage) {
         ElMessage.success('Tesla 数据已同步');
       }
@@ -465,6 +712,257 @@ function syncVehicles(showMessage = false) {
   }).finally(() => {
     state.syncLoading = false;
   });
+}
+
+function initVehicleViewer() {
+  if (vehicleViewerInitialized || !vehicleVisualRef.value) {
+    return;
+  }
+  const container = vehicleVisualRef.value;
+  vehicleScene = new THREE.Scene();
+  vehicleScene.background = new THREE.Color('#eef2f6');
+
+  vehicleCamera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+  vehicleCamera.position.copy(DEFAULT_VEHICLE_CAMERA_POSITION);
+  vehicleCamera.lookAt(DEFAULT_VEHICLE_CAMERA_TARGET);
+
+  vehicleRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  vehicleRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  vehicleRenderer.setSize(container.clientWidth || 640, container.clientHeight || 420);
+  vehicleRenderer.outputColorSpace = THREE.SRGBColorSpace;
+  vehicleRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+  vehicleRenderer.toneMappingExposure = 1;
+  vehicleRenderer.shadowMap.enabled = false;
+  container.innerHTML = '';
+  container.appendChild(vehicleRenderer.domElement);
+
+  vehicleControls = new OrbitControls(vehicleCamera, vehicleRenderer.domElement);
+  vehicleControls.enablePan = false;
+  vehicleControls.enableDamping = true;
+  vehicleControls.dampingFactor = 0.08;
+  vehicleControls.rotateSpeed = 0.8;
+  vehicleControls.minDistance = 5.5;
+  vehicleControls.maxDistance = 11;
+  vehicleControls.minPolarAngle = Math.PI / 3.6;
+  vehicleControls.maxPolarAngle = Math.PI / 2.05;
+  vehicleControls.target.copy(DEFAULT_VEHICLE_CAMERA_TARGET);
+  vehicleControls.addEventListener('start', () => {
+    if (vehicleResetViewTimer !== null) {
+      window.clearTimeout(vehicleResetViewTimer);
+      vehicleResetViewTimer = null;
+    }
+    stopVehicleViewTween();
+  });
+  vehicleControls.addEventListener('end', () => {
+    scheduleVehicleViewReset();
+  });
+
+  vehicleScene.add(new THREE.HemisphereLight('#fdfefe', '#aeb7c2', 2.4));
+
+  const keyLight = new THREE.DirectionalLight('#ffffff', 2.4);
+  keyLight.position.set(5, 8, 7);
+  vehicleScene.add(keyLight);
+
+  const rimLight = new THREE.DirectionalLight('#dbeafe', 1.1);
+  rimLight.position.set(-6, 4, -5);
+  vehicleScene.add(rimLight);
+
+  const fillLight = new THREE.PointLight('#b6d9ff', 0.9, 24);
+  fillLight.position.set(-3, 3, 5);
+  vehicleScene.add(fillLight);
+
+  vehicleModelPivot = new THREE.Group();
+  vehicleModelPivot.position.y = 0.85;
+  vehicleScene.add(vehicleModelPivot);
+
+  const loader = new GLTFLoader();
+  loader.setMeshoptDecoder(MeshoptDecoder);
+  state.visualLoading = true;
+  loader.load('/models/2021_tesla_model_y.glb', (gltf: { scene: THREE.Group }) => {
+    const model = gltf.scene;
+    const box = new THREE.Box3().setFromObject(model);
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxAxis = Math.max(size.x, size.y, size.z) || 1;
+    const scale = 4.8 / maxAxis;
+
+    model.position.sub(center);
+    model.position.y += size.y * 0.08;
+    model.scale.setScalar(scale);
+    model.traverse((child: THREE.Object3D) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.castShadow = false;
+        mesh.receiveShadow = false;
+      }
+    });
+
+    vehicleModelRoot = model;
+    vehicleModelPivot?.add(model);
+    state.visualError = '';
+    state.visualLoading = false;
+    updateVehicleVisualState();
+    resizeVehicleViewer();
+  }, undefined, (error: unknown) => {
+    console.error(error);
+    state.visualError = '车辆模型加载失败';
+    state.visualLoading = false;
+  });
+
+  resizeHandler = () => {
+    resizeVehicleViewer();
+  };
+  window.addEventListener('resize', resizeHandler);
+  vehicleViewerInitialized = true;
+  startVehicleRenderLoop();
+}
+
+function resizeVehicleViewer() {
+  if (!vehicleVisualRef.value || !vehicleRenderer || !vehicleCamera) {
+    return;
+  }
+  const width = vehicleVisualRef.value.clientWidth || 640;
+  const height = vehicleVisualRef.value.clientHeight || 420;
+  vehicleRenderer.setSize(width, height);
+  vehicleCamera.aspect = width / height;
+  vehicleCamera.updateProjectionMatrix();
+  renderVehicleViewer();
+}
+
+function renderVehicleViewer() {
+  if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
+    return;
+  }
+  vehicleRenderer.render(vehicleScene, vehicleCamera);
+}
+
+function startVehicleRenderLoop() {
+  if (vehicleRenderLoopFrame !== null) {
+    return;
+  }
+  const frame = () => {
+    vehicleRenderLoopFrame = window.requestAnimationFrame(frame);
+    if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
+      return;
+    }
+    vehicleControls?.update();
+    vehicleRenderer.render(vehicleScene, vehicleCamera);
+  };
+  vehicleRenderLoopFrame = window.requestAnimationFrame(frame);
+}
+
+function stopVehicleRenderLoop() {
+  if (vehicleRenderLoopFrame !== null) {
+    window.cancelAnimationFrame(vehicleRenderLoopFrame);
+    vehicleRenderLoopFrame = null;
+  }
+}
+
+function updateVehicleVisualState() {
+  if (!vehicleModelPivot) {
+    return;
+  }
+  vehicleModelPivot.rotation.y = getVehicleOrientationByShift(currentShiftState.value);
+  renderVehicleViewer();
+}
+
+function scheduleVehicleViewReset() {
+  if (vehicleResetViewTimer !== null) {
+    window.clearTimeout(vehicleResetViewTimer);
+  }
+  vehicleResetViewTimer = window.setTimeout(() => {
+    resetVehicleView();
+  }, 3000);
+}
+
+function easeInOutCubic(progress: number) {
+  return progress < 0.5
+    ? 4 * progress * progress * progress
+    : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+}
+
+function stopVehicleViewTween() {
+  if (vehicleAnimationFrame !== null) {
+    window.cancelAnimationFrame(vehicleAnimationFrame);
+    vehicleAnimationFrame = null;
+  }
+  vehicleViewTween = null;
+}
+
+function animateVehicleView(toPosition: THREE.Vector3, toTarget: THREE.Vector3, durationMs = 900) {
+  if (!vehicleCamera || !vehicleControls) {
+    return;
+  }
+  stopVehicleViewTween();
+  vehicleViewTween = {
+    startTime: performance.now(),
+    durationMs,
+    fromPosition: vehicleCamera.position.clone(),
+    toPosition: toPosition.clone(),
+    fromTarget: vehicleControls.target.clone(),
+    toTarget: toTarget.clone(),
+  };
+
+  const step = (now: number) => {
+    if (!vehicleCamera || !vehicleControls || !vehicleViewTween) {
+      stopVehicleViewTween();
+      return;
+    }
+    const progress = Math.min((now - vehicleViewTween.startTime) / vehicleViewTween.durationMs, 1);
+    const eased = easeInOutCubic(progress);
+    vehicleCamera.position.lerpVectors(vehicleViewTween.fromPosition, vehicleViewTween.toPosition, eased);
+    vehicleControls.target.lerpVectors(vehicleViewTween.fromTarget, vehicleViewTween.toTarget, eased);
+    vehicleControls.update();
+    renderVehicleViewer();
+    if (progress < 1) {
+      vehicleAnimationFrame = window.requestAnimationFrame(step);
+      return;
+    }
+    stopVehicleViewTween();
+  };
+
+  vehicleAnimationFrame = window.requestAnimationFrame(step);
+}
+
+function resetVehicleView() {
+  animateVehicleView(DEFAULT_VEHICLE_CAMERA_POSITION, DEFAULT_VEHICLE_CAMERA_TARGET);
+}
+
+function disposeVehicleViewer() {
+  if (vehicleResetViewTimer !== null) {
+    window.clearTimeout(vehicleResetViewTimer);
+    vehicleResetViewTimer = null;
+  }
+  stopVehicleViewTween();
+  stopVehicleRenderLoop();
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler);
+    resizeHandler = null;
+  }
+  if (vehicleControls) {
+    vehicleControls.dispose();
+    vehicleControls = null;
+  }
+  if (vehicleRenderer) {
+    vehicleRenderer.dispose();
+    vehicleRenderer.domElement.remove();
+  }
+  if (vehicleModelRoot) {
+    vehicleModelRoot.traverse((child: THREE.Object3D) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        mesh.geometry?.dispose();
+        const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        materials.forEach((material: THREE.Material) => material?.dispose());
+      }
+    });
+  }
+  vehicleScene = null;
+  vehicleCamera = null;
+  vehicleRenderer = null;
+  vehicleModelRoot = null;
+  vehicleModelPivot = null;
+  vehicleViewerInitialized = false;
 }
 
 function logoutTesla() {
@@ -592,71 +1090,100 @@ function renderTrackOnMap() {
 }
 
 onMounted(() => {
-  Promise.all([loadSettings(), loadStatus()]).then(() => {
-    loadStorage();
-    if (state.status.authorized) {
-      return loadVehicles()
-        .then(() => Promise.all([loadTrips(), loadRawRows()]))
-        .then(() => loadTrack())
-        .then(() => maybeForceFreshSync());
-    }
+  document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
+  Promise.all([loadSettings(), refreshActiveTabData({ immediate: true })]).finally(() => {
+    restartAutoSyncTimer();
   });
   initMap();
-  autoSyncTimer = window.setInterval(() => {
-    if (state.status.authorized && !state.syncLoading) {
-      Promise.all([loadStatus(), loadVehicles(), loadTrips(), loadRawRows(), loadStorage()])
-        .then(() => loadTrack())
-        .then(() => maybeForceFreshSync());
+  nextTick(() => {
+    if (state.activeTab === 'status') {
+      initVehicleViewer();
+      startVehicleRenderLoop();
+      resizeVehicleViewer();
+      updateVehicleVisualState();
     }
-  }, 15000);
+    observePageExposure();
+  });
 });
 
 onUnmounted(() => {
-  if (autoSyncTimer !== null) {
-    window.clearInterval(autoSyncTimer);
-    autoSyncTimer = null;
+  document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
+  stopAutoSyncTimer();
+  if (pageObserver) {
+    pageObserver.disconnect();
+    pageObserver = null;
   }
+  disposeVehicleViewer();
+});
+
+watch(() => state.activeTab, (tabName) => {
+  restartAutoSyncTimer();
+  refreshActiveTabData({ immediate: true });
+  if (tabName === 'status') {
+    nextTick(() => {
+      initVehicleViewer();
+      startVehicleRenderLoop();
+      resizeVehicleViewer();
+      updateVehicleVisualState();
+    });
+  } else {
+    stopVehicleRenderLoop();
+  }
+  if (tabName === 'track') {
+    nextTick(() => {
+      if (mapInstance && typeof mapInstance.resize === 'function') {
+        mapInstance.resize();
+      }
+      renderTrackOnMap();
+    });
+  }
+});
+
+watch(currentShiftState, () => {
+  updateVehicleVisualState();
 });
 </script>
 
 <template>
-  <div class="tesla-page">
+  <div ref="pageRef" class="tesla-page">
     <section class="tesla-tabs-card">
       <el-tabs v-model="state.activeTab" class="tesla-tabs">
         <el-tab-pane label="车辆状态" name="status">
           <section class="tesla-grid tesla-grid--content">
-            <article class="tesla-card">
-              <div class="card-head">
-                <div>
-                  <p class="tesla-kicker">Vehicles</p>
-                  <h2>车辆与状态</h2>
+            <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading">
+              <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
+              <div v-else class="vehicle-visual-shell">
+                <div class="vehicle-visual-overlay">
+                  <div class="vehicle-overlay-card">
+                    <span>当前档位</span>
+                    <strong :class="vehicleVisualStatus.accent">{{ vehicleVisualStatus.label }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>当前车况</span>
+                    <strong>{{ state.latestSample?.vehicle_state || selectedVehicle?.state || '-' }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>速度</span>
+                    <strong>{{ state.latestSample?.speed != null ? `${state.latestSample.speed} ${state.latestSample.speed_unit || 'km/h'}` : '-' }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>总公里数</span>
+                    <strong>{{ state.latestSample?.odometer != null ? `${Math.round(Number(state.latestSample.odometer))} ${state.latestSample.distance_unit || 'km'}` : '-' }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>电量</span>
+                    <strong>{{ state.latestSample?.battery_level != null ? `${state.latestSample.battery_level}%` : '-' }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>车内温度</span>
+                    <strong>{{ state.latestSample?.inside_temp != null ? `${state.latestSample.inside_temp}°C` : '-' }}</strong>
+                  </div>
+                  <div class="vehicle-overlay-card">
+                    <span>车外温度</span>
+                    <strong>{{ state.latestSample?.outside_temp != null ? `${state.latestSample.outside_temp}°C` : '-' }}</strong>
+                  </div>
                 </div>
-              </div>
-              <div class="vehicle-overview">
-                <div class="vehicle-main">
-                  <span class="vehicle-label">当前车辆</span>
-                  <el-select v-model="state.selectedVin" placeholder="选择车辆" class="vehicle-select" @change="handleVehicleChange">
-                    <el-option v-for="vehicle of state.vehicles" :key="vehicle.vin" :label="`${vehicle.displayName} (${vehicle.vin})`" :value="vehicle.vin" />
-                  </el-select>
-                </div>
-                <div class="overview-pill">
-                  <span>状态</span>
-                  <strong>{{ state.latestSample?.vehicle_state || selectedVehicle?.state || '-' }}</strong>
-                </div>
-                <div class="overview-pill">
-                  <span>电量</span>
-                  <strong>{{ state.latestSample?.battery_level != null ? `${state.latestSample.battery_level}%` : '-' }}</strong>
-                </div>
-                <div class="overview-pill">
-                  <span>最近同步</span>
-                  <strong>{{ formatTimestamp(state.latestSample?.timestamp_ms || state.status.lastSyncAt * 1000) }}</strong>
-                </div>
-              </div>
-              <div class="state-grid">
-                <div v-for="item of sampleCards" :key="item.label" class="state-box">
-                  <span>{{ item.label }}</span>
-                  <strong>{{ item.value }}</strong>
-                </div>
+                <div ref="vehicleVisualRef" class="vehicle-visual-stage"></div>
               </div>
             </article>
           </section>
@@ -664,7 +1191,7 @@ onUnmounted(() => {
 
         <el-tab-pane label="轨迹" name="track">
           <section class="tesla-grid tesla-grid--content">
-            <article class="tesla-card tesla-card--map">
+            <article class="tesla-card tesla-card--map" v-loading="state.tripTrackLoading">
               <div class="card-head">
                 <div>
                   <p class="tesla-kicker">Track</p>
@@ -959,6 +1486,12 @@ onUnmounted(() => {
   padding: 22px;
 }
 
+.tesla-card--visual {
+  background:
+    radial-gradient(circle at top, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.64)),
+    linear-gradient(145deg, #edf2f7, #dbe4ee);
+}
+
 .tesla-tabs-card {
   padding: 8px 18px 18px;
 }
@@ -1121,6 +1654,11 @@ onUnmounted(() => {
   color: var(--color-accent);
 }
 
+.status-pill--warn {
+  background: rgba(245, 158, 11, 0.16);
+  color: #b45309;
+}
+
 .state-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1207,6 +1745,71 @@ onUnmounted(() => {
 
 .tesla-card--map {
   min-height: 560px;
+}
+
+.vehicle-visual-shell {
+  position: relative;
+}
+
+.vehicle-visual-overlay {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(180px, calc(100% - 28px));
+}
+
+.vehicle-overlay-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  text-align: right;
+}
+
+.vehicle-overlay-card span {
+  color: rgba(74, 57, 40, 0.72);
+  font-size: 11px;
+  text-shadow: 0 2px 8px rgba(255, 255, 255, 0.88);
+}
+
+.vehicle-overlay-card strong {
+  color: var(--color-heading);
+  font-size: 15px;
+  line-height: 1.2;
+  text-shadow: 0 3px 12px rgba(255, 255, 255, 0.92);
+}
+
+.vehicle-overlay-card strong.status-pill--ok {
+  color: var(--color-accent);
+}
+
+.vehicle-overlay-card strong.status-pill--warn {
+  color: #b45309;
+}
+
+.vehicle-visual-stage {
+  width: 100%;
+  height: clamp(320px, calc(100vh - 280px), 620px);
+  min-height: 320px;
+  border-radius: 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.98), rgba(238, 244, 249, 0.76) 56%, rgba(220, 229, 238, 0.28) 100%),
+    linear-gradient(180deg, rgba(243, 247, 251, 0.94) 0%, rgba(227, 235, 243, 0.12) 72%, rgba(227, 235, 243, 0.02) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.vehicle-visual-stage :deep(canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .map-stage {
@@ -1325,6 +1928,17 @@ onUnmounted(() => {
   .trip-main,
   .trip-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .vehicle-visual-stage {
+    height: clamp(280px, calc(100vh - 260px), 420px);
+    min-height: 280px;
+  }
+
+  .vehicle-visual-overlay {
+    position: static;
+    width: 100%;
+    margin-bottom: 12px;
   }
 }
 </style>

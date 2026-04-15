@@ -7,7 +7,7 @@
     "build": "run-p type-check build-only",
     "preview": "vite preview",
     "test:unit": "vitest --environment jsdom --root src/",
-    "build-only": "vite build",
+    "build-only": "vite build && node scripts/precompress-dist.mjs",
     "type-check": "vue-tsc --noEmit -p tsconfig.vitest.json --composite false",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs,.ts,.tsx,.cts,.mts --fix --ignore-path .gitignore"
   },
@@ -20,6 +20,7 @@
     "braces": ">=3.0.3",
     "element-plus": "^2.13.6",
     "pinia": "^2.3.1",
+    "three": "^0.183.2",
     "vconsole": ">=3.15.1",
     "vue": "^3.5.31",
     "vue-router": "^4.6.4",
@@ -27,9 +28,11 @@
   },
   "devDependencies": {
     "@babel/traverse": "^7.29.0",
+    "@gltf-transform/cli": "^4.3.0",
     "@rushstack/eslint-patch": "^1.16.1",
     "@types/jsdom": "^27.0.0",
     "@types/node": "^24.0.0",
+    "@types/three": "^0.183.1",
     "@vitejs/plugin-vue": "^5.2.4",
     "@vue/eslint-config-prettier": "^7.0.0",
     "@vue/eslint-config-typescript": "^11.0.0",

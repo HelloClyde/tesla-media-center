@@ -12,8 +12,11 @@ import os
 from ffvideo import bv, gba, local_video, tesla
 import time
 from cryptography import fernet
+import mimetypes
 
 app = Flask(__name__)
+mimetypes.add_type('model/gltf-binary', '.glb')
+mimetypes.add_type('model/gltf+json', '.gltf')
 secret_key = get_config_by_key('secret_key', default_value=fernet.Fernet.generate_key().decode('utf-8'))
 put_config_by_key('secret_key', secret_key)
 app.secret_key = secret_key 
@@ -81,6 +84,21 @@ def static_web(name):
     
     fpath = os.path.join('./web/dist', name)
     if os.path.exists(fpath):
+        accept_encoding = request.headers.get('Accept-Encoding', '')
+        preferred_suffix = None
+        if 'br' in accept_encoding and os.path.exists(f'{fpath}.br'):
+            preferred_suffix = '.br'
+        elif 'gzip' in accept_encoding and os.path.exists(f'{fpath}.gz'):
+            preferred_suffix = '.gz'
+
+        if preferred_suffix:
+            mimetype, _ = mimetypes.guess_type(fpath)
+            response = send_file(f'{fpath}{preferred_suffix}', mimetype=mimetype or 'application/octet-stream')
+            response.headers['Content-Encoding'] = 'br' if preferred_suffix == '.br' else 'gzip'
+            response.headers['Vary'] = 'Accept-Encoding'
+            response.headers['Cache-Control'] = 'public, max-age=86400'
+            return response
+
         return send_from_directory('./web/dist', name)
     else:
         return abort(404)
