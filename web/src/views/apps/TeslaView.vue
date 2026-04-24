@@ -17,17 +17,20 @@ const rawTableRef = ref<any>(null);
 let mapInstance: any = null;
 let polylines: any[] = [];
 let vehicleMarker: any = null;
+let trackRenderVersion = 0;
 let autoSyncTimer: number | null = null;
 let pageObserver: IntersectionObserver | null = null;
 let gAMap: any = null;
 let lastForcedSyncAt = 0;
 let tabPollInFlight = false;
-let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean } | null = null;
+let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean; includeMeta?: boolean } | null = null;
 let vehicleScene: THREE.Scene | null = null;
 let vehicleCamera: THREE.PerspectiveCamera | null = null;
 let vehicleRenderer: THREE.WebGLRenderer | null = null;
 let vehicleModelRoot: THREE.Group | null = null;
 let vehicleModelPivot: THREE.Group | null = null;
+let vehicleRoadMesh: THREE.Mesh | null = null;
+let vehicleModelBasePositionY = 0;
 let vehicleControls: OrbitControls | null = null;
 let resizeHandler: (() => void) | null = null;
 let vehicleViewerInitialized = false;
@@ -42,9 +45,30 @@ let vehicleViewTween: {
   fromTarget: THREE.Vector3;
   toTarget: THREE.Vector3;
 } | null = null;
+let vehiclePoseTween: {
+  startTime: number;
+  durationMs: number;
+  fromRotationY: number;
+  toRotationY: number;
+} | null = null;
+let vehicleMotionState = {
+  lastFrameTime: 0,
+  roadOffset: 0,
+  bobPhase: 0,
+};
+let vehicleWheelMeshes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; direction: 1 | -1 }> = [];
+let vehicleSplitWheelGroups: THREE.Group[] = [];
 
 const DEFAULT_VEHICLE_CAMERA_POSITION = new THREE.Vector3(0, 3.4, 8.2);
 const DEFAULT_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.35, 0);
+const DRIVE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(-3.6, 2.8, 7.1);
+const DRIVE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
+const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
+const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
+const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
+const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
+const DRIVE_MOTION_SPEED = 1.4;
+const REVERSE_MOTION_SPEED = 0.9;
 
 type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
 
@@ -52,7 +76,7 @@ const ACTIVE_TAB_POLL_INTERVAL_MS: Record<TeslaTabName, number> = {
   status: 1000,
   track: 1000,
   trip: 15000,
-  raw: 1000,
+  raw: 5000,
   settings: 10000,
 };
 
@@ -75,7 +99,11 @@ const state = reactive({
   status: {
     configured: false,
     authorized: false,
+    liveAuthorized: false,
     profile: null as any,
+    profileError: null as any,
+    cacheAvailable: false,
+    cachedVehicleCount: 0,
     lastSyncAt: 0,
   },
   vehicles: [] as any[],
@@ -310,6 +338,344 @@ function getVehicleOrientationByShift(shiftState: string) {
   return Math.PI / 2;
 }
 
+function getVehicleCameraPresetByShift(shiftState: string) {
+  if (shiftState === 'D') {
+    return {
+      position: DRIVE_VEHICLE_CAMERA_POSITION,
+      target: DRIVE_VEHICLE_CAMERA_TARGET,
+    };
+  }
+  if (shiftState === 'R') {
+    return {
+      position: REVERSE_VEHICLE_CAMERA_POSITION,
+      target: REVERSE_VEHICLE_CAMERA_TARGET,
+    };
+  }
+  return {
+    position: PARK_VEHICLE_CAMERA_POSITION,
+    target: PARK_VEHICLE_CAMERA_TARGET,
+  };
+}
+
+function createVehicleRoadTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 1024;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return null;
+  }
+
+  ctx.fillStyle = '#242a31';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const roadGradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
+  roadGradient.addColorStop(0, '#303843');
+  roadGradient.addColorStop(0.18, '#20262d');
+  roadGradient.addColorStop(0.5, '#1b2128');
+  roadGradient.addColorStop(0.82, '#20262d');
+  roadGradient.addColorStop(1, '#303843');
+  ctx.fillStyle = roadGradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 6;
+  ctx.setLineDash([18, 22]);
+  ctx.beginPath();
+  ctx.moveTo(canvas.width * 0.18, 0);
+  ctx.lineTo(canvas.width * 0.18, canvas.height);
+  ctx.moveTo(canvas.width * 0.82, 0);
+  ctx.lineTo(canvas.width * 0.82, canvas.height);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#f6d96b';
+  ctx.lineWidth = 10;
+  ctx.setLineDash([72, 52]);
+  ctx.beginPath();
+  ctx.moveTo(canvas.width * 0.5, 0);
+  ctx.lineTo(canvas.width * 0.5, canvas.height);
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 3.5);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+function createVehicleParkingTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 1024;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return null;
+  }
+
+  ctx.fillStyle = '#d9dfe4';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.42)';
+  for (let y = 0; y < canvas.height; y += 96) {
+    ctx.fillRect(0, y, canvas.width, 3);
+  }
+
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 12;
+  ctx.strokeRect(180, 120, canvas.width - 360, canvas.height - 240);
+
+  ctx.strokeStyle = '#f4c84c';
+  ctx.lineWidth = 10;
+  ctx.beginPath();
+  ctx.moveTo(220, 170);
+  ctx.lineTo(360, 310);
+  ctx.moveTo(canvas.width - 220, 170);
+  ctx.lineTo(canvas.width - 360, 310);
+  ctx.moveTo(220, canvas.height - 170);
+  ctx.lineTo(360, canvas.height - 310);
+  ctx.moveTo(canvas.width - 220, canvas.height - 170);
+  ctx.lineTo(canvas.width - 360, canvas.height - 310);
+  ctx.stroke();
+
+  ctx.fillStyle = 'rgba(46, 56, 67, 0.14)';
+  ctx.fillRect(canvas.width * 0.22, canvas.height * 0.18, canvas.width * 0.56, canvas.height * 0.64);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(1, 1);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 8;
+  return texture;
+}
+
+function createVehicleRoadMesh() {
+  const driveTexture = createVehicleRoadTexture();
+  const parkTexture = createVehicleParkingTexture();
+  const material = new THREE.MeshStandardMaterial({
+    color: '#d5dbe1',
+    roughness: 0.96,
+    metalness: 0.02,
+    map: parkTexture || driveTexture || null,
+  });
+  const road = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 18), material);
+  road.rotation.x = -Math.PI / 2;
+  road.position.set(0, -0.82, 0.45);
+  road.userData.driveTexture = driveTexture;
+  road.userData.parkTexture = parkTexture;
+  return road;
+}
+
+function splitMeshIntoConnectedParts(sourceMesh: THREE.Mesh) {
+  const geometry = sourceMesh.geometry;
+  const position = geometry.getAttribute('position');
+  const index = geometry.getIndex();
+  if (!position || !index) {
+    return [];
+  }
+
+  const indexArray = Array.from(index.array as ArrayLike<number>);
+  const triangleCount = Math.floor(indexArray.length / 3);
+  const vertexTriangleMap: number[][] = Array.from({ length: position.count }, () => []);
+  for (let triangleIndex = 0; triangleIndex < triangleCount; triangleIndex += 1) {
+    const base = triangleIndex * 3;
+    vertexTriangleMap[indexArray[base]]?.push(triangleIndex);
+    vertexTriangleMap[indexArray[base + 1]]?.push(triangleIndex);
+    vertexTriangleMap[indexArray[base + 2]]?.push(triangleIndex);
+  }
+
+  const visited = new Uint8Array(triangleCount);
+  const parts: Array<{ geometry: THREE.BufferGeometry; center: THREE.Vector3; size: THREE.Vector3 }> = [];
+
+  for (let startTriangle = 0; startTriangle < triangleCount; startTriangle += 1) {
+    if (visited[startTriangle]) {
+      continue;
+    }
+    const queue = [startTriangle];
+    visited[startTriangle] = 1;
+    const triangles: number[] = [];
+    const vertexSet = new Set<number>();
+
+    while (queue.length > 0) {
+      const triangleIndex = queue.pop() as number;
+      triangles.push(triangleIndex);
+      const base = triangleIndex * 3;
+      const a = indexArray[base];
+      const b = indexArray[base + 1];
+      const c = indexArray[base + 2];
+      vertexSet.add(a);
+      vertexSet.add(b);
+      vertexSet.add(c);
+      [a, b, c].forEach((vertexIndex) => {
+        vertexTriangleMap[vertexIndex]?.forEach((neighborTriangle) => {
+          if (!visited[neighborTriangle]) {
+            visited[neighborTriangle] = 1;
+            queue.push(neighborTriangle);
+          }
+        });
+      });
+    }
+
+    const orderedVertices = Array.from(vertexSet);
+    const vertexMap = new Map<number, number>();
+    orderedVertices.forEach((vertexIndex, newIndex) => {
+      vertexMap.set(vertexIndex, newIndex);
+    });
+
+    const componentGeometry = new THREE.BufferGeometry();
+    Object.entries(geometry.attributes).forEach(([name, attribute]) => {
+      const sourceAttribute = attribute as THREE.BufferAttribute;
+      const itemSize = sourceAttribute.itemSize;
+      const TargetArray = sourceAttribute.array.constructor as unknown as new (size: number) => ArrayLike<number>;
+      const targetArray = new TargetArray(orderedVertices.length * itemSize) as any;
+      orderedVertices.forEach((vertexIndex, newIndex) => {
+        for (let itemOffset = 0; itemOffset < itemSize; itemOffset += 1) {
+          targetArray[newIndex * itemSize + itemOffset] = (sourceAttribute.array as any)[vertexIndex * itemSize + itemOffset];
+        }
+      });
+      componentGeometry.setAttribute(name, new THREE.BufferAttribute(targetArray, itemSize, sourceAttribute.normalized));
+    });
+
+    const IndexArrayCtor = orderedVertices.length > 65535 ? Uint32Array : Uint16Array;
+    const componentIndices = new IndexArrayCtor(triangles.length * 3);
+    triangles.forEach((triangleIndex, offset) => {
+      const base = triangleIndex * 3;
+      componentIndices[offset * 3] = vertexMap.get(indexArray[base]) as number;
+      componentIndices[offset * 3 + 1] = vertexMap.get(indexArray[base + 1]) as number;
+      componentIndices[offset * 3 + 2] = vertexMap.get(indexArray[base + 2]) as number;
+    });
+    componentGeometry.setIndex(new THREE.BufferAttribute(componentIndices, 1));
+    componentGeometry.computeBoundingBox();
+    const bbox = componentGeometry.boundingBox || new THREE.Box3();
+    const center = bbox.getCenter(new THREE.Vector3());
+    const size = bbox.getSize(new THREE.Vector3());
+    componentGeometry.translate(-center.x, -center.y, -center.z);
+    parts.push({ geometry: componentGeometry, center, size });
+  }
+
+  return parts;
+}
+
+function detectVehicleWheelMeshes(model: THREE.Object3D, modelBounds: THREE.Box3) {
+  const namedWheelNodes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; direction: 1 | -1 }> = [];
+  model.traverse((child: THREE.Object3D) => {
+    if (!/^Wheel_/i.test(child.name || '')) {
+      return;
+    }
+    namedWheelNodes.push({
+      mesh: child,
+      axis: 'x',
+      direction: child.position.x >= 0 ? -1 : 1,
+    });
+  });
+
+  if (namedWheelNodes.length > 0) {
+    vehicleWheelMeshes = namedWheelNodes;
+    return;
+  }
+
+  const size = modelBounds.getSize(new THREE.Vector3());
+  const center = modelBounds.getCenter(new THREE.Vector3());
+  const wheelCandidates: Array<{ mesh: THREE.Mesh; axis: 'x' | 'y' | 'z'; direction: 1 | -1; score: number }> = [];
+  const splitGroups: THREE.Group[] = [];
+
+  model.updateMatrixWorld(true);
+  model.traverse((child: THREE.Object3D) => {
+    if (!(child as THREE.Mesh).isMesh) {
+      return;
+    }
+    const mesh = child as THREE.Mesh;
+    const materialNames = (Array.isArray(mesh.material) ? mesh.material : [mesh.material])
+      .map((material) => String(material?.name || ''))
+      .join(' ')
+      .toLowerCase();
+    const searchText = `${child.name} ${mesh.name} ${materialNames}`.toLowerCase();
+    const namedWheelSource = /(pneu|tire|tyre|wheel|rim)/.test(searchText);
+    const parts = splitMeshIntoConnectedParts(mesh);
+    if (parts.length < 4) {
+      return;
+    }
+    const candidateParts = parts.filter((part) => {
+      const lowEnough = part.center.y < center.y;
+      const sideEnough = Math.abs(part.center.x - center.x) > size.x * 0.18;
+      const endEnough = Math.abs(part.center.z - center.z) > size.z * 0.18;
+      const compactEnough = part.size.x < size.x * 0.42 && part.size.y < size.y * 0.55 && part.size.z < size.z * 0.28;
+      return lowEnough && sideEnough && endEnough && compactEnough;
+    });
+
+    if (candidateParts.length < 4) {
+      return;
+    }
+
+    if (!namedWheelSource && candidateParts.length !== parts.length) {
+      return;
+    }
+
+    const splitGroup = new THREE.Group();
+    splitGroup.name = `${mesh.name || child.name || 'wheel'}__split`;
+    splitGroup.position.copy(mesh.position);
+    splitGroup.quaternion.copy(mesh.quaternion);
+    splitGroup.scale.copy(mesh.scale);
+    splitGroup.matrixAutoUpdate = true;
+
+    candidateParts.forEach((part, index) => {
+      const partMesh = new THREE.Mesh(part.geometry, mesh.material);
+      partMesh.name = `${splitGroup.name}_${index}`;
+      partMesh.position.copy(part.center);
+      splitGroup.add(partMesh);
+
+      const dimensions = [
+        { axis: 'x' as const, value: part.size.x },
+        { axis: 'y' as const, value: part.size.y },
+        { axis: 'z' as const, value: part.size.z },
+      ].sort((a, b) => a.value - b.value);
+      const axis = dimensions[0].axis;
+      const direction = part.center.x >= center.x ? -1 : 1;
+      const score = Math.abs(part.center.x - center.x) + Math.abs(part.center.z - center.z) - part.size.length();
+      wheelCandidates.push({ mesh: partMesh, axis, direction, score });
+    });
+
+    mesh.parent?.add(splitGroup);
+    mesh.visible = false;
+    splitGroups.push(splitGroup);
+  });
+
+  vehicleSplitWheelGroups = splitGroups;
+  wheelCandidates.sort((a, b) => b.score - a.score);
+  vehicleWheelMeshes = wheelCandidates.slice(0, 12).map((candidate) => ({
+    mesh: candidate.mesh,
+    axis: candidate.axis,
+    direction: candidate.direction,
+  }));
+}
+
+function getVehicleMotionProfile() {
+  if (currentShiftState.value === 'D') {
+    return {
+      active: true,
+      direction: -1,
+      roadSpeed: DRIVE_MOTION_SPEED,
+      wheelSpeed: 5.8,
+    };
+  }
+  if (currentShiftState.value === 'R') {
+    return {
+      active: true,
+      direction: 1,
+      roadSpeed: REVERSE_MOTION_SPEED,
+      wheelSpeed: 4.2,
+    };
+  }
+  return {
+    active: false,
+    direction: 0,
+    roadSpeed: 0,
+    wheelSpeed: 0,
+  };
+}
+
 function openRawRowDetail(row: any) {
   state.rawDetailRow = row;
   state.rawDetailVisible = true;
@@ -406,6 +772,38 @@ function loadVehicles() {
     state.vehicles = data || [];
     if (!state.vehicles.some((item: any) => item.vin === state.selectedVin)) {
       state.selectedVin = state.vehicles[0]?.vin || '';
+    }
+  });
+}
+
+function syncLatestSampleFromSelectedVehicle() {
+  const vehicle = selectedVehicle.value;
+  if (vehicle?.latestSample) {
+    state.latestSample = vehicle.latestSample;
+    return;
+  }
+  if (!state.selectedTrip) {
+    state.latestSample = null;
+  }
+}
+
+function loadVehicleStatus() {
+  if (!state.selectedVin) {
+    state.latestSample = null;
+    return Promise.resolve();
+  }
+  return get(`/api/tesla/status?vin=${encodeURIComponent(state.selectedVin)}`, '读取车辆状态失败').then((data) => {
+    if (data.vehicle) {
+      const index = state.vehicles.findIndex((item: any) => item.vin === data.vehicle.vin);
+      if (index >= 0) {
+        state.vehicles[index] = data.vehicle;
+      } else {
+        state.vehicles = [data.vehicle, ...state.vehicles];
+      }
+    }
+    state.latestSample = data.latestSample || data.vehicle?.latestSample || null;
+    if (data.lastSyncAt) {
+      state.status.lastSyncAt = data.lastSyncAt;
     }
   });
 }
@@ -537,7 +935,7 @@ function latestSampleAgeMs() {
 }
 
 function shouldForceFreshSync() {
-  if (!state.status.authorized || state.syncLoading) {
+  if (!state.status.configured || state.syncLoading) {
     return false;
   }
   const selectedState = String(selectedVehicle.value?.state || '').toLowerCase();
@@ -585,22 +983,30 @@ function clearTabData(_tabName: TeslaTabName) {
   updateVehicleVisualState();
 }
 
-function refreshTabData(tabName: TeslaTabName, options?: { allowForceSync?: boolean; includeStorage?: boolean }): Promise<void> {
+function refreshTabData(tabName: TeslaTabName, options?: { allowForceSync?: boolean; includeStorage?: boolean; includeMeta?: boolean }): Promise<void> {
   const allowForceSync = options?.allowForceSync ?? true;
   const includeStorage = options?.includeStorage ?? tabName === 'settings';
+  const includeMeta = options?.includeMeta ?? true;
 
-  const baseTasks: Promise<any>[] = [loadStatus()];
+  const baseTasks: Promise<any>[] = [];
+  if (includeMeta) {
+    baseTasks.push(loadStatus());
+  }
   if (includeStorage) {
     baseTasks.push(loadStorage());
   }
 
   return Promise.all(baseTasks).then(() => {
-    if (!state.status.authorized) {
+    if (includeMeta && !state.status.configured && !state.status.cacheAvailable) {
       clearTabData(tabName);
       return;
     }
-    return loadVehicles().then(() => {
-      if (tabName === 'status' || tabName === 'track') {
+    const ensureVehicles = includeMeta ? loadVehicles() : Promise.resolve();
+    return ensureVehicles.then(() => {
+      if (tabName === 'status') {
+        return loadVehicleStatus();
+      }
+      if (tabName === 'track') {
         return loadTrack();
       }
       if (tabName === 'trip') {
@@ -630,9 +1036,10 @@ function stopAutoSyncTimer() {
   }
 }
 
-function refreshActiveTabData(options?: { allowForceSync?: boolean; immediate?: boolean }): Promise<void> {
+function refreshActiveTabData(options?: { allowForceSync?: boolean; immediate?: boolean; includeMeta?: boolean }): Promise<void> {
   const allowForceSync = options?.allowForceSync ?? true;
   const immediate = options?.immediate ?? false;
+  const includeMeta = options?.includeMeta ?? immediate;
 
   if (!immediate && !isTeslaPageVisible()) {
     return Promise.resolve();
@@ -641,11 +1048,12 @@ function refreshActiveTabData(options?: { allowForceSync?: boolean; immediate?: 
     pendingTabRefreshOptions = {
       allowForceSync: (pendingTabRefreshOptions?.allowForceSync ?? false) || allowForceSync,
       immediate: (pendingTabRefreshOptions?.immediate ?? false) || immediate,
+      includeMeta: (pendingTabRefreshOptions?.includeMeta ?? false) || includeMeta,
     };
     return Promise.resolve();
   }
   tabPollInFlight = true;
-  return refreshTabData(state.activeTab as TeslaTabName, { allowForceSync }).finally(() => {
+  return refreshTabData(state.activeTab as TeslaTabName, { allowForceSync, includeMeta }).finally(() => {
     tabPollInFlight = false;
     const pending = pendingTabRefreshOptions;
     pendingTabRefreshOptions = null;
@@ -661,7 +1069,7 @@ function startAutoSyncTimer() {
     return;
   }
   autoSyncTimer = window.setInterval(() => {
-    refreshActiveTabData();
+    refreshActiveTabData({ includeMeta: false });
   }, ACTIVE_TAB_POLL_INTERVAL_MS[state.activeTab as TeslaTabName]);
 }
 
@@ -698,12 +1106,14 @@ function observePageExposure() {
 
 function syncVehicles(showMessage = false, tabName: TeslaTabName = state.activeTab as TeslaTabName): Promise<void> {
   state.syncLoading = true;
+  const includeMetaAfterSync = tabName !== 'status';
   return post('/api/tesla/sync', {
     vin: state.selectedVin || undefined,
   }, '同步 Tesla 数据失败').then(() => {
     return refreshTabData(tabName, {
       allowForceSync: false,
       includeStorage: true,
+      includeMeta: includeMetaAfterSync,
     }).then(() => {
       if (showMessage) {
         ElMessage.success('Tesla 数据已同步');
@@ -775,6 +1185,9 @@ function initVehicleViewer() {
   vehicleModelPivot.position.y = 0.85;
   vehicleScene.add(vehicleModelPivot);
 
+  vehicleRoadMesh = createVehicleRoadMesh();
+  vehicleModelPivot.add(vehicleRoadMesh);
+
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
@@ -798,10 +1211,13 @@ function initVehicleViewer() {
     });
 
     vehicleModelRoot = model;
+    vehicleModelBasePositionY = model.position.y;
     vehicleModelPivot?.add(model);
+    vehicleModelPivot?.updateMatrixWorld(true);
+    detectVehicleWheelMeshes(model, new THREE.Box3().setFromObject(model));
     state.visualError = '';
     state.visualLoading = false;
-    updateVehicleVisualState();
+    updateVehicleVisualState(true);
     resizeVehicleViewer();
   }, undefined, (error: unknown) => {
     console.error(error);
@@ -836,6 +1252,52 @@ function renderVehicleViewer() {
   vehicleRenderer.render(vehicleScene, vehicleCamera);
 }
 
+function updateVehicleMotion(now: number) {
+  const profile = getVehicleMotionProfile();
+  const deltaSec = vehicleMotionState.lastFrameTime ? Math.min((now - vehicleMotionState.lastFrameTime) / 1000, 0.05) : 0;
+  vehicleMotionState.lastFrameTime = now;
+
+  if (!profile.active) {
+    vehicleMotionState.roadOffset = 0;
+    vehicleMotionState.bobPhase = 0;
+    if (vehicleRoadMesh) {
+      const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
+      const parkTexture = vehicleRoadMesh.userData.parkTexture as THREE.Texture | null | undefined;
+      if (parkTexture && material.map !== parkTexture) {
+        material.map = parkTexture;
+        material.color.set('#d5dbe1');
+        material.needsUpdate = true;
+      }
+      if (material.map) {
+        material.map.offset.y = 0;
+      }
+    }
+  if (vehicleModelRoot) {
+      vehicleModelRoot.position.y = vehicleModelBasePositionY;
+  }
+  return;
+}
+
+  vehicleMotionState.roadOffset += deltaSec * profile.roadSpeed * profile.direction;
+
+  if (vehicleRoadMesh) {
+    const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
+    const driveTexture = vehicleRoadMesh.userData.driveTexture as THREE.Texture | null | undefined;
+    if (driveTexture && material.map !== driveTexture) {
+      material.map = driveTexture;
+      material.color.set('#2a3038');
+      material.needsUpdate = true;
+    }
+    if (material.map) {
+      material.map.offset.y = vehicleMotionState.roadOffset;
+    }
+  }
+
+  vehicleWheelMeshes.forEach(({ mesh, axis, direction }) => {
+    mesh.rotation[axis] += deltaSec * profile.wheelSpeed * profile.direction * direction;
+  });
+}
+
 function startVehicleRenderLoop() {
   if (vehicleRenderLoopFrame !== null) {
     return;
@@ -845,6 +1307,9 @@ function startVehicleRenderLoop() {
     if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
       return;
     }
+    const now = performance.now();
+    updateVehiclePoseTween(now);
+    updateVehicleMotion(now);
     vehicleControls?.update();
     vehicleRenderer.render(vehicleScene, vehicleCamera);
   };
@@ -858,11 +1323,70 @@ function stopVehicleRenderLoop() {
   }
 }
 
-function updateVehicleVisualState() {
+function normalizeAngleDelta(angle: number) {
+  let normalized = angle;
+  while (normalized > Math.PI) {
+    normalized -= Math.PI * 2;
+  }
+  while (normalized < -Math.PI) {
+    normalized += Math.PI * 2;
+  }
+  return normalized;
+}
+
+function stopVehiclePoseTween() {
+  vehiclePoseTween = null;
+}
+
+function updateVehiclePoseTween(now: number) {
+  if (!vehicleModelPivot || !vehiclePoseTween) {
+    return;
+  }
+  const progress = Math.min((now - vehiclePoseTween.startTime) / vehiclePoseTween.durationMs, 1);
+  const eased = easeInOutCubic(progress);
+  const delta = normalizeAngleDelta(vehiclePoseTween.toRotationY - vehiclePoseTween.fromRotationY);
+  vehicleModelPivot.rotation.y = vehiclePoseTween.fromRotationY + delta * eased;
+  if (progress >= 1) {
+    vehicleModelPivot.rotation.y = vehiclePoseTween.toRotationY;
+    stopVehiclePoseTween();
+  }
+}
+
+function animateVehiclePose(toRotationY: number, durationMs = 720) {
   if (!vehicleModelPivot) {
     return;
   }
-  vehicleModelPivot.rotation.y = getVehicleOrientationByShift(currentShiftState.value);
+  stopVehiclePoseTween();
+  vehiclePoseTween = {
+    startTime: performance.now(),
+    durationMs,
+    fromRotationY: vehicleModelPivot.rotation.y,
+    toRotationY,
+  };
+}
+
+function updateVehicleVisualState(immediate = false) {
+  if (!vehicleModelPivot) {
+    return;
+  }
+  const targetRotationY = getVehicleOrientationByShift(currentShiftState.value);
+  const preset = getVehicleCameraPresetByShift(currentShiftState.value);
+  if (vehicleResetViewTimer !== null) {
+    window.clearTimeout(vehicleResetViewTimer);
+    vehicleResetViewTimer = null;
+  }
+  if (immediate) {
+    stopVehiclePoseTween();
+    vehicleModelPivot.rotation.y = targetRotationY;
+    if (vehicleCamera && vehicleControls) {
+      vehicleCamera.position.copy(preset.position);
+      vehicleControls.target.copy(preset.target);
+      vehicleControls.update();
+    }
+  } else {
+    animateVehiclePose(targetRotationY);
+    animateVehicleView(preset.position, preset.target, 720);
+  }
   renderVehicleViewer();
 }
 
@@ -925,7 +1449,8 @@ function animateVehicleView(toPosition: THREE.Vector3, toTarget: THREE.Vector3, 
 }
 
 function resetVehicleView() {
-  animateVehicleView(DEFAULT_VEHICLE_CAMERA_POSITION, DEFAULT_VEHICLE_CAMERA_TARGET);
+  const preset = getVehicleCameraPresetByShift(currentShiftState.value);
+  animateVehicleView(preset.position, preset.target);
 }
 
 function disposeVehicleViewer() {
@@ -934,6 +1459,7 @@ function disposeVehicleViewer() {
     vehicleResetViewTimer = null;
   }
   stopVehicleViewTween();
+  stopVehiclePoseTween();
   stopVehicleRenderLoop();
   if (resizeHandler) {
     window.removeEventListener('resize', resizeHandler);
@@ -946,6 +1472,12 @@ function disposeVehicleViewer() {
   if (vehicleRenderer) {
     vehicleRenderer.dispose();
     vehicleRenderer.domElement.remove();
+  }
+  if (vehicleRoadMesh) {
+    vehicleRoadMesh.geometry.dispose();
+    const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
+    material.map?.dispose();
+    material.dispose();
   }
   if (vehicleModelRoot) {
     vehicleModelRoot.traverse((child: THREE.Object3D) => {
@@ -962,6 +1494,14 @@ function disposeVehicleViewer() {
   vehicleRenderer = null;
   vehicleModelRoot = null;
   vehicleModelPivot = null;
+  vehicleRoadMesh = null;
+  vehicleWheelMeshes = [];
+  vehicleModelBasePositionY = 0;
+  vehicleMotionState = {
+    lastFrameTime: 0,
+    roadOffset: 0,
+    bobPhase: 0,
+  };
   vehicleViewerInitialized = false;
 }
 
@@ -1002,6 +1542,7 @@ function renderTrackOnMap() {
   if (!mapInstance || !gAMap) {
     return;
   }
+  const renderVersion = ++trackRenderVersion;
   if (polylines.length > 0) {
     mapInstance.remove(polylines);
     polylines = [];
@@ -1020,6 +1561,9 @@ function renderTrackOnMap() {
     }));
 
   const drawPoints = (points: any[]) => {
+    if (renderVersion !== trackRenderVersion) {
+      return;
+    }
     const segments: any[][] = [];
     let currentSegment: any[] = [];
     const segmentGapMs = 10 * 60 * 1000;
@@ -1077,6 +1621,9 @@ function renderTrackOnMap() {
   }
 
   gAMap.convertFrom(gpsPoints.map((item) => item.point), 'gps', (status: string, result: any) => {
+    if (renderVersion !== trackRenderVersion) {
+      return;
+    }
     if (status === 'complete' && result?.locations?.length === gpsPoints.length) {
       result.locations.forEach((item: any, idx: number) => {
         finalPoints[gpsPoints[idx].index] = {
@@ -1100,7 +1647,7 @@ onMounted(() => {
       initVehicleViewer();
       startVehicleRenderLoop();
       resizeVehicleViewer();
-      updateVehicleVisualState();
+      updateVehicleVisualState(true);
     }
     observePageExposure();
   });
@@ -1118,13 +1665,13 @@ onUnmounted(() => {
 
 watch(() => state.activeTab, (tabName) => {
   restartAutoSyncTimer();
-  refreshActiveTabData({ immediate: true });
+  refreshActiveTabData({ immediate: true, includeMeta: tabName !== 'status' });
   if (tabName === 'status') {
     nextTick(() => {
       initVehicleViewer();
       startVehicleRenderLoop();
       resizeVehicleViewer();
-      updateVehicleVisualState();
+      updateVehicleVisualState(true);
     });
   } else {
     stopVehicleRenderLoop();
@@ -1403,9 +1950,12 @@ watch(currentShiftState, () => {
               </div>
               <div class="meta-stack">
                 <div class="meta-line"><span>是否已配置</span><strong>{{ state.status.configured ? '是' : '否' }}</strong></div>
+                <div class="meta-line"><span>缓存可用</span><strong>{{ state.status.cacheAvailable ? `是（${state.status.cachedVehicleCount} 辆）` : '否' }}</strong></div>
+                <div class="meta-line"><span>实时鉴权</span><strong>{{ state.status.liveAuthorized ? '成功' : '失败/未校验' }}</strong></div>
                 <div class="meta-line"><span>最近同步</span><strong>{{ formatTimestamp(state.status.lastSyncAt * 1000) }}</strong></div>
                 <div class="meta-line"><span>账户</span><strong>{{ state.status.profile?.email || '-' }}</strong></div>
                 <div class="meta-line"><span>名称</span><strong>{{ state.status.profile?.fullName || '-' }}</strong></div>
+                <div v-if="state.status.profileError?.message" class="meta-line"><span>实时状态</span><strong>{{ state.status.profileError.message }}</strong></div>
               </div>
               <div class="button-row">
                 <el-button type="danger" plain round :disabled="!state.status.authorized" @click="logoutTesla">断开连接</el-button>
