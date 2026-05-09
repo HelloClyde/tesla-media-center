@@ -1579,6 +1579,39 @@ def add_tesla_route(app):
                 vehicle['latestSample'] = latest
         return json_ok(vehicles)
 
+    @app.route('/api/tesla/status', methods=['GET'])
+    @login_check
+    def tesla_status():
+        vin = request.args.get('vin', '').strip()
+        if not vin:
+            return json_fail('vin_required', message='缺少 VIN'), 400
+
+        vehicles = cached_vehicles()
+        if len(vehicles) == 0 and tesla_tokens_configured():
+            vehicles, error = fetch_products_vehicles()
+            if error:
+                return json_fail(error[0], message=error[1]), 400 if error[0] == 'not_authorized' else 502
+
+        vehicle = next((item for item in vehicles if item.get('vin') == vin), None)
+        latest = latest_vehicle_sample(vin)
+        if vehicle:
+            vehicle['latestSample'] = latest
+        elif latest:
+            vehicle = {
+                'vin': vin,
+                'displayName': latest.get('display_name') or vin,
+                'state': latest.get('vehicle_state'),
+                'latestSample': latest,
+            }
+        else:
+            return json_fail('vehicle_not_found', message='未找到该车辆'), 404
+
+        return json_ok({
+            'vehicle': vehicle,
+            'latestSample': latest,
+            'lastSyncAt': int(get_config_by_key('tesla_last_sync_at', 0) or 0),
+        })
+
     @app.route('/api/tesla/sync', methods=['POST'])
     @login_check
     def tesla_sync():
