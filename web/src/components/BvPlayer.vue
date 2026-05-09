@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
-import { get } from '@/functions/requests'
+import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { generateSilentWav } from '@/functions/audioUtils';
 
@@ -40,6 +40,7 @@ const state = reactive({
     danmuArea: DEFAULT_DANMU_AREA,
     danmuMaxCount: DEFAULT_DANMU_MAX_COUNT,
     danmuOpacity: DEFAULT_DANMU_OPACITY,
+    actionLoading: '',
 })
 
 const getDmKey = (dm: any) => dm.id_str;
@@ -424,6 +425,26 @@ function switchDanmu(){
     state.dmSwitch = !state.dmSwitch;
 }
 
+function runVideoAction(action: 'like' | 'favorite' | 'coin') {
+    if (!state.bvid || state.actionLoading) {
+        return;
+    }
+    const labels: Record<typeof action, string> = {
+        like: '点赞',
+        favorite: '收藏',
+        coin: '投币',
+    };
+    state.actionLoading = action;
+    post(`/api/bilibili/video/${state.bvid}/action`, {
+        action,
+        count: action === 'coin' ? 1 : undefined,
+    }, `${labels[action]}失败`).then(() => {
+        ElMessage.success(`${labels[action]}成功`);
+    }).finally(() => {
+        state.actionLoading = '';
+    });
+}
+
 async function switchEp(ep: any){
     if (state.switchingEp) {
         return;
@@ -509,6 +530,30 @@ onUnmounted(() => {
                 <el-col :span="24">
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
+                    <el-button
+                        class="btn interaction-btn"
+                        size="large"
+                        :loading="state.actionLoading === 'like'"
+                        :disabled="!!state.actionLoading || !state.bvid"
+                        @click="runVideoAction('like')"
+                        circle
+                    >赞</el-button>
+                    <el-button
+                        class="btn interaction-btn"
+                        size="large"
+                        :loading="state.actionLoading === 'favorite'"
+                        :disabled="!!state.actionLoading || !state.bvid"
+                        @click="runVideoAction('favorite')"
+                        circle
+                    >藏</el-button>
+                    <el-button
+                        class="btn interaction-btn"
+                        size="large"
+                        :loading="state.actionLoading === 'coin'"
+                        :disabled="!!state.actionLoading || !state.bvid"
+                        @click="runVideoAction('coin')"
+                        circle
+                    >币</el-button>
                     <el-text class="bv-title" size="large">{{ state.title }}</el-text>
                 </el-col>
             </el-row>
@@ -531,6 +576,11 @@ onUnmounted(() => {
 <style>
 .btn {
     font-size: 26px !important;
+}
+
+.interaction-btn {
+    font-size: 18px !important;
+    font-weight: 700;
 }
 
 .bv-title {
