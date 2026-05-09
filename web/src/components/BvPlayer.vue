@@ -2,7 +2,7 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
-import { Coin, Pointer, Star } from '@element-plus/icons-vue';
+import { Star } from '@element-plus/icons-vue';
 import { generateSilentWav } from '@/functions/audioUtils';
 
 
@@ -551,14 +551,20 @@ onUnmounted(() => {
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
                     <el-button
-                        :icon="Pointer"
                         class="btn"
                         size="large"
                         :loading="state.actionLoading === 'like'"
                         :disabled="!!state.actionLoading || !state.bvid"
                         @click="runVideoAction('like')"
                         circle
-                    />
+                    >
+                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                fill="currentColor"
+                                d="M2 10.5A2.5 2.5 0 0 1 4.5 8H7v12H4.5A2.5 2.5 0 0 1 2 17.5v-7ZM9 20V8.6l4.35-5.15c.47-.56 1.31-.62 1.85-.13.31.28.46.7.39 1.11L14.95 8H19a3 3 0 0 1 2.91 3.73l-1.2 4.8A4.5 4.5 0 0 1 16.34 20H9Z"
+                            />
+                        </svg>
+                    </el-button>
                     <el-button
                         :icon="Star"
                         class="btn"
@@ -569,14 +575,22 @@ onUnmounted(() => {
                         circle
                     />
                     <el-button
-                        :icon="Coin"
                         class="btn"
                         size="large"
                         :loading="state.actionLoading === 'coin'"
                         :disabled="!!state.actionLoading || !state.bvid"
                         @click="runVideoAction('coin')"
                         circle
-                    />
+                    >
+                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2" />
+                            <circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="1.8" opacity="0.72" />
+                            <path
+                                fill="currentColor"
+                                d="M12 7.2c.55 0 1 .45 1 1v.43c.72.2 1.31.58 1.78 1.12a1 1 0 0 1-1.51 1.31c-.31-.36-.72-.54-1.27-.54-.75 0-1.11.28-1.11.68 0 .37.26.58 1.46.86 1.23.29 2.74.79 2.74 2.55 0 1.19-.81 2.13-2.09 2.47v.72a1 1 0 1 1-2 0v-.66a3.5 3.5 0 0 1-2.16-1.22 1 1 0 1 1 1.52-1.3c.39.45.89.68 1.55.68.8 0 1.18-.31 1.18-.72 0-.45-.43-.67-1.68-.96-1.16-.27-2.52-.78-2.52-2.42 0-1.15.8-2.1 2.11-2.43V8.2c0-.55.45-1 1-1Z"
+                            />
+                        </svg>
+                    </el-button>
                     <el-text class="bv-title" size="large">{{ state.title }}</el-text>
                 </el-col>
             </el-row>
@@ -599,6 +613,11 @@ onUnmounted(() => {
 <style>
 .btn {
     font-size: 26px !important;
+}
+
+.action-icon {
+    width: 1em;
+    height: 1em;
 }
 
 .bv-title {
