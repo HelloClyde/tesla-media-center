@@ -542,6 +542,51 @@ def add_bv_route(app):
             'hasMore': len(mapped) >= 20,
         })
 
+    def get_default_bilibili_favorite_media_id(credential, target_video):
+        self_info = sync(user.get_self_info(credential))
+        resp = sync(favorite_list.get_video_favorite_list(
+            uid=self_info['mid'],
+            video=target_video,
+            credential=credential,
+        ))
+        folders = resp.get('list', []) or resp.get('list_list', []) or []
+        for folder in folders:
+            media_id = folder.get('id') or folder.get('media_id')
+            if media_id:
+                return int(media_id)
+        return None
+
+    @app.route('/api/bilibili/video/<string:bvid>/action', methods=['POST'])
+    @login_check
+    def set_bilibili_video_action(bvid):
+        credential, error = require_bilibili_credential()
+        if error:
+            return error
+
+        data = request.json or {}
+        action = str(data.get('action') or '').strip()
+        target_video = video.Video(bvid=bvid, credential=credential)
+        try:
+            if action == 'like':
+                result = sync(target_video.like(True))
+                return json_ok({'action': action, 'result': result})
+            if action == 'coin':
+                coin_count = int(data.get('count') or 1)
+                coin_count = 2 if coin_count >= 2 else 1
+                result = sync(target_video.pay_coin(num=coin_count, like=False))
+                return json_ok({'action': action, 'count': coin_count, 'result': result})
+            if action == 'favorite':
+                media_id = data.get('mediaId') or get_default_bilibili_favorite_media_id(credential, target_video)
+                if not media_id:
+                    return json_fail('favorite_folder_required', message='未找到可用的视频收藏夹'), 400
+                result = sync(target_video.set_favorite(add_media_ids=[int(media_id)]))
+                return json_ok({'action': action, 'mediaId': int(media_id), 'result': result})
+        except ResponseCodeException as e:
+            logger.warning(f'bilibili video action failed, bvid={bvid}, action={action}, code={e.code}, msg={e.msg}')
+            return json_fail('bilibili_action_failed', message=e.msg or 'B 站操作失败'), 400
+
+        return json_fail('invalid_action', message='不支持的 B 站操作'), 400
+
     @app.route('/api/bilibili/cache', methods=['GET'])
     @login_check
     def get_bilibili_cache_info():
