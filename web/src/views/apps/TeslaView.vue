@@ -69,6 +69,8 @@ const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
 const DRIVE_MOTION_SPEED = 1.4;
 const REVERSE_MOTION_SPEED = 0.9;
+const MOTION_REFERENCE_SPEED_KMH = 60;
+const MOTION_MAX_SPEED_SCALE = 3;
 
 type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
 
@@ -200,6 +202,14 @@ const vehicleVisualStatus = computed(() => {
     description: '展示模式，车辆横向停放。',
     accent: '',
   };
+});
+
+const currentVehicleSpeedKmh = computed(() => {
+  const rawSpeed = Number(state.latestSample?.speed);
+  if (!Number.isFinite(rawSpeed)) {
+    return 0;
+  }
+  return Math.max(0, rawSpeed);
 });
 
 const RAW_COLUMN_ORDER = [
@@ -652,25 +662,29 @@ function detectVehicleWheelMeshes(model: THREE.Object3D, modelBounds: THREE.Box3
 }
 
 function getVehicleMotionProfile() {
+  const speedScale = Math.min(currentVehicleSpeedKmh.value / MOTION_REFERENCE_SPEED_KMH, MOTION_MAX_SPEED_SCALE);
   if (currentShiftState.value === 'D') {
     return {
       active: true,
       direction: -1,
-      roadSpeed: DRIVE_MOTION_SPEED,
-      wheelSpeed: 5.8,
+      moving: speedScale > 0,
+      roadSpeed: DRIVE_MOTION_SPEED * speedScale,
+      wheelSpeed: 5.8 * speedScale,
     };
   }
   if (currentShiftState.value === 'R') {
     return {
       active: true,
       direction: 1,
-      roadSpeed: REVERSE_MOTION_SPEED,
-      wheelSpeed: 4.2,
+      moving: speedScale > 0,
+      roadSpeed: REVERSE_MOTION_SPEED * speedScale,
+      wheelSpeed: 4.2 * speedScale,
     };
   }
   return {
     active: false,
     direction: 0,
+    moving: false,
     roadSpeed: 0,
     wheelSpeed: 0,
   };
@@ -1272,13 +1286,11 @@ function updateVehicleMotion(now: number) {
         material.map.offset.y = 0;
       }
     }
-  if (vehicleModelRoot) {
+    if (vehicleModelRoot) {
       vehicleModelRoot.position.y = vehicleModelBasePositionY;
+    }
+    return;
   }
-  return;
-}
-
-  vehicleMotionState.roadOffset += deltaSec * profile.roadSpeed * profile.direction;
 
   if (vehicleRoadMesh) {
     const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
@@ -1288,9 +1300,16 @@ function updateVehicleMotion(now: number) {
       material.color.set('#2a3038');
       material.needsUpdate = true;
     }
+    if (profile.moving) {
+      vehicleMotionState.roadOffset += deltaSec * profile.roadSpeed * profile.direction;
+    }
     if (material.map) {
       material.map.offset.y = vehicleMotionState.roadOffset;
     }
+  }
+
+  if (!profile.moving) {
+    return;
   }
 
   vehicleWheelMeshes.forEach(({ mesh, axis, direction }) => {
