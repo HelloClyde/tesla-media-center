@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { CaretRight, FolderOpened, RefreshRight, Refresh, VideoPause } from '@element-plus/icons-vue';
 import { del, get } from '@/functions/requests';
@@ -62,6 +62,7 @@ const GBA_KEY_OPTIONS = [
   { value: 'SELECT', label: 'SELECT' },
   { value: 'START', label: 'START' },
 ];
+const GBA_MAPPABLE_KEYS = GBA_KEY_OPTIONS.filter((item) => item.value);
 const DEFAULT_GAMEPAD_BUTTON_MAP: Record<number, string> = {
   0: 'A',
   1: 'B',
@@ -81,6 +82,15 @@ const DEFAULT_GAMEPAD_AXIS_MAP = [
   { axis: 1, negative: 'UP', positive: 'DOWN' },
 ];
 const gamepadAxisMap = reactive(DEFAULT_GAMEPAD_AXIS_MAP.map((item) => ({ ...item })));
+const gamepadCaptureTarget = ref('');
+let gamepadCapturePressedButtons = new Set<number>();
+let gamepadCaptureActiveAxes = new Set<string>();
+
+type GamepadAxisMapping = {
+  axis: number;
+  negative: string;
+  positive: string;
+};
 
 const breadcrumbs = computed(() => {
   const segments = state.currentPath ? state.currentPath.split('/').filter(Boolean) : [];
@@ -855,22 +865,130 @@ function handleVirtualControl(keyName: string, pressed: boolean, event?: Event) 
 
 function loadGamepadSettings() {
   try {
+    resetGamepadMappingsToDefault();
     const raw = window.localStorage.getItem(GAMEPAD_STORAGE_KEY);
     if (!raw) {
       return;
     }
     const parsed = JSON.parse(raw);
-    for (const [index, value] of Object.entries(DEFAULT_GAMEPAD_BUTTON_MAP)) {
-      gamepadButtonMap[Number(index)] = typeof parsed?.buttons?.[index] === 'string' ? parsed.buttons[index] : value;
+    for (const [index, value] of Object.entries(parsed?.buttons || {})) {
+      const buttonIndex = Number(index);
+      if (Number.isInteger(buttonIndex) && buttonIndex >= 0 && typeof value === 'string') {
+        gamepadButtonMap[buttonIndex] = value;
+      }
     }
-    gamepadAxisMap.forEach((item, index) => {
-      const source = parsed?.axes?.[index];
-      item.negative = typeof source?.negative === 'string' ? source.negative : DEFAULT_GAMEPAD_AXIS_MAP[index].negative;
-      item.positive = typeof source?.positive === 'string' ? source.positive : DEFAULT_GAMEPAD_AXIS_MAP[index].positive;
-    });
+
+    if (Array.isArray(parsed?.axes)) {
+      const axesByIndex = new Map<number, GamepadAxisMapping>();
+      DEFAULT_GAMEPAD_AXIS_MAP.forEach((item) => {
+        axesByIndex.set(item.axis, { ...item });
+      });
+      parsed.axes.forEach((item: Partial<GamepadAxisMapping>) => {
+        const axis = Number(item?.axis);
+        if (!Number.isInteger(axis) || axis < 0) {
+          return;
+        }
+        axesByIndex.set(axis, {
+          axis,
+          negative: typeof item.negative === 'string' ? item.negative : '',
+          positive: typeof item.positive === 'string' ? item.positive : '',
+        });
+      });
+      gamepadAxisMap.splice(
+        0,
+        gamepadAxisMap.length,
+        ...Array.from(axesByIndex.values()).sort((a, b) => a.axis - b.axis),
+      );
+    }
   } catch (error) {
     console.error(error);
   }
+}
+
+function resetGamepadMappingsToDefault() {
+  Object.keys(gamepadButtonMap).forEach((buttonIndex) => {
+    delete gamepadButtonMap[Number(buttonIndex)];
+  });
+  Object.entries(DEFAULT_GAMEPAD_BUTTON_MAP).forEach(([buttonIndex, keyName]) => {
+    gamepadButtonMap[Number(buttonIndex)] = keyName;
+  });
+  gamepadAxisMap.splice(
+    0,
+    gamepadAxisMap.length,
+    ...DEFAULT_GAMEPAD_AXIS_MAP.map((item) => ({ ...item })),
+  );
+}
+
+function getGbaKeyLabel(keyName: string) {
+  return GBA_KEY_OPTIONS.find((item) => item.value === keyName)?.label || keyName;
+}
+
+function describeGamepadBinding(keyName: string) {
+  const labels: string[] = [];
+  Object.entries(gamepadButtonMap).forEach(([buttonIndex, mappedKey]) => {
+    if (mappedKey === keyName) {
+      labels.push(`按钮 ${buttonIndex}`);
+    }
+  });
+  gamepadAxisMap.forEach((item) => {
+    if (item.negative === keyName) {
+      labels.push(`轴 ${item.axis} 负向`);
+    }
+    if (item.positive === keyName) {
+      labels.push(`轴 ${item.axis} 正向`);
+    }
+  });
+  return labels.length > 0 ? labels.join(' / ') : '未绑定';
+}
+
+function clearGamepadMappingForKey(keyName: string) {
+  Object.keys(gamepadButtonMap).forEach((buttonIndex) => {
+    if (gamepadButtonMap[Number(buttonIndex)] === keyName) {
+      gamepadButtonMap[Number(buttonIndex)] = '';
+    }
+  });
+  gamepadAxisMap.forEach((item) => {
+    if (item.negative === keyName) {
+      item.negative = '';
+    }
+    if (item.positive === keyName) {
+      item.positive = '';
+    }
+  });
+}
+
+function resetGamepadCaptureState() {
+  gamepadCapturePressedButtons = new Set<number>();
+  gamepadCaptureActiveAxes = new Set<string>();
+}
+
+function cancelGamepadCapture() {
+  gamepadCaptureTarget.value = '';
+  resetGamepadCaptureState();
+}
+
+function startGamepadCapture(keyName: string) {
+  gamepadCaptureTarget.value = keyName;
+  resetGamepadCaptureState();
+}
+
+function assignGamepadButton(buttonIndex: number, keyName: string) {
+  clearGamepadMappingForKey(keyName);
+  gamepadButtonMap[buttonIndex] = keyName;
+}
+
+function assignGamepadAxis(axis: number, direction: 'negative' | 'positive', keyName: string) {
+  clearGamepadMappingForKey(keyName);
+  const target = gamepadAxisMap.find((item) => item.axis === axis);
+  if (target) {
+    target[direction] = keyName;
+    return;
+  }
+  gamepadAxisMap.push({
+    axis,
+    negative: direction === 'negative' ? keyName : '',
+    positive: direction === 'positive' ? keyName : '',
+  });
 }
 
 function saveGamepadSettings() {
@@ -882,18 +1000,14 @@ function saveGamepadSettings() {
       positive: item.positive,
     })),
   }));
+  cancelGamepadCapture();
   ElMessage.success('手柄映射已保存');
   state.gamepadSettingsVisible = false;
 }
 
 function resetGamepadSettings() {
-  for (const [index, value] of Object.entries(DEFAULT_GAMEPAD_BUTTON_MAP)) {
-    gamepadButtonMap[Number(index)] = value;
-  }
-  gamepadAxisMap.forEach((item, index) => {
-    item.negative = DEFAULT_GAMEPAD_AXIS_MAP[index].negative;
-    item.positive = DEFAULT_GAMEPAD_AXIS_MAP[index].positive;
-  });
+  resetGamepadMappingsToDefault();
+  cancelGamepadCapture();
 }
 
 function releaseGamepadKeys() {
@@ -916,17 +1030,76 @@ function setGamepadKey(keyName: string, pressed: boolean) {
   }
 }
 
+function captureGamepadBinding(pad: Gamepad) {
+  const targetKey = gamepadCaptureTarget.value;
+  if (!targetKey) {
+    resetGamepadCaptureState();
+    return false;
+  }
+
+  const pressedButtons = new Set<number>();
+  for (let buttonIndex = 0; buttonIndex < pad.buttons.length; buttonIndex += 1) {
+    const button = pad.buttons[buttonIndex];
+    if (!button?.pressed) {
+      continue;
+    }
+    pressedButtons.add(buttonIndex);
+    if (!gamepadCapturePressedButtons.has(buttonIndex)) {
+      assignGamepadButton(buttonIndex, targetKey);
+      cancelGamepadCapture();
+      ElMessage.success(`${getGbaKeyLabel(targetKey)} 已绑定到按钮 ${buttonIndex}`);
+      return true;
+    }
+  }
+
+  const activeAxes = new Set<string>();
+  for (let axisIndex = 0; axisIndex < pad.axes.length; axisIndex += 1) {
+    const value = pad.axes[axisIndex] || 0;
+    if (value <= -0.6) {
+      const axisKey = `${axisIndex}:negative`;
+      activeAxes.add(axisKey);
+      if (!gamepadCaptureActiveAxes.has(axisKey)) {
+        assignGamepadAxis(axisIndex, 'negative', targetKey);
+        cancelGamepadCapture();
+        ElMessage.success(`${getGbaKeyLabel(targetKey)} 已绑定到轴 ${axisIndex} 负向`);
+        return true;
+      }
+    }
+    if (value >= 0.6) {
+      const axisKey = `${axisIndex}:positive`;
+      activeAxes.add(axisKey);
+      if (!gamepadCaptureActiveAxes.has(axisKey)) {
+        assignGamepadAxis(axisIndex, 'positive', targetKey);
+        cancelGamepadCapture();
+        ElMessage.success(`${getGbaKeyLabel(targetKey)} 已绑定到轴 ${axisIndex} 正向`);
+        return true;
+      }
+    }
+  }
+
+  gamepadCapturePressedButtons = pressedButtons;
+  gamepadCaptureActiveAxes = activeAxes;
+  return false;
+}
+
 function pollGamepads() {
   const pads = navigator.getGamepads?.() || [];
   const pad = pads.find((item) => item && item.connected);
-  if (!pad || state.viewMode !== 'play' || !state.activeRomPath) {
+  if (!pad) {
     state.gamepadName = '';
     releaseGamepadKeys();
+    cancelGamepadCapture();
     gamepadPollId = window.requestAnimationFrame(pollGamepads);
     return;
   }
 
   state.gamepadName = pad.id || '已连接手柄';
+  const captured = captureGamepadBinding(pad);
+  if (state.viewMode !== 'play' || !state.activeRomPath || state.gamepadSettingsVisible || captured) {
+    releaseGamepadKeys();
+    gamepadPollId = window.requestAnimationFrame(pollGamepads);
+    return;
+  }
 
   for (const [buttonIndex, keyName] of Object.entries(gamepadButtonMap)) {
     if (!keyName) {
@@ -963,6 +1136,7 @@ function stopGamepadPolling() {
   }
   state.gamepadName = '';
   releaseGamepadKeys();
+  cancelGamepadCapture();
 }
 
 function handleGamepadConnected(event: GamepadEvent) {
@@ -988,6 +1162,17 @@ function enterPlayMode() {
 function backToLibrary() {
   state.viewMode = 'library';
 }
+
+function openGamepadSettings() {
+  state.gamepadSettingsVisible = true;
+  cancelGamepadCapture();
+}
+
+watch(() => state.gamepadSettingsVisible, (visible) => {
+  if (!visible) {
+    cancelGamepadCapture();
+  }
+});
 
 onMounted(() => {
   loadGamepadSettings();
@@ -1148,7 +1333,7 @@ onUnmounted(() => {
                 </el-button>
                 <el-button :icon="Refresh" :disabled="!state.activeRomPath || state.loadingRom" @click="resetEmulator()">重启</el-button>
                 <el-button :disabled="!state.activeRomPath || state.loadingRom" @click="openSaveStatesDialog()">存档菜单</el-button>
-                <el-button @click="state.gamepadSettingsVisible = true">手柄设置</el-button>
+                <el-button @click="openGamepadSettings()">手柄设置</el-button>
               </div>
             </div>
           </div>
@@ -1186,35 +1371,34 @@ onUnmounted(() => {
         </div>
       </section>
     </template>
-    <el-dialog v-model="state.gamepadSettingsVisible" title="手柄设置" width="520px">
+    <el-dialog v-model="state.gamepadSettingsVisible" title="手柄设置" width="560px">
       <div class="gamepad-settings">
         <div class="settings-tip">
           {{ state.gamepadName ? `当前手柄：${state.gamepadName}` : '当前未检测到手柄，也可以先配置映射。' }}
         </div>
         <div class="settings-section">
           <strong>按键映射</strong>
-          <div class="mapping-grid">
-            <label v-for="buttonIndex in [0, 1, 4, 5, 8, 9, 12, 13, 14, 15]" :key="buttonIndex" class="mapping-item">
-              <span>按钮 {{ buttonIndex }}</span>
-              <el-select v-model="gamepadButtonMap[buttonIndex]" size="small">
-                <el-option v-for="option in GBA_KEY_OPTIONS" :key="option.value || 'none'" :label="option.label" :value="option.value" />
-              </el-select>
-            </label>
+          <div class="settings-tip">
+            {{ gamepadCaptureTarget ? `正在等待输入：请按下手柄按键或拨动摇杆，把它绑定到 ${getGbaKeyLabel(gamepadCaptureTarget)}` : '点击某个 GBA 按键的“开始绑定”，然后按一下手柄上的目标按键或拨动目标方向。' }}
           </div>
-        </div>
-        <div class="settings-section">
-          <strong>摇杆映射</strong>
-          <div class="mapping-grid axis-grid">
-            <label v-for="axisItem in gamepadAxisMap" :key="axisItem.axis" class="mapping-item axis-item">
-              <span>轴 {{ axisItem.axis }} 负向</span>
-              <el-select v-model="axisItem.negative" size="small">
-                <el-option v-for="option in GBA_KEY_OPTIONS" :key="`neg-${axisItem.axis}-${option.value || 'none'}`" :label="option.label" :value="option.value" />
-              </el-select>
-              <span>轴 {{ axisItem.axis }} 正向</span>
-              <el-select v-model="axisItem.positive" size="small">
-                <el-option v-for="option in GBA_KEY_OPTIONS" :key="`pos-${axisItem.axis}-${option.value || 'none'}`" :label="option.label" :value="option.value" />
-              </el-select>
-            </label>
+          <div class="binding-list">
+            <div v-for="item in GBA_MAPPABLE_KEYS" :key="item.value" class="binding-row">
+              <div class="binding-meta">
+                <strong>{{ item.label }}</strong>
+                <span>{{ describeGamepadBinding(item.value) }}</span>
+              </div>
+              <div class="binding-actions">
+                <el-button
+                  size="small"
+                  :type="gamepadCaptureTarget === item.value ? 'warning' : 'primary'"
+                  plain
+                  @click="gamepadCaptureTarget === item.value ? cancelGamepadCapture() : startGamepadCapture(item.value)"
+                >
+                  {{ gamepadCaptureTarget === item.value ? '取消绑定' : '开始绑定' }}
+                </el-button>
+                <el-button size="small" @click="clearGamepadMappingForKey(item.value)">清除</el-button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1781,28 +1965,44 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-.mapping-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.mapping-item {
+.binding-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 13px;
-  color: var(--color-text-soft);
+  gap: 10px;
 }
 
-.axis-grid {
-  grid-template-columns: 1fr;
-}
-
-.axis-item {
-  padding: 12px;
+.binding-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
   border-radius: 14px;
   background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.binding-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.binding-meta strong {
+  font-size: 14px;
+}
+
+.binding-meta span {
+  font-size: 13px;
+  color: var(--color-text-soft);
+  word-break: break-word;
+}
+
+.binding-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .dialog-actions {
@@ -1951,6 +2151,15 @@ onUnmounted(() => {
   .play-shell,
   .play-stage {
     overflow: auto;
+  }
+
+  .binding-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .binding-actions {
+    justify-content: flex-end;
   }
 }
 </style>
