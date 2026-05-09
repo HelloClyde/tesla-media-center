@@ -883,10 +883,15 @@ function openTripTrack(trip: any) {
   state.selectedTrip = trip;
   state.activeTab = 'track';
   state.tripTrackLoading = true;
+  const tripKey = `${trip.startTimeMs}-${trip.endTimeMs}`;
   return get(
     `/api/tesla/history/trips/detail?vin=${encodeURIComponent(state.selectedVin)}&startMs=${trip.startTimeMs}&endMs=${trip.endTimeMs}&limit=20000`,
     '读取行程轨迹失败'
   ).then((data) => {
+    const selectedKey = state.selectedTrip ? `${state.selectedTrip.startTimeMs}-${state.selectedTrip.endTimeMs}` : '';
+    if (selectedKey !== tripKey) {
+      return;
+    }
     const items = data.items || [];
     state.trackPoints = items.filter((item: any) => item.longitude != null && item.latitude != null);
     state.latestSample = data.latest || items[items.length - 1] || null;
@@ -894,7 +899,10 @@ function openTripTrack(trip: any) {
       renderTrackOnMap();
     });
   }).finally(() => {
-    state.tripTrackLoading = false;
+    const selectedKey = state.selectedTrip ? `${state.selectedTrip.startTimeMs}-${state.selectedTrip.endTimeMs}` : '';
+    if (selectedKey === tripKey) {
+      state.tripTrackLoading = false;
+    }
   });
 }
 
@@ -958,6 +966,9 @@ function shouldForceFreshSync() {
 }
 
 function maybeForceFreshSync(tabName: TeslaTabName = state.activeTab as TeslaTabName): Promise<void> {
+  if (tabName === 'track' && state.selectedTrip) {
+    return Promise.resolve();
+  }
   const now = Date.now();
   if (!shouldForceFreshSync()) {
     return Promise.resolve();
@@ -1007,6 +1018,9 @@ function refreshTabData(tabName: TeslaTabName, options?: { allowForceSync?: bool
         return loadVehicleStatus();
       }
       if (tabName === 'track') {
+        if (state.selectedTrip) {
+          return Promise.resolve();
+        }
         return loadTrack();
       }
       if (tabName === 'trip') {
