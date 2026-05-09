@@ -114,15 +114,30 @@ function resetDanmuState(startSec = 0) {
     clearDanmuScreen();
 }
 
+function getDanmuSourceKey() {
+    return `${state.bvid || ''}:${state.cid || ''}`;
+}
+
+function getDanmuUrl(seg: number) {
+    return `/api/bilibili/bv/${state.bvid}/${state.cid}/dm/${seg}`;
+}
+
 function loadDanmuForCurrentPosition(startSec = 0) {
     resetDanmuState(startSec);
-    return get(`/api/bilibili/bv/${state.bvid}/dm/${state.dm_seg}`).then(data => {
+    const sourceKey = getDanmuSourceKey();
+    return get(getDanmuUrl(state.dm_seg)).then(data => {
+        if (sourceKey !== getDanmuSourceKey()) {
+            return;
+        }
         const initialDms = data.dm.filter((dm: any) => dm.dm_time >= startSec);
         state.dms = initialDms;
         initialDms.forEach((dm: any) => {
             state.loadedDmKeys.add(getDmKey(dm));
         });
     }).catch(() => {
+        if (sourceKey !== getDanmuSourceKey()) {
+            return;
+        }
         state.dms = [];
     });
 }
@@ -335,7 +350,11 @@ onMounted(() => {
         const seg = Math.floor(t / (6 * 60));
         if (state.dm_seg < seg){
             state.dm_seg = seg;
-            get(`/api/bilibili/bv/${state.bvid}/dm/${seg}`).then(data => {
+            const sourceKey = getDanmuSourceKey();
+            get(getDanmuUrl(seg)).then(data => {
+                if (sourceKey !== getDanmuSourceKey()) {
+                    return;
+                }
                 const newDms = data.dm.filter((dm: any) => {
                     const key = getDmKey(dm);
                     return !state.processedDmKeys.has(key) && !state.loadedDmKeys.has(key);
