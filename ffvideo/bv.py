@@ -833,8 +833,18 @@ def add_bv_route(app):
     @app.route('/api/bilibili/bv/<string:bvid>/dm/<int:seg>', methods=['GET'])
     @login_check
     def get_bilibili_video_dm(bvid, seg):        
+        cid = request.args.get('cid')
         v = video.Video(bvid=bvid, credential=get_bilibili_credential())
-        dms = sync(v.get_danmakus(0, from_seg=seg, to_seg=seg+1))
+        dms = sync(v.get_danmakus(0, cid=int(cid) if cid else None, from_seg=seg, to_seg=seg+1))
+        return json_ok({
+            'dm': list(map(lambda x: x.__dict__, dms))
+        })
+
+    @app.route('/api/bilibili/bv/<string:bvid>/<string:cid>/dm/<int:seg>', methods=['GET'])
+    @login_check
+    def get_bilibili_video_cid_dm(bvid, cid, seg):
+        v = video.Video(bvid=bvid, credential=get_bilibili_credential())
+        dms = sync(v.get_danmakus(0, cid=int(cid), from_seg=seg, to_seg=seg+1))
         return json_ok({
             'dm': list(map(lambda x: x.__dict__, dms))
         })
