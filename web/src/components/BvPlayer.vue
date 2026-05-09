@@ -2,6 +2,7 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
+import { Coin, Pointer, Star } from '@element-plus/icons-vue';
 import { generateSilentWav } from '@/functions/audioUtils';
 
 
@@ -550,29 +551,32 @@ onUnmounted(() => {
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
                     <el-button
-                        class="btn interaction-btn"
+                        :icon="Pointer"
+                        class="btn"
                         size="large"
                         :loading="state.actionLoading === 'like'"
                         :disabled="!!state.actionLoading || !state.bvid"
                         @click="runVideoAction('like')"
                         circle
-                    >赞</el-button>
+                    />
                     <el-button
-                        class="btn interaction-btn"
+                        :icon="Star"
+                        class="btn"
                         size="large"
                         :loading="state.actionLoading === 'favorite'"
                         :disabled="!!state.actionLoading || !state.bvid"
                         @click="runVideoAction('favorite')"
                         circle
-                    >藏</el-button>
+                    />
                     <el-button
-                        class="btn interaction-btn"
+                        :icon="Coin"
+                        class="btn"
                         size="large"
                         :loading="state.actionLoading === 'coin'"
                         :disabled="!!state.actionLoading || !state.bvid"
                         @click="runVideoAction('coin')"
                         circle
-                    >币</el-button>
+                    />
                     <el-text class="bv-title" size="large">{{ state.title }}</el-text>
                 </el-col>
             </el-row>
@@ -595,11 +599,6 @@ onUnmounted(() => {
 <style>
 .btn {
     font-size: 26px !important;
-}
-
-.interaction-btn {
-    font-size: 18px !important;
-    font-weight: 700;
 }
 
 .bv-title {
