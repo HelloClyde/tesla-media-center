@@ -8,6 +8,7 @@ import AppViewVue from '@/views/AppView.vue';
 import BilibiliVue from '@/views/apps/Bilibili.vue';
 import TeslaView from '@/views/apps/TeslaView.vue';
 import GbaView from '@/views/apps/GbaView.vue';
+import DouyinView from '@/views/apps/DouyinView.vue';
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -41,6 +42,11 @@ const router = createRouter({
           path: 'bilibili',
           name: 'bilibili',
           component: BilibiliVue
+        },
+        {
+          path: 'douyin',
+          name: 'douyin',
+          component: DouyinView
         },
         {
           path: 'tesla',
