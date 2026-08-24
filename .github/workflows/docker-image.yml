@@ -73,6 +73,9 @@ jobs:
           context: .
           file: docker_build/Dockerfile
           push: true
+          # Aliyun ACR rejects Buildx provenance attestations with
+          # application/vnd.oci.empty.v1+json manifests.
+          provenance: false
           platforms: linux/amd64,linux/arm64
           tags: |
             ${{ steps.meta-ghcr.outputs.tags }}
