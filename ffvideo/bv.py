@@ -82,10 +82,41 @@ def select_preferred_streams(detecter, source_label='video'):
     logger.info(f'{source_label} stream selection, max_quality={max_quality.name}, stream_count={len(streams)}')
 
     if detecter.check_video_and_audio_stream():
-        video_streams = [s for s in streams if isinstance(s, video.VideoStreamDownloadURL)]
-        audio_streams = [s for s in streams if isinstance(s, video.AudioStreamDownloadURL)]
-        logger.info(f'{source_label} candidate video streams={[(s.video_quality.name, s.video_codecs.name, s.url[:96]) for s in video_streams]}')
-        logger.info(f'{source_label} candidate audio streams={[(s.audio_quality.name, s.url[:96]) for s in audio_streams]}')
+        candidate_video_streams = [s for s in streams if isinstance(s, video.VideoStreamDownloadURL)]
+        candidate_audio_streams = [s for s in streams if isinstance(s, video.AudioStreamDownloadURL)]
+        video_stream_diagnostics = [
+            (
+                getattr(s.video_quality, 'name', 'UNKNOWN'),
+                getattr(s.video_codecs, 'name', 'UNKNOWN'),
+                getattr(s, 'url', '')[:96],
+            )
+            for s in candidate_video_streams
+        ]
+        audio_stream_diagnostics = [
+            (
+                getattr(s.audio_quality, 'name', 'UNKNOWN'),
+                getattr(s, 'url', '')[:96],
+            )
+            for s in candidate_audio_streams
+        ]
+        logger.info(f'{source_label} candidate video streams={video_stream_diagnostics}')
+        logger.info(f'{source_label} candidate audio streams={audio_stream_diagnostics}')
+
+        # New Bilibili uploads can include HEVC representations whose codec is
+        # reported as hvc1. bilibili-api-python currently exposes those entries
+        # with video_codecs=None, even when AVC was requested. Keep the player
+        # pipeline on the explicitly supported AVC representations and do not
+        # let unknown enum values break stream selection or diagnostics.
+        video_streams = [
+            s for s in candidate_video_streams
+            if s.video_codecs == video.VideoCodecs.AVC
+            and s.video_quality is not None
+            and getattr(s, 'url', None)
+        ]
+        audio_streams = [
+            s for s in candidate_audio_streams
+            if s.audio_quality is not None and getattr(s, 'url', None)
+        ]
 
         video_streams.sort(key=lambda s: s.video_quality.value, reverse=True)
         audio_streams.sort(key=lambda s: s.audio_quality.value, reverse=True)
@@ -350,6 +381,55 @@ def make_ffmpeg_headers():
     for key, value in HEADERS.items():
         header_lines.append(f'{key}: {value}')
     return '\r\n'.join(header_lines) + '\r\n'
+
+
+def build_dash_mux_command(video_input, audio_input, output_video_path, start_ms=0, remote_inputs=False):
+    """Remux Bilibili's AVC/AAC DASH tracks to streamable FLV without transcoding."""
+    ffmpeg_cmd = [FFMPEG_PATH]
+    start_sec = max(start_ms / 1000.0, 0)
+
+    for input_url in (video_input, audio_input):
+        if start_sec > 0:
+            # Input-side seeking keeps the zero-transcode path. It starts at the
+            # closest preceding keyframe, which is preferable to saturating the
+            # server with a new H264 encoder after every frontend seek.
+            ffmpeg_cmd.extend(['-ss', str(start_sec)])
+        if remote_inputs:
+            ffmpeg_cmd.extend(['-headers', make_ffmpeg_headers()])
+        ffmpeg_cmd.extend(['-i', input_url])
+
+    ffmpeg_cmd.extend([
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-c:v', 'copy',
+        '-c:a', 'copy',
+        '-avoid_negative_ts', 'make_zero',
+        '-shortest',
+        '-flvflags', 'no_duration_filesize',
+        '-f', 'flv',
+        output_video_path,
+        '-y',
+    ])
+    return ffmpeg_cmd
+
+
+def build_single_stream_mux_command(input_url, output_video_path, start_ms=0):
+    """Remux an already combined Bilibili stream without decoding it."""
+    ffmpeg_cmd = [FFMPEG_PATH]
+    start_sec = max(start_ms / 1000.0, 0)
+    if start_sec > 0:
+        ffmpeg_cmd.extend(['-ss', str(start_sec)])
+    ffmpeg_cmd.extend([
+        '-headers', make_ffmpeg_headers(),
+        '-i', input_url,
+        '-c', 'copy',
+        '-avoid_negative_ts', 'make_zero',
+        '-flvflags', 'no_duration_filesize',
+        '-f', 'flv',
+        output_video_path,
+        '-y',
+    ])
+    return ffmpeg_cmd
 
 
 def extract_bangumi_episode_items(payload):
@@ -686,13 +766,14 @@ def add_bv_route(app):
         if os.path.exists(output_video_path):
             os.remove(output_video_path)
             
-        # ffmpeg_cmd = f'{FFMPEG_PATH} -re -i {input_video_pipe}  -i {input_audio_pipe} -c copy  -movflags faststart -f flv {output_video_path} -y'
-        # ffmpeg_cmd = f'{FFMPEG_PATH} -re -i {input_video_pipe}  -i {input_audio_pipe} -c:v libx264 -x264-params keyint=30:scenecut=0 -c:a aac -movflags faststart -f flv {output_video_path} -y'
-        ffmpeg_cmd = f'{FFMPEG_PATH} -i {input_video_pipe}  -i {input_audio_pipe} -c:v libx264 -x264-params keyint=30:scenecut=0 -c:a copy -f flv {output_video_path} -y' # http-flv重新编码，头部关键帧
-        # ffmpeg_cmd = f'{FFMPEG_PATH} -i {input_video_pipe}  -i {input_audio_pipe} -c copy -f flv {output_video_path} -y' # http-flv
+        ffmpeg_cmd = build_dash_mux_command(
+            input_video_pipe,
+            input_audio_pipe,
+            output_video_path,
+        )
         
         logger.info(f'cmd:{ffmpeg_cmd}')
-        process = subprocess.Popen(ffmpeg_cmd, shell=True)
+        process = subprocess.Popen(ffmpeg_cmd)
         
         while True:
             if ffmpeg_jobs.stop_event.is_set():
@@ -727,28 +808,13 @@ def add_bv_route(app):
         if os.path.exists(output_video_path):
             os.remove(output_video_path)
 
-        start_sec = max(start_ms / 1000.0, 0)
-        ffmpeg_cmd = [
-            FFMPEG_PATH,
-            '-headers', make_ffmpeg_headers(),
-            '-i', video_url,
-            '-headers', make_ffmpeg_headers(),
-            '-i', audio_url,
-            '-ss', str(start_sec),
-            '-fflags', '+genpts',
-            '-avoid_negative_ts', 'make_zero',
-            '-map', '0:v:0',
-            '-map', '1:a:0',
-            '-vf', 'setpts=PTS-STARTPTS',
-            '-af', 'asetpts=PTS-STARTPTS',
-            '-c:v', 'libx264',
-            '-x264-params', 'keyint=30:scenecut=0',
-            '-c:a', 'aac',
-            '-shortest',
-            '-f', 'flv',
+        ffmpeg_cmd = build_dash_mux_command(
+            video_url,
+            audio_url,
             output_video_path,
-            '-y'
-        ]
+            start_ms=start_ms,
+            remote_inputs=True,
+        )
 
         logger.info(f'cmd:{ffmpeg_cmd}')
         process = subprocess.Popen(ffmpeg_cmd)
@@ -786,21 +852,7 @@ def add_bv_route(app):
         if os.path.exists(output_video_path):
             os.remove(output_video_path)
 
-        ffmpeg_cmd = [
-            FFMPEG_PATH,
-            '-headers', make_ffmpeg_headers(),
-        ]
-        if start_ms > 0:
-            ffmpeg_cmd.extend(['-ss', str(max(start_ms / 1000.0, 0))])
-        ffmpeg_cmd.extend([
-            '-i', input_url,
-            '-c:v', 'libx264',
-            '-x264-params', 'keyint=30:scenecut=0',
-            '-c:a', 'copy',
-            '-f', 'flv',
-            output_video_path,
-            '-y'
-        ])
+        ffmpeg_cmd = build_single_stream_mux_command(input_url, output_video_path, start_ms)
 
         logger.info(f'cmd:{ffmpeg_cmd}')
         process = subprocess.Popen(ffmpeg_cmd)
