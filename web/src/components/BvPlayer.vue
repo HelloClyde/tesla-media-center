@@ -537,15 +537,12 @@ onUnmounted(() => {
             <div>
                 <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
-            <div class="player-controls">
+            <div class="player-controls player-actions bv-toolbar">
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
                 <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
                 <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
-            </div>
-            <el-row justify="start">
-                <el-col :span="24" class="player-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
                     <el-button
@@ -589,9 +586,10 @@ onUnmounted(() => {
                             />
                         </svg>
                     </el-button>
-                    <el-text class="bv-title" size="large">{{ state.title }}</el-text>
-                </el-col>
-            </el-row>
+            </div>
+            <div class="bv-title-row">
+                <el-text class="bv-title" size="large">{{ state.title }}</el-text>
+            </div>
             <el-row justify="start">
                 <el-col :span="24">
                     <div v-if="state.epList.length" class="ep-list" aria-label="视频选集">

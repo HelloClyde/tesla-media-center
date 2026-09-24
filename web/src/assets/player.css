@@ -101,3 +101,14 @@
   gap: 8px;
   margin-left: auto;
 }
+
+.responsive-player .bv-toolbar {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  gap: 8px;
+  padding: 4px 0;
+}
+.responsive-player .bv-toolbar > label,
+.responsive-player .bv-toolbar > .el-switch { flex-shrink: 0; }
+.responsive-player .bv-title-row { padding: 6px 0; }
+.responsive-player .bv-title-row .bv-title { display: block; width: 100%; }
