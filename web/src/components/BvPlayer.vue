@@ -542,9 +542,6 @@ onUnmounted(() => {
         </div>
         </div>
         <div class="bv-bottom-controller">
-            <div>
-                <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
-            </div>
             <div class="bv-toolbar">
                 <div class="player-actions bv-toolbar-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
@@ -592,14 +589,13 @@ onUnmounted(() => {
                     </el-button>
                     <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
                 </div>
+                <span class="bv-inline-title" :title="state.title || ''">{{ state.title }}</span>
+                <input class="progress bv-inline-progress" id="timeTrack" ref="timeTrack" type="range" value="0" aria-label="播放进度">
                 <div class="player-controls bv-toolbar-status">
                     <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
                     <label id="timeLabel" ref="timeLabel">00:00:00/00:00:00</label>
                 </div>
                 <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
-            </div>
-            <div class="bv-title-row">
-                <el-text class="bv-title" size="large">{{ state.title }}</el-text>
             </div>
             <el-row justify="start">
                 <el-col :span="24">
