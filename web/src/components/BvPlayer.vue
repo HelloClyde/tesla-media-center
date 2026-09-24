@@ -2,7 +2,7 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
-import { Star } from '@element-plus/icons-vue';
+import { Star, Headset } from '@element-plus/icons-vue';
 import { useAudioChannel } from '@/functions/useAudioChannel';
 
 const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
@@ -541,7 +541,7 @@ onUnmounted(() => {
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
-                <el-button class="restore-audio-button" @click="restoreAudioChannel">恢复声音</el-button>
+                <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
                 <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
             </div>
             <el-row justify="start">

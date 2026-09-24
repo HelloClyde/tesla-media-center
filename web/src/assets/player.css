@@ -48,7 +48,23 @@
 .responsive-player .local-video-play-btn .el-icon,
 .responsive-player .bv-video-play-btn .el-icon { font-size: clamp(48px, 9vh, 80px) !important; }
 
-.responsive-player .restore-audio-button { height: 44px; margin: 0; padding: 0 12px; }
+.responsive-player .restore-audio-button {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  margin: 0;
+  padding: 0;
+  font-size: 21px;
+  color: var(--color-text-soft);
+  border-color: var(--color-border);
+  background: transparent;
+}
+.responsive-player .restore-audio-button:hover,
+.responsive-player .restore-audio-button:focus-visible {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
 
 .responsive-player .player-picture-band {
   flex: 0 0 auto;

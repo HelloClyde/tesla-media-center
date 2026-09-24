@@ -2,6 +2,7 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
+import { Headset } from '@element-plus/icons-vue';
 import { useAudioChannel } from '@/functions/useAudioChannel';
 
 const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
@@ -170,7 +171,7 @@ onUnmounted(() => {
                     inactive-text="短视频" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
-                <el-button class="restore-audio-button" @click="restoreAudioChannel">恢复声音</el-button>
+                <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
                     inactive-text="仅音频" />
                 <button class="player-fullscreen" aria-label="全屏播放" @click="fullscreen">
