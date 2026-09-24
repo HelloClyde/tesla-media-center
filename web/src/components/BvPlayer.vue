@@ -548,8 +548,8 @@ onUnmounted(() => {
             </div>
             <el-row justify="start">
                 <el-col :span="24" class="player-actions">
-                    <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
-                    <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
+                    <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
+                    <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
                     <el-button
                         class="btn"
                         size="large"
@@ -596,13 +596,13 @@ onUnmounted(() => {
             </el-row>
             <el-row justify="start">
                 <el-col :span="24">
-                    <div class="ep-list">
-                        <div class="ep-item" :class="{ 'ep-item-active': isCurrentEp(ep) }" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
+                    <div v-if="state.epList.length" class="ep-list" aria-label="视频选集">
+                        <button type="button" class="ep-item" :class="{ 'ep-item-active': isCurrentEp(ep) }" :aria-pressed="isCurrentEp(ep)" v-for="(ep, index) in state.epList" :key="index" @click="switchEp(ep)">
                             <img :src="ep.cover || 'https://i0.hdslb.com/bfs/static/studio/creativecenter-platform/img/article_empty.716e40d2.png'" :fit="'cover'" />
                             <el-text line-clamp="2" class="ep-title" :class="{ 'ep-title-active': isCurrentEp(ep) }">
                                 {{ ep.title }}
                             </el-text>
-                        </div>    
+                        </button>
                     </div>
                 </el-col>
             </el-row>

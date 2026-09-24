@@ -24,8 +24,26 @@
 .responsive-player .bv-title { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-size: clamp(16px, 2vw, 22px) !important; line-height: 1.4; }
 .responsive-player .local-playlist { flex: 0 0 auto; overflow: visible; padding: 10px; }
 .responsive-player .local-playlist-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); gap: 10px; }
-.responsive-player .ep-list { height: 144px; }
-.responsive-player .ep-item { flex: 0 0 130px; min-width: 130px; height: 124px; }
-.responsive-player .ep-item > img { height: 70px; }
+.responsive-player .ep-list { height: auto; min-height: 0; gap: 8px; padding: 8px 0; }
+.responsive-player .ep-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 190px;
+  width: 190px;
+  min-width: 0;
+  height: 64px;
+  margin: 0;
+  padding: 6px;
+  border-radius: 10px;
+  text-align: left;
+  color: var(--color-text);
+  font: inherit;
+}
+.responsive-player .ep-item > img { flex: 0 0 72px; width: 72px; height: 44px; border-radius: 6px; }
+.responsive-player .ep-title { min-width: 0; min-height: 0; margin: 0; font-size: 13px; line-height: 18px; color: var(--color-text); }
+.responsive-player .ep-title-active { color: var(--color-accent) !important; }
+.responsive-player .ep-item-active { transform: none; }
+.responsive-player .ep-item:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 .responsive-player .local-video-play-btn .el-icon,
 .responsive-player .bv-video-play-btn .el-icon { font-size: clamp(48px, 9vh, 80px) !important; }
