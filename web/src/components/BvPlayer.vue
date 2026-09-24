@@ -507,6 +507,7 @@ onUnmounted(() => {
 
 <template>
     <div class="bv-video-play-view responsive-player">
+        <div class="player-picture-band">
         <div ref="videoWrapper" class="bv-player-stage">
             <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
             <div v-show="!state.showScreen" class="screenCap"></div>
@@ -530,6 +531,7 @@ onUnmounted(() => {
                     </el-icon>
                 </div>
             </div>
+        </div>
         </div>
         <div class="bv-bottom-controller">
             <div>
