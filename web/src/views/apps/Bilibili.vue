@@ -8,7 +8,6 @@ import { ElMessage } from 'element-plus';
 
 const searchInput = ref<any>(null);
 const listContainer = ref<HTMLElement | null>(null);
-let listResizeObserver: ResizeObserver | null = null;
 let biliLoginPollTimer: number | null = null;
 
 const state = reactive({
@@ -36,8 +35,6 @@ const state = reactive({
   searchPageSize: 20,
   searchLoading: false,
   searchFinished: false,
-  gridColumns: 3,
-  gridContainerWidth: 0,
   biliAuthLoading: false,
   biliLoginPolling: false,
   biliLoggedIn: false,
@@ -137,23 +134,6 @@ const biliCacheUsagePercent = computed(() => {
   const sizeMb = Number(state.biliCache.sizeMb) || 0;
   return Math.min(100, Math.round((sizeMb / maxSizeMb) * 100));
 });
-
-const updateGridColumns = (width: number) => {
-  state.gridContainerWidth = Math.round(width);
-  if (width <= 640) {
-    state.gridColumns = 1;
-  } else if (width <= 860) {
-    state.gridColumns = 2;
-  } else {
-    state.gridColumns = 3;
-  }
-  console.log('[bilibili-grid]', {
-    containerWidth: state.gridContainerWidth,
-    columns: state.gridColumns,
-    viewportWidth: window.innerWidth,
-  });
-}
-
 
 const rankTypes= [
   {'label': '全部', value:'All'},
@@ -522,21 +502,10 @@ onMounted(() => {
   loadHomeVideos();
   loadBiliAuthStatus();
   loadBiliSettings();
-  if (listContainer.value) {
-    updateGridColumns(listContainer.value.clientWidth);
-    listResizeObserver = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry) {
-        updateGridColumns(entry.contentRect.width);
-      }
-    });
-    listResizeObserver.observe(listContainer.value);
-  }
+
 })
 
 onUnmounted(() => {
-  listResizeObserver?.disconnect();
-  listResizeObserver = null;
   stopBiliLoginPolling();
 })
 </script>
@@ -550,12 +519,12 @@ onUnmounted(() => {
   <div ref="listContainer" class="bv-list" @scroll.passive="onListScroll">
     <el-tabs v-model="state.curTab" @tab-change="tabChange" class="tabs">
       <el-tab-pane label="首页" name="homepage">
-        <div class="video-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+        <div class="video-grid">
           <BiliCover v-for="video of state.homeVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </div>
       </el-tab-pane>
       <el-tab-pane label="热门" name="hot">
-        <div class="video-grid" v-loading="state.hotLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+        <div class="video-grid" v-loading="state.hotLoading">
           <BiliCover v-for="video of state.hotVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </div>
         <div v-if="state.hotLoading" class="hot-load-state">加载中...</div>
@@ -566,7 +535,7 @@ onUnmounted(() => {
           <el-radio-group v-model="state.rankType" size="large"  @change="(v: string) => loadRankVideos()" class="rank-type">
             <el-radio-button v-for="item of rankTypes" :key="item.value" :label="item.label" :value="item.value" />
           </el-radio-group>
-        <div class="video-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+        <div class="video-grid">
           <BiliCover v-for="video of state.rankVideoList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </div>
       </el-tab-pane>
@@ -589,7 +558,7 @@ onUnmounted(() => {
               <h3>{{ activeSearchSection.title }}</h3>
               <span>{{ activeSearchSection.items.length }} 条</span>
             </div>
-            <div class="video-grid search-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+            <div class="video-grid search-grid">
               <BiliCover v-for="item of activeSearchSection.items" :key="item.bvid || item.season_id || item.roomid || item.mid || item.id || item.cv_id || item.title" :video="item" :on-click="(type, id) => videoSelect(type, id)" />
             </div>
           </section>
@@ -598,7 +567,7 @@ onUnmounted(() => {
         <div v-else-if="state.searchFinished && state.searchResultSections.length > 0" class="hot-load-state">没有更多了</div>
       </el-tab-pane>
       <el-tab-pane label="关注" name="关注">
-        <div class="video-grid" v-loading="state.followingLoading" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+        <div class="video-grid" v-loading="state.followingLoading">
           <BiliCover v-for="video of state.followingList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
         </div>
       </el-tab-pane>
@@ -607,7 +576,7 @@ onUnmounted(() => {
           <el-radio-group v-if="state.favoriteFolders.length > 0" v-model="state.favoriteFolderId" class="favorite-folders" @change="(value: number) => loadFavoriteContent(value)">
             <el-radio-button v-for="folder of state.favoriteFolders" :key="folder.id" :label="folder.title" :value="folder.id" />
           </el-radio-group>
-          <div class="video-grid favorite-grid" :style="{ gridTemplateColumns: `repeat(${state.gridColumns}, minmax(0, 1fr))` }">
+          <div class="video-grid favorite-grid">
             <BiliCover v-for="video of state.favoriteList" :video="video" :on-click="(type, id) => videoSelect(type, id)" />
           </div>
         </div>
@@ -858,8 +827,9 @@ onUnmounted(() => {
 
 .video-grid {
   display: grid;
-  gap: 18px;
-  padding: 0 20px 20px 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr));
+  gap: 10px;
+  padding: 0 10px 16px;
   align-items: start;
 }
 

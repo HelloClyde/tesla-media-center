@@ -142,7 +142,7 @@ const clickId = computed(() => {
 }
 
 .video-card .el-card__body {
-  padding: 4px;
+  padding: 6px 8px;
 }
 
 .cover-float {
@@ -151,23 +151,24 @@ const clickId = computed(() => {
     left: 0;
     right: 0;
     bottom: 0;
-    height: 40px;
+    height: 24px;
 }
 
 .video-title {
-  height: 75px;
+  height: 40px;
+  line-height: 20px;
   width: 100%;
-  font-size: 24px !important;
+  font-size: 14px !important;
   color: var(--color-heading) !important;
 }
 
 .video-author {
-  font-size: 20px !important;
+  font-size: 12px !important;
   color: var(--color-text-soft) !important;
 }
 
 .video-duration {
-    font-size: 20px !important;
+    font-size: 12px !important;
     position: absolute;
     right: 10px;
     color: var(--color-text-contrast);
@@ -179,6 +180,11 @@ const clickId = computed(() => {
   aspect-ratio: 350 / 196;
   height: auto;
   overflow: hidden;
+}
+
+.video-cover {
+  width: 100%;
+  height: 100%;
 }
 
 .video-cover>img {
