@@ -18,6 +18,7 @@ const waitHeaderLength = 512 * 1024;
 const DEFAULT_DANMU_AREA = 'top_half';
 const DEFAULT_DANMU_MAX_COUNT = 30;
 const DEFAULT_DANMU_OPACITY = 70;
+const DEFAULT_DANMU_FONT_SIZE = 16;
 
 const state = reactive({
     curFiles: [] as any[],
@@ -43,6 +44,7 @@ const state = reactive({
     danmuArea: DEFAULT_DANMU_AREA,
     danmuMaxCount: DEFAULT_DANMU_MAX_COUNT,
     danmuOpacity: DEFAULT_DANMU_OPACITY,
+    danmuFontSize: DEFAULT_DANMU_FONT_SIZE,
     actionLoading: '',
 })
 
@@ -295,6 +297,8 @@ onMounted(() => {
         const area = config?.bilibili_danmaku_area;
         const maxCount = Number(config?.bilibili_danmaku_max_count);
         const opacity = Number(config?.bilibili_danmaku_opacity);
+        const fontSize = Number(config?.bilibili_danmaku_font_size ?? DEFAULT_DANMU_FONT_SIZE);
+        state.danmuFontSize = Number.isFinite(fontSize) ? Math.min(32, Math.max(12, Math.round(fontSize))) : DEFAULT_DANMU_FONT_SIZE;
         state.danmuArea = ['top_third', 'top_half', 'bottom_half', 'full'].includes(area) ? area : DEFAULT_DANMU_AREA;
         state.danmuMaxCount = Number.isFinite(maxCount) ? Math.min(100, Math.max(5, Math.floor(maxCount))) : DEFAULT_DANMU_MAX_COUNT;
         state.danmuOpacity = Number.isFinite(opacity) ? Math.min(100, Math.max(10, Math.floor(opacity))) : DEFAULT_DANMU_OPACITY;
@@ -302,6 +306,7 @@ onMounted(() => {
         state.danmuArea = DEFAULT_DANMU_AREA;
         state.danmuMaxCount = DEFAULT_DANMU_MAX_COUNT;
         state.danmuOpacity = DEFAULT_DANMU_OPACITY;
+        state.danmuFontSize = DEFAULT_DANMU_FONT_SIZE;
     });
 
     new Promise((resolve, reject) => {
@@ -390,6 +395,8 @@ function addDanmu(danmuText: string, color='#fff') {
     danmu.style.left = `${container.offsetWidth}px`;
     danmu.style.top = `${getDanmuTop(container.offsetHeight)}px`;
     danmu.style.color = color;
+    danmu.style.fontSize = `${state.danmuFontSize}px`;
+    danmu.style.lineHeight = '1.4';
     danmu.style.opacity = `${state.danmuOpacity / 100}`;
     danmu.style.backgroundColor = `rgba(0, 0, 0, ${Math.max(0.08, state.danmuOpacity / 200)})`;
 
@@ -399,7 +406,8 @@ function addDanmu(danmuText: string, color='#fff') {
 }
 
 function getDanmuTop(containerHeight: number) {
-    const maxTop = Math.max(containerHeight - 30, 0);
+    const lineHeight = Math.ceil(state.danmuFontSize * 1.4) + 20;
+    const maxTop = Math.max(containerHeight - lineHeight, 0);
     if (maxTop === 0) {
         return 0;
     }
@@ -413,7 +421,7 @@ function getDanmuTop(containerHeight: number) {
     const [rawStart, rawEnd] = ranges[state.danmuArea] || ranges.top_half;
     const start = Math.min(maxTop, Math.max(0, rawStart));
     const end = Math.min(containerHeight, Math.max(start + 1, rawEnd));
-    const usableHeight = Math.max(1, end - start - 30);
+    const usableHeight = Math.max(1, end - start - lineHeight);
     return Math.min(maxTop, start + Math.random() * usableHeight);
 }
 
@@ -758,7 +766,7 @@ onUnmounted(() => {
 .danmu {
     position: absolute;
     white-space: nowrap;
-    font-size: 20px;
+    font-size: 16px;
     color: white;
     padding: 5px;
     margin: 5px;

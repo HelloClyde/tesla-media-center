@@ -54,6 +54,7 @@ const state = reactive({
     danmakuArea: 'top_half',
     danmakuMaxCount: 30,
     danmakuOpacity: 70,
+    danmakuFontSize: 16,
   },
   biliSettingsLoading: false,
 })
@@ -407,6 +408,8 @@ const loadBiliSettings = () => {
     state.biliSettings.danmakuArea = configData.bilibili_danmaku_area || 'top_half';
     state.biliSettings.danmakuMaxCount = Number(configData.bilibili_danmaku_max_count) || 30;
     state.biliSettings.danmakuOpacity = Number(configData.bilibili_danmaku_opacity) || 70;
+    const fontSize = Number(configData.bilibili_danmaku_font_size ?? 16);
+    state.biliSettings.danmakuFontSize = Number.isFinite(fontSize) ? Math.min(32, Math.max(12, Math.round(fontSize))) : 16;
   }).finally(() => {
     state.biliSettingsLoading = false;
   });
@@ -424,6 +427,7 @@ const saveBiliSettings = () => {
       bilibili_danmaku_area: state.biliSettings.danmakuArea,
       bilibili_danmaku_max_count: state.biliSettings.danmakuMaxCount,
       bilibili_danmaku_opacity: state.biliSettings.danmakuOpacity,
+      bilibili_danmaku_font_size: state.biliSettings.danmakuFontSize,
     }, '保存B站播放配置失败');
   }).then(() => {
     ElMessage.success('B站设置已保存');
@@ -696,6 +700,14 @@ onUnmounted(() => {
                   <el-input-number v-model="state.biliSettings.danmakuMaxCount" :min="5" :step="5" :max="100" />
                   <span class="bili-setting-unit">条</span>
                 </div>
+              </div>
+              <div class="bili-setting-input">
+                <span class="bili-metric-label">弹幕字号</span>
+                <div class="button-row">
+                  <el-input-number v-model="state.biliSettings.danmakuFontSize" :min="12" :max="32" :step="1" aria-label="弹幕字号" />
+                  <span class="bili-setting-unit">px（默认 16）</span>
+                </div>
+                <span :style="{ fontSize: `${state.biliSettings.danmakuFontSize || 16}px` }">弹幕字号预览</span>
               </div>
               <div class="bili-setting-input bili-setting-input--wide">
                 <span class="bili-metric-label">弹幕透明度</span>

@@ -59,8 +59,15 @@ def update_config():
         'bilibili_danmaku_area',
         'bilibili_danmaku_max_count',
         'bilibili_danmaku_opacity',
+        'bilibili_danmaku_font_size',
         'gba_path',
     }
+
+    if 'bilibili_danmaku_font_size' in data:
+        value = data['bilibili_danmaku_font_size']
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 12 <= value <= 32 or int(value) != value:
+            return jsonify({'status': 'fail', 'message': '弹幕字号须为 12–32 的整数'}), 400
+        data['bilibili_danmaku_font_size'] = int(value)
 
     updated = {}
     for key, value in data.items():
