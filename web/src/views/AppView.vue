@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { House, VideoPlay, Monitor, MapLocation } from '@element-plus/icons-vue';
+import { House, VideoPlay, Monitor, MapLocation, Headset } from '@element-plus/icons-vue';
 import { reactive } from 'vue';
 import { RouterView,useRouter } from 'vue-router';
 
@@ -19,7 +19,7 @@ const state = reactive({
   menuItems: [
     {icon: MapLocation, route: '/apps/nav'},
     {icon: '/icon/TESLA_LOGO.svg', route: '/apps/tesla'},
-    // {icon: Headset, route: 'music'},
+    {icon: Headset, route: '/apps/qqmusic'},
     {icon: '/icon/BILIBILI_LOGO.svg', route: '/apps/bilibili'},
     {icon: '/icon/GBA_LOGO.svg', route: '/apps/gba'},
     {icon: VideoPlay, route: '/apps/video'},

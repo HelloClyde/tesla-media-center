@@ -6,3 +6,5 @@ cryptography
 imageio-ffmpeg
 requests
 aiohttp
+
+qqmusic-api-python==0.7.3

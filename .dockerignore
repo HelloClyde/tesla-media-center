@@ -13,3 +13,6 @@ web/dist/
 docker_build/build.sh
 shot/
 
+
+.qqmusic/
+.local-data/

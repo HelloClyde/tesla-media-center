@@ -33,3 +33,6 @@ docker_build/ffvideo
 docker_build/web
 docker_build/*.py
 docker_build/requirement.txt
+
+.qqmusic/
+.local-data/

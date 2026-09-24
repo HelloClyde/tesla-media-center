@@ -17,6 +17,7 @@ const router = createRouter({
       name: 'apps',
       component: AppViewVue,
       children:[
+        { path: 'qqmusic', name: 'qqmusic', component: () => import('../views/apps/QQMusicView.vue') },
         {
           path: 'home',
           name: 'home',
