@@ -2014,15 +2014,16 @@ watch(currentShiftState, () => {
 .tesla-page {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 18px;
+  gap: var(--page-space);
+  padding: var(--page-space);
 }
 
 .tesla-hero,
 .tesla-card,
 .tesla-tabs-card {
   border: 1px solid var(--color-border);
-  border-radius: 24px;
+  min-width: 0;
+  border-radius: var(--panel-radius);
   background: var(--color-surface);
   box-shadow: 0 14px 30px var(--color-shadow);
 }
@@ -2032,7 +2033,7 @@ watch(currentShiftState, () => {
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
-  padding: 22px 24px;
+  padding: var(--panel-space);
 }
 
 .tesla-kicker {
@@ -2047,6 +2048,14 @@ watch(currentShiftState, () => {
 .card-head h2 {
   margin: 0;
   color: var(--color-heading);
+}
+
+.tesla-hero h1 {
+  font-size: var(--title-size);
+}
+
+.card-head h2 {
+  font-size: clamp(18px, 2vw, 24px);
 }
 
 .tesla-copy {

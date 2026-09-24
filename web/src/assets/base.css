@@ -1,4 +1,11 @@
 :root {
+  /* Use the browser viewport, which can be much smaller than screen.width. */
+  --page-space: clamp(10px, 1.6vw, 20px);
+  --panel-space: clamp(12px, 1.8vw, 24px);
+  --panel-radius: clamp(16px, 2vw, 24px);
+  --title-size: clamp(20px, 2.4vw, 30px);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   --color-background: #f4f7fb;
   --color-background-soft: #ffffff;
   --color-background-mute: #eaf0f7;

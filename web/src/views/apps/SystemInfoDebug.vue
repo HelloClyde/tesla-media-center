@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import SimpleView from '@/components/SimpleView.vue';
-import { reactive, onMounted, computed } from 'vue';
+import H5Recorder from '@/components/H5Recorder.vue';
+import CameraTest from '@/components/CameraTest.vue';
+import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
-import getAMap from '@/functions/amapConfig';
 import { get, post } from '@/functions/requests';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
 
 const router = useRouter();
+const activeTab = ref('diagnostics');
 
 const state = reactive({
     screenInfo: {
@@ -31,8 +33,6 @@ const state = reactive({
     mapLoading: false,
 });
 
-let recorder: MediaRecorder | null = null;
-
 const postionState = useGeoLocationStore();
 
 const formatedPostion = computed(() => {
@@ -40,17 +40,36 @@ const formatedPostion = computed(() => {
     return JSON.stringify(curPos, null, '\t');
 });
 
-function refresh() {
-    state.screenInfo = window.screen;
+function refreshViewport() {
+    state.screenInfo = { width: window.screen.width, height: window.screen.height };
     state.screenView = {
         width: window.innerWidth,
         height: window.innerHeight,
     };
+    const viewport = window.visualViewport;
+    state.browser = JSON.stringify({
+        // The application appends compatibility tokens to navigator.userAgent.
+        userAgent: navigator.userAgent,
+        language: navigator.language,
+        devicePixelRatio: window.devicePixelRatio,
+        viewport: state.screenView,
+        visualViewport: viewport ? {
+            width: Math.round(viewport.width),
+            height: Math.round(viewport.height),
+            scale: viewport.scale,
+        } : null,
+        touchPoints: navigator.maxTouchPoints,
+        isSecureContext: window.isSecureContext,
+    }, null, 2);
+}
+
+function refresh() {
+    refreshViewport();
     state.tts = {
         voices: JSON.stringify(window.speechSynthesis.getVoices(), null, '\t'),
     };
 
-    navigator.mediaDevices.enumerateDevices()
+    navigator.mediaDevices?.enumerateDevices()
         .then((devices) => {
             state.media.devices = JSON.stringify(devices, null, '\t');
         })
@@ -64,24 +83,6 @@ function refresh() {
 function h5TTS(text: string) {
     const utterThis = new window.SpeechSynthesisUtterance(text);
     window.speechSynthesis.speak(utterThis);
-}
-
-function startRec() {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-        recorder = new MediaRecorder(stream);
-        recorder.addEventListener('dataavailable', () => {
-            console.log(stream);
-        });
-        recorder.start();
-    }).catch((e) => {
-        console.error('get audio stream fail.', e);
-    });
-}
-
-function stopRec() {
-    if (recorder !== null) {
-        recorder.stop();
-    }
 }
 
 function logout() {
@@ -112,11 +113,15 @@ function saveMapConfig() {
 }
 
 onMounted(() => {
+    window.addEventListener('resize', refreshViewport);
+    window.visualViewport?.addEventListener('resize', refreshViewport);
     refresh();
     postionState.init();
-    getAMap().then((amap) => {
-        state.browser = JSON.stringify(amap?.Browser, null, '\t');
-    });
+});
+
+onUnmounted(() => {
+    window.removeEventListener('resize', refreshViewport);
+    window.visualViewport?.removeEventListener('resize', refreshViewport);
 });
 </script>
 
@@ -127,11 +132,13 @@ onMounted(() => {
                 <div>
                     <p class="hero-kicker">Settings</p>
                     <h1>系统设置与调试</h1>
-                    <p class="hero-copy">集中管理缓存、账号和设备状态，常用配置放前面，诊断信息放后面。</p>
+                    <p class="hero-copy">按功能查看设备信息、管理设置，测试麦克风和摄像头。</p>
                 </div>
                 <el-button type="primary" round @click="refresh">刷新状态</el-button>
             </header>
 
+            <el-tabs v-model="activeTab" class="debug-tabs">
+            <el-tab-pane label="设置与账号" name="settings">
             <section class="settings-grid">
                 <article class="settings-card">
                     <div class="card-head">
@@ -158,31 +165,44 @@ onMounted(() => {
                     <div class="card-head">
                         <div>
                             <p class="card-kicker">Account</p>
-                            <h2>账号与语音</h2>
+                            <h2>账号</h2>
                         </div>
                     </div>
                     <div class="button-column">
-                        <el-button type="default" round @click="h5TTS('你好，特斯拉！')">测试中文 TTS</el-button>
-                        <el-button type="default" round @click="h5TTS('hello tesla!')">测试英文 TTS</el-button>
                         <el-button type="danger" plain round @click="logout()">退出登录</el-button>
                     </div>
                 </article>
 
+            </section>
+            </el-tab-pane>
+            <el-tab-pane label="录音与语音" name="audio">
+            <section class="settings-grid">
+                <article class="settings-card">
+                    <div class="card-head"><h2>语音播报</h2></div>
+                    <div class="button-column">
+                        <el-button type="default" round @click="h5TTS('你好，特斯拉！')">测试中文 TTS</el-button>
+                        <el-button type="default" round @click="h5TTS('hello tesla!')">测试英文 TTS</el-button>
+                    </div>
+                </article>
                 <article class="settings-card">
                     <div class="card-head">
                         <div>
                             <p class="card-kicker">Audio</p>
-                            <h2>录音调试</h2>
+                            <h2>H5 录音</h2>
                         </div>
                     </div>
-                    <div class="button-column">
-                        <el-button type="default" round @click="startRec">开始录音</el-button>
-                        <el-button type="default" round @click="stopRec">结束录音</el-button>
-                        <a class="link-button" href="https://recorder.zhuyuntao.cn/" target="_blank" rel="noreferrer">打开录音 Demo</a>
-                    </div>
+                    <H5Recorder v-if="activeTab === 'audio'" />
                 </article>
             </section>
 
+            </el-tab-pane>
+            <el-tab-pane label="摄像头测试" name="camera">
+                <article class="settings-card">
+                    <div class="card-head"><h2>摄像头测试</h2></div>
+                    <CameraTest v-if="activeTab === 'camera'" />
+                </article>
+            </el-tab-pane>
+            <el-tab-pane label="设备诊断" name="diagnostics">
             <section class="diagnostics-panel">
                 <div class="panel-head">
                     <div>
@@ -193,11 +213,11 @@ onMounted(() => {
 
                 <div class="diagnostics-grid">
                     <article class="diagnostic-card">
-                        <span class="diagnostic-title">屏幕像素</span>
+                        <span class="diagnostic-title">屏幕尺寸（CSS 像素）</span>
                         <strong>{{ state.screenInfo.width }} × {{ state.screenInfo.height }}</strong>
                     </article>
                     <article class="diagnostic-card">
-                        <span class="diagnostic-title">显示区域</span>
+                        <span class="diagnostic-title">显示区域（布局依据）</span>
                         <strong>{{ state.screenView.width }} × {{ state.screenView.height }}</strong>
                     </article>
                     <article class="diagnostic-card diagnostic-card--full">
@@ -214,15 +234,22 @@ onMounted(() => {
                     </article>
                 </div>
             </section>
+            </el-tab-pane>
+            </el-tabs>
         </section>
     </SimpleView>
 </template>
 
-<style>
+<style scoped>
+.debug-tabs { min-width: 0; }
+.debug-tabs :deep(.el-tabs__item) { font-size: clamp(14px, 1.8vw, 18px); height: 44px; padding: 0 14px; }
+.debug-tabs :deep(.el-tabs__nav) { height: 44px; }
+.debug-tabs :deep(.el-tabs__content) { overflow: visible; }
+
 .settings-page {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: var(--page-space);
 }
 
 .settings-hero {
@@ -230,7 +257,7 @@ onMounted(() => {
     align-items: flex-end;
     justify-content: space-between;
     gap: 20px;
-    padding: 24px 28px;
+    padding: var(--panel-space);
     border: 1px solid var(--color-border);
     border-radius: 28px;
     background: linear-gradient(135deg, rgba(28, 126, 214, 0.12) 0%, rgba(255, 255, 255, 0.82) 44%, rgba(255, 255, 255, 0.96) 100%);
@@ -238,7 +265,7 @@ onMounted(() => {
     overflow: hidden;
 }
 
-:root[data-theme='dark'] .settings-hero {
+:global(:root[data-theme='dark']) .settings-hero {
     background: linear-gradient(135deg, rgba(108, 182, 255, 0.18) 0%, rgba(18, 32, 48, 0.88) 46%, rgba(12, 20, 32, 0.96) 100%);
 }
 
@@ -258,6 +285,15 @@ onMounted(() => {
     color: var(--color-heading);
 }
 
+.settings-hero h1 {
+    font-size: var(--title-size);
+}
+
+.panel-head h2,
+.card-head h2 {
+    font-size: clamp(18px, 2vw, 24px);
+}
+
 .hero-copy {
     margin-top: 8px;
     max-width: 560px;
@@ -266,21 +302,22 @@ onMounted(() => {
 
 .settings-grid {
     display: grid;
-    grid-template-columns: 1.6fr 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
     gap: 16px;
 }
 
 .settings-card,
 .diagnostics-panel {
     border: 1px solid var(--color-border);
-    border-radius: 24px;
+    min-width: 0;
+    border-radius: var(--panel-radius);
     background: var(--color-surface);
     box-shadow: 0 14px 28px var(--color-shadow);
     backdrop-filter: blur(16px);
 }
 
 .settings-card {
-    padding: 22px;
+    padding: var(--panel-space);
 }
 
 .settings-card--wide {
@@ -415,7 +452,7 @@ onMounted(() => {
 }
 
 .diagnostics-panel {
-    padding: 22px;
+    padding: var(--panel-space);
 }
 
 .diagnostics-grid {
@@ -425,7 +462,8 @@ onMounted(() => {
 }
 
 .diagnostic-card {
-    padding: 16px 18px;
+    min-width: 0;
+    padding: var(--page-space);
     border-radius: 18px;
     background: var(--color-panel-muted);
     border: 1px solid var(--color-border);
@@ -445,10 +483,6 @@ onMounted(() => {
 }
 
 @media (max-width: 1120px) {
-    .settings-grid {
-        grid-template-columns: 1fr;
-    }
-
     .metric-row {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -456,7 +490,7 @@ onMounted(() => {
 
 @media (max-width: 768px) {
     .settings-hero {
-        padding: 20px;
+        padding: var(--panel-space);
         border-radius: 22px;
         flex-direction: column;
         align-items: flex-start;
@@ -464,12 +498,11 @@ onMounted(() => {
 
     .settings-card,
     .diagnostics-panel {
-        padding: 18px;
+        padding: var(--panel-space);
         border-radius: 20px;
     }
 
-    .metric-row,
-    .diagnostics-grid {
+    .metric-row {
         grid-template-columns: 1fr;
     }
 
@@ -480,6 +513,12 @@ onMounted(() => {
     .button-row,
     .inline-control {
         width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    .diagnostics-grid {
+        grid-template-columns: 1fr;
     }
 }
 </style>

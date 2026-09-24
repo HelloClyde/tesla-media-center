@@ -509,7 +509,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="bv-video-play-view">
+    <div class="bv-video-play-view responsive-player">
         <div ref="videoWrapper" class="bv-player-stage">
             <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
             <div v-show="!state.showScreen" class="screenCap"></div>
@@ -538,7 +538,7 @@ onUnmounted(() => {
             <div>
                 <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
-            <div>
+            <div class="player-controls">
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
@@ -547,7 +547,7 @@ onUnmounted(() => {
                 </audio>
             </div>
             <el-row justify="start">
-                <el-col :span="24">
+                <el-col :span="24" class="player-actions">
                     <el-button icon="Back" class="btn" size="large" @click="props.onClose" circle />
                     <el-button icon="ChatLineRound" class="btn" size="large" @click="switchDanmu" circle></el-button>
                     <el-button

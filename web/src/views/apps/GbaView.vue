@@ -1472,7 +1472,7 @@ onUnmounted(() => {
 .gba-page {
   height: 100%;
   min-height: 100%;
-  padding: 24px 28px 28px;
+  padding: var(--page-space);
   background:
     radial-gradient(circle at top right, rgba(34, 197, 94, 0.12), transparent 32%),
     radial-gradient(circle at left center, rgba(56, 189, 248, 0.16), transparent 28%),

@@ -73,10 +73,12 @@ function routeTo(name: string){
 
 <style scoped>
 .app-shell {
+  --menu-width: clamp(48px, 6.4vw, 80px);
+  --menu-item-height: clamp(44px, 11vh, 80px);
   display: flex;
   width: 100%;
+  height: 100vh;
   height: 100dvh;
-  min-height: 100dvh;
   overflow: hidden;
 }
 
@@ -98,8 +100,11 @@ function routeTo(name: string){
 
 
 .menu {
-  width: clamp(68px, 6.8vw, 80px);
-  flex: 0 0 clamp(68px, 6.8vw, 80px);
+  width: var(--menu-width);
+  flex: 0 0 var(--menu-width);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
   border-right: 1px solid var(--color-border);
   background: var(--color-surface);
   backdrop-filter: blur(18px);
@@ -107,22 +112,19 @@ function routeTo(name: string){
 }
 
 .menu-bottom {
-  position: absolute;
-  bottom: 0;
+  margin-top: auto;
   width: 100%;
 }
 
 .menu-top {
-  position: absolute;
-  top: 0;
   width: 100%;
 }
 
 .menu-item {
-  font-size: clamp(38px, 4vw, 50px);
+  font-size: clamp(26px, 3.8vw, 50px);
   width: 100%;
-  height: clamp(68px, 8vh, 80px);
-  line-height: clamp(68px, 8vh, 80px);
+  height: var(--menu-item-height);
+  line-height: var(--menu-item-height);
   text-align: center;
   color: var(--color-text-soft);
 }
@@ -134,8 +136,8 @@ function routeTo(name: string){
 .main-view {
   flex: 1 1 auto;
   min-width: 0;
-  width: calc(100vw - clamp(68px, 6.8vw, 80px));
-  height: 100dvh;
+  width: 0;
+  height: 100%;
   overflow: auto;
   color: var(--color-text);
 }
@@ -147,14 +149,4 @@ nav {
   margin-top: 2rem;
 }
 
-@media (max-width: 900px) {
-  .menu {
-    width: 64px;
-    flex-basis: 64px;
-  }
-
-  .main-view {
-    width: calc(100vw - 64px);
-  }
-}
 </style>

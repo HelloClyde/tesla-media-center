@@ -141,7 +141,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-    <div class="local-video-page">
+    <div class="local-video-page responsive-player">
         <div ref="videoWrapper" class="local-player-stage">
             <canvas id="player-canvas" ref="playerCanvas" width="1100" height="623"></canvas>
             <div v-show="!state.showScreen" class="screenCap"></div>
@@ -167,7 +167,7 @@ onUnmounted(() => {
             <div>
                 <input class="local-progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
-            <div class="local-controller-btn">
+            <div class="local-controller-btn player-controls">
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频"
                     inactive-text="短视频" />
@@ -175,26 +175,20 @@ onUnmounted(() => {
                     inactive-text="单播" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
                     inactive-text="仅音频" />
-                <el-icon :size="35" class="right" @click="fullscreen">
-                    <FullScreen />
-                </el-icon>
+                <button class="player-fullscreen" aria-label="全屏播放" @click="fullscreen">
+                    <el-icon :size="30"><FullScreen /></el-icon>
+                </button>
                 <audio id="silentAudio" loop controls style="height: 28px;">
                     <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
                 </audio>
             </div>
         </div>
         <div class="local-playlist">
+            <el-button class="local-playlist-back" @click="backLastFolder">
+                <el-icon><ArrowLeftBold /></el-icon>
+                <span>返回上一级</span>
+            </el-button>
             <div class="local-playlist-grid">
-                <el-card class="local-playlist-item" @click="backLastFolder">
-                    <template #header>
-                        <div class="local-playlist-item-icon">
-                            <el-icon>
-                                <ArrowLeftBold />
-                            </el-icon>
-                        </div>
-                    </template>
-                    <el-text size="large" class="local-playlist-back">返回上一级</el-text>
-                </el-card>
                 <el-card v-for="item of state.curFiles" class="local-playlist-item" @click="fileAction(item)">
                     <template #header>
                         <div class="local-playlist-item-icon" :class="{ 'local-playlist-active': item === state.playFile }">
@@ -315,8 +309,14 @@ onUnmounted(() => {
 }
 
 .local-playlist-back {
-    display: inline-block;
-    text-align: center;
+    display: inline-flex;
+    height: 44px;
+    margin-bottom: 10px;
+    padding: 0 12px;
+}
+
+.local-playlist-back .el-icon {
+    margin-right: 6px;
 }
 
 .local-playlist-item {

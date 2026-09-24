@@ -1,0 +1,31 @@
+/* Preserve canvas proportions and reserve space for touch controls. */
+.responsive-player.local-video-page,
+.responsive-player.bv-video-play-view { min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.responsive-player .local-player-stage,
+.responsive-player .bv-player-stage {
+  flex: 0 0 auto;
+  width: min(100%, 102.4vh);
+  width: min(100%, 102.4dvh);
+  height: auto;
+  aspect-ratio: 1100 / 623;
+  margin-inline: auto;
+}
+.responsive-player canvas { object-fit: contain; }
+.responsive-player canvas:fullscreen { width: 100vw; height: 100vh; object-fit: contain; background: #000; }
+.responsive-player .local-bottom-controller,
+.responsive-player .bv-bottom-controller { padding: 8px clamp(10px, 1.5vw, 16px) 0; }
+.responsive-player .player-controls,
+.responsive-player .player-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; font-size: clamp(14px, 1.8vw, 18px); }
+.responsive-player .player-controls label { padding: 0 !important; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.responsive-player .long-video-switch { margin: 0; min-height: 44px; }
+.responsive-player .player-controls audio { width: min(100%, 260px); }
+.responsive-player .player-fullscreen { float: none; margin: 0; width: 44px; height: 44px; padding: 6px; border: 0; background: transparent; color: var(--color-text); cursor: pointer; }
+.responsive-player .player-actions .el-button { flex: 0 0 44px; width: 44px; height: 44px; margin: 0; font-size: 22px !important; }
+.responsive-player .bv-title { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-size: clamp(16px, 2vw, 22px) !important; line-height: 1.4; }
+.responsive-player .local-playlist { flex: 0 0 auto; overflow: visible; padding: 10px; }
+.responsive-player .local-playlist-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); gap: 10px; }
+.responsive-player .ep-list { height: 144px; }
+.responsive-player .ep-item { flex: 0 0 130px; min-width: 130px; height: 124px; }
+.responsive-player .ep-item > img { height: 70px; }
+.responsive-player .local-video-play-btn .el-icon,
+.responsive-player .bv-video-play-btn .el-icon { font-size: clamp(48px, 9vh, 80px) !important; }

@@ -6,6 +6,7 @@
 
 <style>
 .layout {
-  padding: 20px;
+  min-width: 0;
+  padding: var(--page-space);
 }
 </style>

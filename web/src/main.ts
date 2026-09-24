@@ -10,6 +10,7 @@ import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import './assets/main.css'
+import './assets/player.css'
 const vConsole = new Vconsole();
 
 const syncTheme = (isDark: boolean) => {

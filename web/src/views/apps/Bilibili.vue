@@ -753,8 +753,8 @@ onUnmounted(() => {
 
 <style>
 .search-input {
-  font-size: 20px !important;
-  margin: 20px;
+  font-size: clamp(16px, 1.8vw, 20px) !important;
+  margin: var(--page-space);
   padding-right: 40px;
 }
 
@@ -779,12 +779,12 @@ onUnmounted(() => {
 }
 
 .el-tabs__nav {
-  height: 60px;
+  height: clamp(44px, 7.5vh, 60px);
 }
 
 .tabs .el-tabs__item {
-  font-size: 32px;
-  height: 60px;
+  font-size: clamp(20px, 2.5vw, 32px);
+  height: clamp(44px, 7.5vh, 60px);
 }
 
 .rank-type{
@@ -808,7 +808,7 @@ onUnmounted(() => {
   border-radius: 999px !important;
   background: transparent;
   color: var(--color-text-soft);
-  font-size: 18px !important;
+  font-size: clamp(14px, 1.6vw, 18px) !important;
   font-weight: 600;
   line-height: 1;
   box-shadow: none !important;
@@ -930,7 +930,7 @@ onUnmounted(() => {
 
 .bili-auth-panel {
   margin: 16px 20px 24px 10px;
-  padding: 24px;
+  padding: var(--panel-space);
   border: 1px solid var(--color-border);
   border-radius: 24px;
   background: var(--color-surface);
