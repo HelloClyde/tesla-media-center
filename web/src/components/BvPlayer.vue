@@ -2,7 +2,7 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
-import { Star, Headset } from '@element-plus/icons-vue';
+import { MoreFilled } from '@element-plus/icons-vue';
 import { useAudioChannel } from '@/functions/useAudioChannel';
 
 const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
@@ -545,56 +545,28 @@ onUnmounted(() => {
             <div class="bv-toolbar">
                 <div class="player-actions bv-toolbar-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
-                    <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
-                    <el-button aria-label="投币" title="投币"
-                        class="btn"
-                        size="large"
-                        :loading="state.actionLoading === 'coin'"
-                        :disabled="!!state.actionLoading || !state.bvid"
-                        @click="runVideoAction('coin')"
-                        circle
-                    >
-                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2" />
-                            <circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="1.8" opacity="0.72" />
-                            <path
-                                fill="currentColor"
-                                d="M12 7.2c.55 0 1 .45 1 1v.43c.72.2 1.31.58 1.78 1.12a1 1 0 0 1-1.51 1.31c-.31-.36-.72-.54-1.27-.54-.75 0-1.11.28-1.11.68 0 .37.26.58 1.46.86 1.23.29 2.74.79 2.74 2.55 0 1.19-.81 2.13-2.09 2.47v.72a1 1 0 1 1-2 0v-.66a3.5 3.5 0 0 1-2.16-1.22 1 1 0 1 1 1.52-1.3c.39.45.89.68 1.55.68.8 0 1.18-.31 1.18-.72 0-.45-.43-.67-1.68-.96-1.16-.27-2.52-.78-2.52-2.42 0-1.15.8-2.1 2.11-2.43V8.2c0-.55.45-1 1-1Z"
-                            />
-                        </svg>
-                    </el-button>
-                    <el-button aria-label="收藏" title="收藏"
-                        :icon="Star"
-                        class="btn"
-                        size="large"
-                        :loading="state.actionLoading === 'favorite'"
-                        :disabled="!!state.actionLoading || !state.bvid"
-                        @click="runVideoAction('favorite')"
-                        circle
-                    />
-                    <el-button aria-label="点赞" title="点赞"
-                        class="btn"
-                        size="large"
-                        :loading="state.actionLoading === 'like'"
-                        :disabled="!!state.actionLoading || !state.bvid"
-                        @click="runVideoAction('like')"
-                        circle
-                    >
-                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                                fill="currentColor"
-                                d="M2 10.5A2.5 2.5 0 0 1 4.5 8H7v12H4.5A2.5 2.5 0 0 1 2 17.5v-7ZM9 20V8.6l4.35-5.15c.47-.56 1.31-.62 1.85-.13.31.28.46.7.39 1.11L14.95 8H19a3 3 0 0 1 2.91 3.73l-1.2 4.8A4.5 4.5 0 0 1 16.34 20H9Z"
-                            />
-                        </svg>
-                    </el-button>
-                    <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
                 </div>
                 <span class="bv-inline-title" :title="state.title || ''">{{ state.title }}</span>
                 <input class="progress bv-inline-progress" id="timeTrack" ref="timeTrack" type="range" value="0" aria-label="播放进度">
                 <div class="player-controls bv-toolbar-status">
-                    <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
                     <label id="timeLabel" ref="timeLabel">00:00:00/00:00:00</label>
                 </div>
+                <el-popover trigger="click" placement="top-end" :width="220">
+                    <template #reference>
+                        <el-button class="bv-more-button" :icon="MoreFilled" circle aria-label="更多播放操作" title="更多" />
+                    </template>
+                    <div class="bv-more-menu">
+                        <el-button @click="restoreAudioChannel">恢复声音</el-button>
+                        <el-button :loading="state.actionLoading === 'coin'" :disabled="!!state.actionLoading || !state.bvid" @click="runVideoAction('coin')">投币</el-button>
+                        <el-button :loading="state.actionLoading === 'favorite'" :disabled="!!state.actionLoading || !state.bvid" @click="runVideoAction('favorite')">收藏</el-button>
+                        <el-button :loading="state.actionLoading === 'like'" :disabled="!!state.actionLoading || !state.bvid" @click="runVideoAction('like')">点赞</el-button>
+                        <el-button :aria-pressed="state.dmSwitch" @click="switchDanmu">{{ state.dmSwitch ? '关闭弹幕' : '开启弹幕' }}</el-button>
+                        <div class="bv-more-setting">
+                            <span>自动续播</span>
+                            <el-switch v-model="state.isAutoContinue" aria-label="自动续播" />
+                        </div>
+                    </div>
+                </el-popover>
                 <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
             </div>
             <el-row justify="start">
