@@ -128,15 +128,6 @@ onUnmounted(() => {
 <template>
     <SimpleView>
         <section class="settings-page">
-            <header class="settings-hero">
-                <div>
-                    <p class="hero-kicker">Settings</p>
-                    <h1>系统设置与调试</h1>
-                    <p class="hero-copy">按功能查看设备信息、管理设置，测试麦克风和摄像头。</p>
-                </div>
-                <el-button type="primary" round @click="refresh">刷新状态</el-button>
-            </header>
-
             <el-tabs v-model="activeTab" class="debug-tabs">
             <el-tab-pane label="设置与账号" name="settings">
             <section class="settings-grid">
@@ -209,6 +200,7 @@ onUnmounted(() => {
                         <p class="card-kicker">Diagnostics</p>
                         <h2>设备与环境信息</h2>
                     </div>
+                    <el-button type="primary" round @click="refresh">刷新状态</el-button>
                 </div>
 
                 <div class="diagnostics-grid">
@@ -252,24 +244,6 @@ onUnmounted(() => {
     gap: var(--page-space);
 }
 
-.settings-hero {
-    display: flex;
-    align-items: flex-end;
-    justify-content: space-between;
-    gap: 20px;
-    padding: var(--panel-space);
-    border: 1px solid var(--color-border);
-    border-radius: 28px;
-    background: linear-gradient(135deg, rgba(28, 126, 214, 0.12) 0%, rgba(255, 255, 255, 0.82) 44%, rgba(255, 255, 255, 0.96) 100%);
-    box-shadow: 0 18px 40px var(--color-shadow);
-    overflow: hidden;
-}
-
-:global(:root[data-theme='dark']) .settings-hero {
-    background: linear-gradient(135deg, rgba(108, 182, 255, 0.18) 0%, rgba(18, 32, 48, 0.88) 46%, rgba(12, 20, 32, 0.96) 100%);
-}
-
-.hero-kicker,
 .card-kicker {
     font-size: 12px;
     letter-spacing: 0.16em;
@@ -278,26 +252,15 @@ onUnmounted(() => {
     margin-bottom: 6px;
 }
 
-.settings-hero h1,
 .panel-head h2,
 .card-head h2 {
     margin: 0;
     color: var(--color-heading);
 }
 
-.settings-hero h1 {
-    font-size: var(--title-size);
-}
-
 .panel-head h2,
 .card-head h2 {
     font-size: clamp(18px, 2vw, 24px);
-}
-
-.hero-copy {
-    margin-top: 8px;
-    max-width: 560px;
-    color: var(--color-text-soft);
 }
 
 .settings-grid {
@@ -489,13 +452,6 @@ onUnmounted(() => {
 }
 
 @media (max-width: 768px) {
-    .settings-hero {
-        padding: var(--panel-space);
-        border-radius: 22px;
-        flex-direction: column;
-        align-items: flex-start;
-    }
-
     .settings-card,
     .diagnostics-panel {
         padding: var(--panel-space);
