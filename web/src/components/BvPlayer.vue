@@ -3,7 +3,9 @@ import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { Star } from '@element-plus/icons-vue';
-import { generateSilentWav } from '@/functions/audioUtils';
+import { useAudioChannel } from '@/functions/useAudioChannel';
+
+const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
 
 
 const playerCanvas = ref<HTMLCanvasElement | null>(null);
@@ -372,12 +374,7 @@ onMounted(() => {
     })
     state.isPlay = true;
 
-    const audio:any = document.getElementById("silentAudio");
-    const base64SilentAudio = generateSilentWav(60);
-    audio.src = 'data:audio/wav;base64,' + base64SilentAudio;
-    audio.play().catch(() => {
-        document.addEventListener("click", () => audio.play());
-    });
+    startAudioChannel();
 
     videoPlayer.setTrack(timeTrack.value, timeLabel.value);
 
@@ -542,9 +539,8 @@ onUnmounted(() => {
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
-                <audio id="silentAudio" loop controls style="height: 28px;display: none;">
-                    <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
-                </audio>
+                <el-button class="restore-audio-button" @click="restoreAudioChannel">恢复声音</el-button>
+                <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
             </div>
             <el-row justify="start">
                 <el-col :span="24" class="player-actions">

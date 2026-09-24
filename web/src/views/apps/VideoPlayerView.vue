@@ -2,7 +2,9 @@
 import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
 import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
-import { generateSilentWav } from '@/functions/audioUtils';
+import { useAudioChannel } from '@/functions/useAudioChannel';
+
+const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
 
 
 const playerCanvas = ref(null);
@@ -59,14 +61,7 @@ function playVideo(url: string, isStream=false) {
     videoPlayer.setTrack(timeTrack.value, timeLabel.value);
 
     
-    const audio:any = document.getElementById("silentAudio");
-    // 生成1分钟静音音频
-    const base64SilentAudio = generateSilentWav(60);
-    audio.src = 'data:audio/wav;base64,' + base64SilentAudio;
-    // console.log(base64SilentAudio); // 输出完整base64字符串
-    audio.play().catch(() => {
-        document.addEventListener("click", () => audio.play());
-    });
+    startAudioChannel();
 }
 
 
@@ -173,14 +168,13 @@ onUnmounted(() => {
                     inactive-text="短视频" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
+                <el-button class="restore-audio-button" @click="restoreAudioChannel">恢复声音</el-button>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
                     inactive-text="仅音频" />
                 <button class="player-fullscreen" aria-label="全屏播放" @click="fullscreen">
                     <el-icon :size="30"><FullScreen /></el-icon>
                 </button>
-                <audio id="silentAudio" loop controls style="height: 28px;">
-                    <source src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAABCxAgAEABAAZGF0YQAAAAA=">
-                </audio>
+                <audio ref="channelAudio" loop controls preload="auto" style="height: 28px;"></audio>
             </div>
         </div>
         <div class="local-playlist">
