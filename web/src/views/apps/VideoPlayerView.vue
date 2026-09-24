@@ -165,19 +165,23 @@ onUnmounted(() => {
             <div>
                 <input class="local-progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
-            <div class="local-controller-btn player-controls">
+            <div class="local-toolbar">
+              <div class="local-playback-options">
                 <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isLongVideo" size="large" active-text="长视频"
                     inactive-text="短视频" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
                     inactive-text="单播" />
-                <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
                 <el-switch class="long-video-switch" inline-prompt v-model="state.showScreen" size="large" active-text="视频"
                     inactive-text="仅音频" />
-                <button class="player-fullscreen" aria-label="全屏播放" @click="fullscreen">
-                    <el-icon :size="30"><FullScreen /></el-icon>
-                </button>
-                <audio ref="channelAudio" loop controls preload="auto" style="height: 28px;"></audio>
+              </div>
+              <div class="local-playback-actions">
+                <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
+                <el-button class="restore-audio-button" circle aria-label="全屏播放" title="全屏播放" @click="fullscreen">
+                    <el-icon :size="21"><FullScreen /></el-icon>
+                </el-button>
+              </div>
+                <audio ref="channelAudio" loop preload="auto" hidden aria-hidden="true"></audio>
             </div>
         </div>
         <div class="local-playlist">
