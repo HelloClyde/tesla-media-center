@@ -537,39 +537,11 @@ onUnmounted(() => {
             <div>
                 <input class="progress" id="timeTrack" ref="timeTrack" type="range" value="0">
             </div>
-            <div class="player-controls player-actions bv-toolbar">
-                <label id="timeLabel" ref="timeLabel" style="padding-left:10px;">00:00:00/00:00:00</label>
-                <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播"
-                    inactive-text="单播" />
-                <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
-                <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
+            <div class="bv-toolbar">
+                <div class="player-actions bv-toolbar-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
-                    <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
-                    <el-button
-                        class="btn"
-                        size="large"
-                        :loading="state.actionLoading === 'like'"
-                        :disabled="!!state.actionLoading || !state.bvid"
-                        @click="runVideoAction('like')"
-                        circle
-                    >
-                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-                            <path
-                                fill="currentColor"
-                                d="M2 10.5A2.5 2.5 0 0 1 4.5 8H7v12H4.5A2.5 2.5 0 0 1 2 17.5v-7ZM9 20V8.6l4.35-5.15c.47-.56 1.31-.62 1.85-.13.31.28.46.7.39 1.11L14.95 8H19a3 3 0 0 1 2.91 3.73l-1.2 4.8A4.5 4.5 0 0 1 16.34 20H9Z"
-                            />
-                        </svg>
-                    </el-button>
-                    <el-button
-                        :icon="Star"
-                        class="btn"
-                        size="large"
-                        :loading="state.actionLoading === 'favorite'"
-                        :disabled="!!state.actionLoading || !state.bvid"
-                        @click="runVideoAction('favorite')"
-                        circle
-                    />
-                    <el-button
+                    <el-button class="restore-audio-button" :icon="Headset" circle aria-label="恢复声音" title="恢复声音" @click="restoreAudioChannel" />
+                    <el-button aria-label="投币" title="投币"
                         class="btn"
                         size="large"
                         :loading="state.actionLoading === 'coin'"
@@ -586,6 +558,37 @@ onUnmounted(() => {
                             />
                         </svg>
                     </el-button>
+                    <el-button aria-label="收藏" title="收藏"
+                        :icon="Star"
+                        class="btn"
+                        size="large"
+                        :loading="state.actionLoading === 'favorite'"
+                        :disabled="!!state.actionLoading || !state.bvid"
+                        @click="runVideoAction('favorite')"
+                        circle
+                    />
+                    <el-button aria-label="点赞" title="点赞"
+                        class="btn"
+                        size="large"
+                        :loading="state.actionLoading === 'like'"
+                        :disabled="!!state.actionLoading || !state.bvid"
+                        @click="runVideoAction('like')"
+                        circle
+                    >
+                        <svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                            <path
+                                fill="currentColor"
+                                d="M2 10.5A2.5 2.5 0 0 1 4.5 8H7v12H4.5A2.5 2.5 0 0 1 2 17.5v-7ZM9 20V8.6l4.35-5.15c.47-.56 1.31-.62 1.85-.13.31.28.46.7.39 1.11L14.95 8H19a3 3 0 0 1 2.91 3.73l-1.2 4.8A4.5 4.5 0 0 1 16.34 20H9Z"
+                            />
+                        </svg>
+                    </el-button>
+                    <el-button icon="ChatLineRound" class="btn" size="large" aria-label="切换弹幕" @click="switchDanmu" circle></el-button>
+                </div>
+                <div class="player-controls bv-toolbar-status">
+                    <el-switch class="long-video-switch" inline-prompt v-model="state.isAutoContinue" size="large" active-text="续播" inactive-text="单播" />
+                    <label id="timeLabel" ref="timeLabel">00:00:00/00:00:00</label>
+                </div>
+                <audio ref="channelAudio" loop preload="auto" style="display: none;" aria-hidden="true"></audio>
             </div>
             <div class="bv-title-row">
                 <el-text class="bv-title" size="large">{{ state.title }}</el-text>
