@@ -30,33 +30,47 @@ onMounted(() => {
 
 
 <template>
-  <img src="/logo.jpg" style="position: fixed; top: 0; width: 100%; height: 100%;" />
-  <el-row justify="center">
-    <el-col :span="6"></el-col>
-    <el-col :span="8" className="login-form">
-      <el-form :model="form" label-width="auto" style="max-width: 600px" size="large">
+  <main class="login-page">
+    <section class="login-form" aria-label="登录">
+      <el-form :model="form" label-width="auto" size="large" @submit.prevent="onSubmit">
         <el-form-item label="密码">
           <el-input v-model="form.pwd" type="password" placeholder="请输入密码" show-password />
         </el-form-item>
-        <el-form-item>
-          <el-button type="primary" @click="onSubmit" style="width: 295px">登陆</el-button>
-        </el-form-item>
+        <el-button type="primary" native-type="submit" class="login-submit">登录</el-button>
       </el-form>
-    </el-col>
-    <el-col :span="6"></el-col>
-  </el-row>
+    </section>
+  </main>
 </template>
 
 
-<style>
+<style scoped>
+.login-page {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  overflow-y: auto;
+  padding: clamp(16px, 3vw, 32px);
+  background: url('/logo.jpg') center / cover no-repeat;
+}
+
 .login-form {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 360px;
+  margin-block: auto;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   box-shadow: 0 24px 48px var(--color-shadow);
   backdrop-filter: blur(14px);
   padding: 20px;
   border-radius: 10px;
-  position: relative;
-  top: 170px;
+}
+
+.login-submit {
+  width: 100%;
+  min-height: 44px;
 }
 </style>
