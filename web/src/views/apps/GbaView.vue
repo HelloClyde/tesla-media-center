@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { CaretRight, FolderOpened, RefreshRight, Refresh, VideoPause } from '@element-plus/icons-vue';
 import { del, get } from '@/functions/requests';
+import { createGbaLifetime, destroyGba } from './gbaLifecycle';
 import { generateSilentWav } from '@/functions/audioUtils';
 
 declare global {
@@ -177,6 +178,8 @@ function ensureEmulator() {
   });
 }
 
+const lifetime = createGbaLifetime();
+let romGeneration = 0;
 let gbaInstance: any = null;
 let saveSyncTimer: number | null = null;
 let silentAudioUnlockHandler: (() => void) | null = null;
@@ -205,6 +208,7 @@ function getActiveSaveKey(item?: any) {
 }
 
 function ensureSilentAudioPlayback() {
+  if (!lifetime.active()) return;
   const audio = silentAudioRef.value;
   if (!audio) {
     return;
@@ -213,11 +217,11 @@ function ensureSilentAudioPlayback() {
     audio.src = 'data:audio/wav;base64,' + generateSilentWav(60);
   }
   audio.play().catch(() => {
-    if (silentAudioUnlockHandler) {
+    if (!lifetime.active() || silentAudioRef.value !== audio || silentAudioUnlockHandler) {
       return;
     }
     silentAudioUnlockHandler = () => {
-      audio.play().catch(() => {});
+      if (lifetime.active()) audio.play().catch(() => {});
     };
     document.addEventListener('click', silentAudioUnlockHandler, { passive: true });
     document.addEventListener('touchstart', silentAudioUnlockHandler, { passive: true });
@@ -319,6 +323,7 @@ async function saveStateToSlot(slot: number) {
     throw new Error('当前没有正在运行的 ROM');
   }
   const saveKey = getStateKey();
+  const owner = gbaInstance, token = romGeneration;
   const wasPlaying = state.playing;
   if (wasPlaying) {
     gbaInstance.pause();
@@ -340,7 +345,7 @@ async function saveStateToSlot(slot: number) {
     ElMessage.success(`已保存到槽位 ${slot}`);
     await refreshSaveSlots();
   } finally {
-    if (wasPlaying) {
+    if (wasPlaying && lifetime.current(token) && gbaInstance === owner) {
       resumeEmulator();
     }
   }
@@ -350,6 +355,7 @@ async function loadStateFromSlot(slot: number) {
   if (!gbaInstance || !state.activeRomPath) {
     throw new Error('当前没有正在运行的 ROM');
   }
+  const owner = gbaInstance, token = romGeneration;
   const saveKey = getStateKey();
   const response = await fetch(`/api/gba/states/${encodeURIComponent(saveKey)}/${slot}`, {
     credentials: 'same-origin',
@@ -365,17 +371,20 @@ async function loadStateFromSlot(slot: number) {
   if (!serializer) {
     throw new Error('即时存档内核未准备就绪');
   }
-  gbaInstance.pause();
+  if (!lifetime.current(token) || gbaInstance !== owner) return;
+  owner.pause();
   await new Promise<void>((resolve, reject) => {
     serializer.deserialize(blob, (frost: any) => {
       try {
-        gbaInstance.defrost(frost);
+        if (!lifetime.current(token) || gbaInstance !== owner) { resolve(); return; }
+        owner.defrost(frost);
         resolve();
       } catch (error) {
         reject(error);
       }
     });
   });
+  if (!lifetime.current(token) || gbaInstance !== owner) return;
   if (gbaInstance.audio?.context?.resume) {
     gbaInstance.audio.context.resume().catch(() => {});
   }
@@ -457,9 +466,8 @@ function createEmulator() {
   if (!window.GameBoyAdvance || !window.biosBin || !canvasRef.value) {
     throw new Error('GBA 内核尚未就绪');
   }
-  if (gbaInstance) {
-    gbaInstance.pause();
-  }
+  destroyGba(gbaInstance);
+  gbaInstance = null;
   const gba = new window.GameBoyAdvance();
   gba.keypad.eatInput = true;
   gba.logLevel = gba.LOG_ERROR;
@@ -733,6 +741,7 @@ function pauseEmulator() {
 }
 
 function resumeEmulator() {
+  if (!lifetime.active()) return;
   if (!gbaInstance || !state.activeRomPath) {
     return;
   }
@@ -758,6 +767,8 @@ function resetEmulator() {
 }
 
 function loadRom(item: any) {
+  if (!lifetime.active()) return Promise.resolve();
+  const token = lifetime.next(); romGeneration = token;
   const pendingSavedata = pendingManualGameSaveData;
   pendingManualGameSaveData = null;
   state.loadingRom = true;
@@ -773,6 +784,7 @@ function loadRom(item: any) {
   });
   return ensureEmulator().then(async () => {
     await nextTick();
+    if (!lifetime.current(token)) return;
     ensureSilentAudioPlayback();
     const gba = createEmulator();
     logGbaLaunch('loadRom:emulator-ready', {
@@ -781,6 +793,7 @@ function loadRom(item: any) {
       hasCore: !!window.GameBoyAdvance,
     });
     const romBuffer = await downloadRomBuffer(item.url, item.name, item.type);
+    if (!lifetime.current(token) || gbaInstance !== gba) return;
     state.statusText = `正在载入《${item.name}》...`;
     if (!(romBuffer instanceof ArrayBuffer) || romBuffer.byteLength <= 0) {
       logGbaLaunch('loadRom:invalid-buffer', {
@@ -817,6 +830,8 @@ function loadRom(item: any) {
     logGbaLaunch('loadRom:runStable', { name: item.name, path: item.path });
     ElMessage.success(`已启动 ${item.name}`);
   }).catch((error: any) => {
+    if (!lifetime.current(token)) return;
+    destroyGba(gbaInstance); gbaInstance = null;
     state.playing = false;
     state.statusText = error?.message || 'ROM 加载失败';
     logGbaLaunch('loadRom:error', {
@@ -825,6 +840,7 @@ function loadRom(item: any) {
     });
     ElMessage.error(error?.message || 'ROM 加载失败');
   }).finally(() => {
+    if (!lifetime.current(token)) return;
     state.loadingRom = false;
   });
 }
@@ -1185,10 +1201,14 @@ onMounted(() => {
   startGamepadPolling();
 });
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
+  lifetime.dispose();
+  const silent = silentAudioRef.value;
+  if (silent) { silent.pause(); silent.removeAttribute('src'); silent.load(); }
   stopGamepadPolling();
   stopSaveSyncLoop();
-  pauseEmulator();
+  destroyGba(gbaInstance); gbaInstance = null;
+  state.playing = false;
   window.removeEventListener('gamepadconnected', handleGamepadConnected);
   window.removeEventListener('gamepaddisconnected', handleGamepadDisconnected);
   if (silentAudioUnlockHandler) {

@@ -1,0 +1,4 @@
+QQ Music official website favicon
+Source: https://y.qq.com/favicon.ico
+Retrieved: 2026-09-26
+Used to identify the QQ Music integration.

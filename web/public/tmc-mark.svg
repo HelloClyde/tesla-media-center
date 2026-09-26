@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>TMC</title>
+  <rect width="64" height="64" rx="18" fill="#B9F6CE"/>
+  <path d="M14 19h28v7H32v23h-8V26H14z" fill="#173E2C"/>
+  <path d="m39 31 13 8-13 8V31Z" fill="#173E2C"/>
+</svg>

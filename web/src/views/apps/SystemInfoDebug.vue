@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
+import AudioOutputTest from '@/components/AudioOutputTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
@@ -187,6 +188,7 @@ onUnmounted(() => {
             </section>
 
             </el-tab-pane>
+            <el-tab-pane label="声音测试" name="sound"><AudioOutputTest v-if="activeTab === 'sound'" /></el-tab-pane>
             <el-tab-pane label="摄像头测试" name="camera">
                 <article class="settings-card">
                     <div class="card-head"><h2>摄像头测试</h2></div>

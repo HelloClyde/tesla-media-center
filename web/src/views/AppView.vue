@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { House, VideoPlay, Monitor, MapLocation, Headset } from '@element-plus/icons-vue';
+import { House, VideoPlay, Monitor, MapLocation } from '@element-plus/icons-vue';
 import { reactive } from 'vue';
 import { RouterView,useRouter } from 'vue-router';
 
@@ -19,7 +19,7 @@ const state = reactive({
   menuItems: [
     {icon: MapLocation, route: '/apps/nav'},
     {icon: '/icon/TESLA_LOGO.svg', route: '/apps/tesla'},
-    {icon: Headset, route: '/apps/qqmusic'},
+    {icon: '/icon/QQMUSIC_LOGO.ico', route: '/apps/qqmusic'},
     {icon: '/icon/BILIBILI_LOGO.svg', route: '/apps/bilibili'},
     {icon: '/icon/GBA_LOGO.svg', route: '/apps/gba'},
     {icon: VideoPlay, route: '/apps/video'},
@@ -52,7 +52,7 @@ function routeTo(name: string){
         </div>
         <div class="menu-bottom">
           <div class="menu-item" :class="{ 'menu-item-active': item.route == state.curMenu }" v-for="item of state.menuItems">
-            <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili' }">
+            <el-icon @click="routeTo(item.route)" v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili', 'menu-icon-qqmusic': item.route === '/apps/qqmusic' }">
               <img :src="item.icon" class="icon-svg" />
             </el-icon>
             <el-icon @click="routeTo(item.route)" v-else>
@@ -81,6 +81,8 @@ function routeTo(name: string){
   height: 100dvh;
   overflow: hidden;
 }
+
+.menu-icon-qqmusic .icon-svg { filter: none; transform: none; }
 
 .icon-svg {
   width: 100%;

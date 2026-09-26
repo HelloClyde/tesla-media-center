@@ -164,45 +164,27 @@ class GameBoyAdvanceKeypad {
 		}
 	}
 	registerHandlers() {
-		window.addEventListener(
-			"keydown",
-			this.keyboardHandler.bind(this),
-			true
-		);
-		window.addEventListener("keyup", this.keyboardHandler.bind(this), true);
-
-		window.addEventListener(
-			"gamepadconnected",
-			this.gamepadConnectHandler.bind(this),
-			true
-		);
-		window.addEventListener(
-			"mozgamepadconnected",
-			this.gamepadConnectHandler.bind(this),
-			true
-		);
-		window.addEventListener(
-			"webkitgamepadconnected",
-			this.gamepadConnectHandler.bind(this),
-			true
-		);
-
-		window.addEventListener(
-			"gamepaddisconnected",
-			this.gamepadDisconnectHandler.bind(this),
-			true
-		);
-		window.addEventListener(
-			"mozgamepaddisconnected",
-			this.gamepadDisconnectHandler.bind(this),
-			true
-		);
-		window.addEventListener(
-			"webkitgamepaddisconnected",
-			this.gamepadDisconnectHandler.bind(this),
-			true
-		);
-	}
+        this.unregisterHandlers();
+        this.boundHandlers = [];
+        const add = (type, handler) => {
+            const bound = handler.bind(this);
+            this.boundHandlers.push([type, bound]);
+            window.addEventListener(type, bound, true);
+        };
+        add('keydown', this.keyboardHandler);
+        add('keyup', this.keyboardHandler);
+        for (const prefix of ['', 'moz', 'webkit']) {
+            add(prefix + 'gamepadconnected', this.gamepadConnectHandler);
+            add(prefix + 'gamepaddisconnected', this.gamepadDisconnectHandler);
+        }
+    }
+    unregisterHandlers() {
+        for (const [type, handler] of this.boundHandlers || []) {
+            window.removeEventListener(type, handler, true);
+        }
+        this.boundHandlers = [];
+        this.eatInput = false;
+    }
 	// keyId is ["A", "B", "SELECT", "START", "RIGHT", "LEFT", "UP", "DOWN", "R", "L"]
 	initKeycodeRemap(keyId) {
 		// Ensure valid keyId
