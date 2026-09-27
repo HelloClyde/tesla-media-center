@@ -23,6 +23,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Python for asset verification
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download and verify pinned Amap runtime
+        run: python tools/amap-app/release_assets.py
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

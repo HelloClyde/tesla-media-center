@@ -92,3 +92,22 @@ APK 和原生库仍不打进公开镜像。部署前须将经过校验的 `amap-
 这两项需合并到已有容器部署参数，保留原有端口、配置和数据卷。
 资源版本必须匹配 `tools/amap-app/tmc_route_helper.py` 中的 SHA-256；
 资源未挂载时，即使脚本及依赖齐全，地图仍不能工作。
+
+
+## Release 依赖打包（替代上面的手工挂载步骤）
+
+镜像工作流现在从固定 Release `amap-runtime-17.00.0.2005` 下载两个运行资源，
+使用 `tmc_route_helper.py` 的固定 SHA-256 校验；缺失或校验不一致立即终止构建。
+Docker 将资源复制至 `/opt/tmc/amap-app` 并再次校验，默认设置
+`TMC_AMAP_APP_ASSETS=/opt/tmc/amap-app`。新版镜像无需再手工挂载资源。
+若旧部署显式设置了该环境变量或挂载资源目录，需移除旧覆盖或确保路径有效。
+
+本地手工构建前运行（Python 3.11+）：
+
+```sh
+python tools/amap-app/release_assets.py
+docker build -f docker_build/Dockerfile .
+```
+
+下载目录 `docker_build/amap-assets/` 不进入 Git，但会进入 Docker 构建上下文。
+Release 版本与哈希固定，不跟随 latest；升级资源需同时更新版本及校验值。

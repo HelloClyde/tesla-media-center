@@ -36,3 +36,6 @@ docker_build/requirement.txt
 
 .qqmusic/
 .local-data/
+
+# Downloaded, checksum-verified Release assets for Docker builds
+docker_build/amap-assets/
