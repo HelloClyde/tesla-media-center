@@ -51,10 +51,14 @@ def add_amap_map_route(app):
             return json_ok({'tiles': [], 'pending': True, 'retryAfterMs': 750}), 202
         request_id = uuid.uuid4().hex[:12]
         try:
+            helper = ROOT / 'tools/amap-app/tmc_map_helper.py'
+            if not helper.is_file():
+                current_app.logger.error('amap map request=%s missing_helper=tools/amap-app/tmc_map_helper.py rebuild deployment image', request_id)
+                raise FileNotFoundError(2, 'map helper missing')
             now = time.monotonic()
             missing = [t for t in tiles if t not in CACHE or now - CACHE[t][0] > 600 or CACHE[t][1].get('missingLayers')]
             if missing:
-                process = subprocess.run([sys.executable, str(ROOT / 'tools/amap-app/tmc_map_helper.py')],
+                process = subprocess.run([sys.executable, str(helper)],
                     input=json.dumps({'level': level, 'tiles': [t[1:] for t in missing]}).encode(), stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, cwd=ROOT, timeout=65, check=True)
                 if len(process.stdout) > 24 * 1024 * 1024:

@@ -70,3 +70,25 @@ Python 3.11+，安装可选依赖 `python -m pip install -r tools/amap-app/requi
 及恢复音频通道后能继续播报；QQ 音乐播放时可听清且播报结束恢复；停止导航
 不再播放过期提示；断网/合成失败有明确状态，不影响地图与文字导航。
 当前仅记录设计，不宣称服务端语音已接入或实车验证通过。
+
+
+## Docker 部署地图运行时
+
+2026-09-27 修正：旧镜像遗漏 `tools/amap-app`，地图子进程会以 exit=2 退出。
+镜像现复制辅助脚本、安装其依赖并使用 Python 3.11（资源校验使用
+`hashlib.file_digest`），构建时检查辅助模块能否导入。必须重新构建/拉取新版
+镜像并重建容器，仅重启旧容器不会补入文件。
+
+APK 和原生库仍不打进公开镜像。部署前须将经过校验的 `amap-release.apk`
+及 `libserverkey.so` 放到服务器专用目录，并只读挂载。例如将服务器上的
+`/opt/tmc/amap-app` 挂载到容器 `/opt/amap-app`，设置
+`TMC_AMAP_APP_ASSETS=/opt/amap-app`：
+
+```text
+--mount type=bind,src=/opt/tmc/amap-app,dst=/opt/amap-app,readonly
+-e TMC_AMAP_APP_ASSETS=/opt/amap-app
+```
+
+这两项需合并到已有容器部署参数，保留原有端口、配置和数据卷。
+资源版本必须匹配 `tools/amap-app/tmc_route_helper.py` 中的 SHA-256；
+资源未挂载时，即使脚本及依赖齐全，地图仍不能工作。
