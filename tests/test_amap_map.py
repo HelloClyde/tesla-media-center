@@ -10,6 +10,31 @@ from ffvideo import amap_map
 
 
 class MapTest(unittest.TestCase):
+    def test_lane_cache_is_separate_and_cleared_with_base_map(self):
+        base = {'level': 15, 'x': 26978, 'y': 9118, 'buildings': []}
+        lanes = {'level': 15, 'x': 26978, 'y': 9118, 'laneBoundaries': [[[116.3, 39.9], [116.31, 39.91]]]}
+        self.disk.write((15, 26978, 9118), base, 0)
+        payload = {'layer': 'lanes', 'level': 15, 'tiles': [[26978, 9118]]}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [lanes]}).encode())) as run:
+            first = self.client.post('/api/amap-app/map', json=payload)
+            second = self.client.post('/api/amap-app/map', json=payload)
+            self.assertEqual(first.json['data']['tiles'], [lanes])
+            self.assertEqual(second.json, first.json)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(json.loads(run.call_args.kwargs['input'])['layer'], 'lanes')
+        self.assertEqual(self.disk.read([(15, 26978, 9118)])[0][(15, 26978, 9118)], base)
+        self.assertEqual(self.disk.status()['count'], 2)
+        self.client.delete('/api/amap-app/cache')
+        self.assertEqual(self.disk.status()['count'], 0)
+
+    def test_lane_request_is_bounded(self):
+        with patch.object(amap_map.subprocess, 'run') as run:
+            for payload in [dict(layer='other', tiles=[[0, 0]]),
+                            dict(layer='lanes', level=14, tiles=[[0, 0]]),
+                            dict(layer='lanes', level=15, tiles=[[0, 0], [1, 0]])]:
+                self.assertEqual(self.client.post('/api/amap-app/map', json=payload).status_code, 400)
+            run.assert_not_called()
+
     def test_building_level_uses_own_cache(self):
         tile = {'level': 15, 'x': 26985, 'y': 9103, 'buildings': [{'id': '7', 'parts': []}]}
         self.disk.write((15, 26985, 9103), tile, 0)

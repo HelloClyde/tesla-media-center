@@ -24,8 +24,13 @@ def grids(payload):
     level = payload.get('level', 14) if isinstance(payload, dict) else 14
     if type(level) is not int or level not in (3, 6, 8, 10, 12, 14, 15):
         raise ValueError('invalid level')
+    layer = payload.get('layer', 'base') if isinstance(payload, dict) else 'base'
+    if layer not in ('base', 'lanes'):
+        raise ValueError('invalid layer')
     if not isinstance(tiles, list) or not 1 <= len(tiles) <= 24:
         raise ValueError('invalid batch')
+    if layer == 'lanes' and (level != 15 or len(tiles) != 1):
+        raise ValueError('invalid lane batch')
     if any(not isinstance(t, list) or len(t) != 2 or any(type(v) is not int or not 0 <= v < 1 << level for v in t) for t in tiles):
         raise ValueError('invalid tile')
     return list(dict.fromkeys(tuple(t) for t in tiles))
@@ -77,7 +82,9 @@ def add_amap_map_route(app):
             payload = request.get_json(silent=True)
             tiles = grids(payload)
             level = payload.get('level', 14)
-            tiles = [(level, *t) for t in tiles]
+            layer = payload.get('layer', 'base')
+            prefix = ('lanes-v1', level) if layer == 'lanes' else (level,)
+            tiles = [(*prefix, *t) for t in tiles]
         except ValueError:
             return json_fail(message='地图范围无效'), 400
         try:
@@ -100,7 +107,7 @@ def add_amap_map_route(app):
             missing = [t for t in tiles if t not in cached]
             if missing:
                 process = subprocess.run([sys.executable, str(helper)],
-                    input=json.dumps({'level': level, 'tiles': [t[1:] for t in missing]}).encode(), stdout=subprocess.PIPE,
+                    input=json.dumps({'layer': layer, 'level': level, 'tiles': [t[-2:] for t in missing]}).encode(), stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE, cwd=ROOT, timeout=65, check=True)
                 if len(process.stdout) > 24 * 1024 * 1024:
                     raise ValueError('output limit')
@@ -109,7 +116,7 @@ def add_amap_map_route(app):
                     current_app.logger.error('amap map request=%s helper diagnostic=%s', request_id, json.dumps(result.get('diagnostic', {}), ensure_ascii=False)[:3000])
                     raise ValueError('helper unavailable')
                 for tile in result.get('tiles', []):
-                    key = (level, tile['x'], tile['y'])
+                    key = (*prefix, tile['x'], tile['y'])
                     if key not in missing:
                         raise ValueError('unexpected tile')
                     if not tile.get('error'):
@@ -118,7 +125,7 @@ def add_amap_map_route(app):
                             disk.write(key, tile, cache_generation)
                         except (OSError, sqlite3.Error):
                             current_app.logger.error('amap disk cache write failed; serving downloaded tile')
-            return json_ok({'tiles': [cached.get(t, {'level': t[0], 'x': t[1], 'y': t[2], 'error': 'unsupported-tile'}) for t in tiles]})
+            return json_ok({'tiles': [cached.get(t, {'level': level, 'x': t[-2], 'y': t[-1], 'error': 'unsupported-tile'}) for t in tiles]})
         except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
             # Never log raw stderr or exception messages containing signed URLs.
             detail = ''

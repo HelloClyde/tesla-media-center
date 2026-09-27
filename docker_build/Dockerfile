@@ -26,7 +26,7 @@ COPY tools/amap-app ./tools/amap-app
 COPY docker_build/amap-assets /opt/tmc/amap-app
 ENV TMC_AMAP_APP_ASSETS=/opt/tmc/amap-app
 RUN python tools/amap-app/release_assets.py --verify-only --directory /opt/tmc/amap-app
-RUN python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper"
+RUN python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper"
 COPY video ./video
 COPY web/public ./web/public
 COPY --from=web-builder /build/web/dist ./web/dist

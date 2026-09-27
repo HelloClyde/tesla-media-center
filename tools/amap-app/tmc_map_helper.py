@@ -31,6 +31,9 @@ def download(url, params):
 
 
 def main(payload):
+    if payload.get('layer') == 'lanes':
+        from tmc_lane_helper import main as lane_main
+        return lane_main(payload)
     tiles = payload['tiles']
     level = payload.get('level', 14)
     if type(level) is not int or level not in (3, 6, 8, 10, 12, 14, 15):
