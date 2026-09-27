@@ -164,3 +164,20 @@ BaseSugRequest.fetch
 - 已准备独立的 `tmc-amap` AVD 配置和后台启动脚本，均在本地忽略目录。
 - 用户要求先处理 QQ 音乐首页按钮，下载在后台完成；尚未启动此 AVD、
   安装高德或确认 ARM64 转译和未登录搜索。
+
+## Android App 首次运行验证（2026-09-27）
+
+- 独立 AVD 已完成启动，`sys.boot_completed=1`。
+- 系统报告 `x86_64,x86,arm64-v8a,armeabi-v7a,armeabi`，原生桥接为
+  `libndk_translation.so`；APK 安装返回 Success。
+- 官方 App 可展示首次使用协议页；继续后退出到 Android 桌面。
+  再次正常启动也返回桌面，尚未进入搜索页面。
+- crash 日志记录主进程和 locationservice 的 SIGILL（SI_TKILL），
+  回溯经过 libndk_translation 的 GuestThread / ExecuteGuest / RunGuestCall。
+  这说明目前运行环境没有通过实际兼容性验证；不能仅凭回溯判断
+  是不支持的 ARM 指令还是 App 主动触发信号，更不能据此断言需要登录。
+- 原始日志保存在忽略目录 `.local-data/amap-sdk/amap-native-crash.log`。
+  本轮没有修改 APK、绕过检测或生成安全组件凭据。
+
+下一步应先解决运行环境兼容性（对照更新的官方 Android 镜像），
+再验证匿名搜索。当前没有新增可供 Web 接入的成功搜索样本。

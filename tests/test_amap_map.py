@@ -65,6 +65,22 @@ class MapTest(unittest.TestCase):
             self.assertEqual(response.json['data']['tiles'], [ready])
             self.assertEqual(run.call_count, 1)
 
+    def test_missing_dependency_logged_without_raw_stderr(self):
+        error = amap_map.subprocess.CalledProcessError(1, ['helper'], stderr=b"private signed-url\nModuleNotFoundError: No module named 'unicorn'")
+        with patch.object(amap_map.subprocess, 'run', side_effect=error), self.assertLogs(self.app.logger, level='ERROR') as logs:
+            response = self.client.post('/api/amap-app/map', json={'tiles': [[1, 2]]})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('missing_module=unicorn', ' '.join(logs.output))
+        self.assertNotIn('signed-url', ' '.join(logs.output) + response.text)
+
+    def test_helper_reason_in_server_logs_only(self):
+        result = {'error': 'map-unavailable', 'diagnostic': {'reason': 'missing-runtime'}}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())), self.assertLogs(self.app.logger, level='ERROR') as logs:
+            response = self.client.post('/api/amap-app/map', json={'tiles': [[1, 2]]})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('missing-runtime', ' '.join(logs.output))
+        self.assertNotIn('missing-runtime', response.text)
+
     def test_helper_failure_is_sanitized(self):
         with patch.object(amap_map.subprocess, 'run', side_effect=OSError('private upstream details')):
             response = self.client.post('/api/amap-app/map', json={'tiles': [[1, 2]]})

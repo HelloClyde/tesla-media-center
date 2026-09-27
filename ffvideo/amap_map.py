@@ -6,7 +6,9 @@ import subprocess
 import sys
 import threading
 import time
-from flask import request
+import re
+import uuid
+from flask import request, current_app
 from ffvideo.utils import login_check, json_ok, json_fail
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,17 +49,19 @@ def add_amap_map_route(app):
         # launch duplicate work or treat normal contention as rate limiting.
         if not LOCK.acquire(blocking=False):
             return json_ok({'tiles': [], 'pending': True, 'retryAfterMs': 750}), 202
+        request_id = uuid.uuid4().hex[:12]
         try:
             now = time.monotonic()
             missing = [t for t in tiles if t not in CACHE or now - CACHE[t][0] > 600 or CACHE[t][1].get('missingLayers')]
             if missing:
                 process = subprocess.run([sys.executable, str(ROOT / 'tools/amap-app/tmc_map_helper.py')],
                     input=json.dumps({'level': level, 'tiles': [t[1:] for t in missing]}).encode(), stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL, cwd=ROOT, timeout=65, check=True)
+                    stderr=subprocess.PIPE, cwd=ROOT, timeout=65, check=True)
                 if len(process.stdout) > 24 * 1024 * 1024:
                     raise ValueError('output limit')
                 result = json.loads(process.stdout)
                 if 'error' in result:
+                    current_app.logger.error('amap map request=%s helper diagnostic=%s', request_id, json.dumps(result.get('diagnostic', {}), ensure_ascii=False)[:3000])
                     raise ValueError('helper unavailable')
                 for tile in result.get('tiles', []):
                     key = (level, tile['x'], tile['y'])
@@ -70,7 +74,20 @@ def add_amap_map_route(app):
                     CACHE.popitem(last=False)
             return json_ok({'tiles': [CACHE[t][1] if t in CACHE and time.monotonic() - CACHE[t][0] <= 600
                             else {'level': t[0], 'x': t[1], 'y': t[2], 'error': 'unsupported-tile'} for t in tiles]})
-        except (ValueError, KeyError, OSError, subprocess.SubprocessError):
-            return json_fail(message='App 地图暂不可用，请重试'), 502
+        except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+            # Never log raw stderr or exception messages containing signed URLs.
+            detail = ''
+            if isinstance(error, subprocess.CalledProcessError):
+                stderr = (error.stderr or b'').decode('utf-8', errors='replace')
+                missing = re.search(r"ModuleNotFoundError: No module named '([a-zA-Z0-9_.]+)'", stderr)
+                detail = 'exit=' + str(error.returncode)
+                if missing:
+                    detail += ' missing_module=' + missing.group(1)
+            elif isinstance(error, subprocess.TimeoutExpired):
+                detail = 'timeout=65s'
+            elif isinstance(error, OSError):
+                detail = 'errno=' + str(error.errno)
+            current_app.logger.error('amap map request=%s level=%s tiles=%s failure=%s %s', request_id, level, len(tiles), type(error).__name__, detail)
+            return json_fail(message=f'App 地图暂不可用，请重试（错误编号：{request_id}）'), 502
         finally:
             LOCK.release()

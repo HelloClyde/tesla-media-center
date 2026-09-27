@@ -2,6 +2,8 @@
 import hashlib
 import json
 import sys
+import traceback
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import requests
 from bmd_tile import catalog, tile_id, unpack, LIMIT
@@ -85,6 +87,14 @@ def main(payload):
 if __name__ == '__main__':
     try:
         result = main(json.loads(sys.stdin.buffer.read(4096)))
-    except Exception:
-        result = {'error': 'map-unavailable'}
+    except Exception as error:
+        # HTTP exception messages may contain signed URLs; retain only safe metadata.
+        reason = str(error) if str(error) in {'missing-runtime', 'asset-version-mismatch', 'unsupported tile host', 'unexpected status', 'response too large'} else type(error).__name__
+        frames = [{'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name}
+                  for f in traceback.extract_tb(error.__traceback__)[-8:]]
+        result = {'error': 'map-unavailable', 'diagnostic': {'reason': reason, 'frames': frames}}
+        if isinstance(error, ImportError):
+            result['diagnostic']['module'] = error.name
+        if isinstance(error, requests.HTTPError) and error.response is not None:
+            result['diagnostic']['httpStatus'] = error.response.status_code
     print(json.dumps(result, ensure_ascii=False))
