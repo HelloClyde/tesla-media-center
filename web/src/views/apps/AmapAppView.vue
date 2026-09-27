@@ -71,6 +71,7 @@ const remaining = computed(() => current.value ? Math.max(0, cumulative(current.
 let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
+let locationTimeout: ReturnType<typeof setTimeout> | undefined;
 let watchId: number | undefined, simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, lastFix = 0, offCount = 0, lastReplan = 0, spoken = '';
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
@@ -204,6 +205,8 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
 function toggleVoice() { muted.value = !muted.value; if (muted.value && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
 function stop() {
   locationGeneration++;
+  if (locationTimeout) clearTimeout(locationTimeout);
+  locationTimeout = undefined;
   if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
   watchId = undefined;
   if (simulation) clearInterval(simulation);
@@ -220,16 +223,40 @@ function startDemo() {
 }
 function locate(navigate = false) {
   if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
-  stop(); const id = locationGeneration; error.value = ''; status.value = '等待定位授权和当前位置';
+  if (!window.isSecureContext) { error.value = '当前位置页面不是安全连接，请通过 HTTPS 访问后再定位'; status.value = '定位需要安全连接'; return; }
+  stop(); const id = locationGeneration; error.value = ''; status.value = '正在获取当前位置…';
+  let received = false;
+  // Permission inspection is advisory; do not delay the user-initiated position request.
+  void navigator.permissions?.query({ name: 'geolocation' }).then(permission => {
+    if (disposed || id !== locationGeneration || received) return;
+    if (permission.state === 'granted') status.value = '定位已授权，正在等待车机返回位置';
+    else if (permission.state === 'prompt') status.value = '请在浏览器的位置权限提示中允许定位';
+    else status.value = '此网站的定位权限被拒绝，请检查浏览器网站权限';
+  }).catch(() => { /* Some car browsers do not support permission inspection. */ });
+  locationTimeout = setTimeout(() => {
+    if (disposed || id !== locationGeneration || received) return;
+    stop(); status.value = '尚未取得当前位置';
+    error.value = '浏览器长时间未返回位置；已授权也可能暂时没有定位信号，请稍后重试或在地图上选择起点';
+  }, 25000);
   if (navigate) { overviewActive.value = false; overviewGeneration++; mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined; heading.value = undefined; applyOrientation(); map.setZoom(17); }
   const receive = (position: GeolocationPosition) => {
-    if (disposed || id !== locationGeneration || Date.now() - position.timestamp > 15000) return;
+    if (disposed || id !== locationGeneration) return;
+    if (Date.now() - position.timestamp > 15000) { status.value = '收到的位置已过期，等待更新的位置'; return; }
+    received = true;
+    if (locationTimeout) clearTimeout(locationTimeout);
+    locationTimeout = undefined;
     const point = wgs84togcj02(position.coords.longitude, position.coords.latitude) as Point;
     lastFix = Date.now();
     if (!navigate) { clearRoute(); origin.value = point; originName.value = '当前位置'; endpoints(); map.panTo(latLng(point)); status.value = '已定位，请选择目的地'; }
     updatePosition(point, position.coords.accuracy, position.coords.heading, position.coords.speed);
   };
-  const failed = () => { if (!disposed && id === locationGeneration) { stop(); error.value = '无法获取定位，请允许浏览器位置权限并检查信号'; status.value = '定位不可用'; } };
+  const failed = (failure: GeolocationPositionError) => {
+    if (disposed || id !== locationGeneration) return;
+    stop(); status.value = '未能取得当前位置';
+    error.value = failure.code === 1 ? '此网站的定位请求被拒绝，请检查网站权限及浏览器定位设置' :
+      failure.code === 2 ? '浏览器暂时无法提供位置，请检查车机定位信号，或在地图上选择起点' :
+      failure.code === 3 ? '获取位置超时；这不代表未授权，请稍后重试或在地图上选择起点' : '定位失败，请重试';
+  };
   if (navigate) {
     watchId = navigator.geolocation.watchPosition(receive, failed, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
     lastFix = Date.now();

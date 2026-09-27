@@ -1,11 +1,13 @@
 """Authenticated, bounded viewport batches with a process-isolated decoder."""
-from collections import OrderedDict
+import os
+import gzip
+from ffvideo.amap_cache import MapCache
 import json
 from pathlib import Path
 import subprocess
 import sys
 import threading
-import time
+import sqlite3
 import re
 import uuid
 from flask import request, current_app
@@ -13,7 +15,7 @@ from ffvideo.utils import login_check, json_ok, json_fail
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = threading.Lock()
-CACHE = OrderedDict()
+
 
 
 def grids(payload):
@@ -29,6 +31,42 @@ def grids(payload):
 
 
 def add_amap_map_route(app):
+    @app.after_request
+    def compress_map_response(response):
+        if request.path != '/api/amap-app/map':
+            return response
+        response.vary.add('Accept-Encoding')
+        # Authenticated map responses must not enter shared proxy caches.
+        response.headers['Cache-Control'] = 'private, no-store'
+        if (response.status_code != 200 or response.is_streamed or
+                response.headers.get('Content-Encoding') or
+                request.accept_encodings.quality('gzip') <= 0):
+            return response
+        raw = response.get_data()
+        if len(raw) < 1024:
+            return response
+        encoded = gzip.compress(raw, compresslevel=5, mtime=0)
+        if len(encoded) < len(raw):
+            response.set_data(encoded)
+            response.headers['Content-Encoding'] = 'gzip'
+        return response
+
+    disk = MapCache(app.config.get('AMAP_CACHE_PATH') or Path(os.environ.get('TMC_AMAP_CACHE_DIR', ROOT / '.local-data/amap-cache')) / 'map.sqlite3')
+
+    @app.route('/api/amap-app/cache', methods=['GET', 'PUT', 'DELETE'])
+    @login_check
+    def map_cache_settings():
+        try:
+            settings = request.get_json(silent=True) if request.method == 'PUT' else None
+            if request.method == 'PUT' and not isinstance(settings, dict):
+                raise ValueError('缓存设置无效')
+            return json_ok(disk.status(settings, clear=request.method == 'DELETE'))
+        except ValueError as error:
+            return json_fail(message=str(error)), 400
+        except (OSError, sqlite3.Error):
+            current_app.logger.error('amap cache storage unavailable')
+            return json_fail(message='缓存目录不可写或数据库不可用'), 503
+
     @app.post('/api/amap-app/map')
     @login_check
     def amap_map():
@@ -41,10 +79,13 @@ def add_amap_map_route(app):
             tiles = [(level, *t) for t in tiles]
         except ValueError:
             return json_fail(message='地图范围无效'), 400
-        # Completed tiles remain available while another viewport is loading.
-        cached = [CACHE.get(t) for t in tiles]
-        if all(item and time.monotonic() - item[0] <= 600 and not item[1].get('missingLayers') for item in cached):
-            return json_ok({'tiles': [item[1] for item in cached]})
+        try:
+            cached, cache_generation = disk.read(tiles)
+        except (OSError, sqlite3.Error):
+            current_app.logger.error('amap disk cache read failed; continuing without cache')
+            cached, cache_generation = {}, -1
+        if len(cached) == len(tiles):
+            return json_ok({'tiles': [cached[t] for t in tiles]})
         # A disconnected browser does not stop the bounded helper. Do not
         # launch duplicate work or treat normal contention as rate limiting.
         if not LOCK.acquire(blocking=False):
@@ -55,8 +96,7 @@ def add_amap_map_route(app):
             if not helper.is_file():
                 current_app.logger.error('amap map request=%s missing_helper=tools/amap-app/tmc_map_helper.py rebuild deployment image', request_id)
                 raise FileNotFoundError(2, 'map helper missing')
-            now = time.monotonic()
-            missing = [t for t in tiles if t not in CACHE or now - CACHE[t][0] > 600 or CACHE[t][1].get('missingLayers')]
+            missing = [t for t in tiles if t not in cached]
             if missing:
                 process = subprocess.run([sys.executable, str(helper)],
                     input=json.dumps({'level': level, 'tiles': [t[1:] for t in missing]}).encode(), stdout=subprocess.PIPE,
@@ -72,12 +112,12 @@ def add_amap_map_route(app):
                     if key not in missing:
                         raise ValueError('unexpected tile')
                     if not tile.get('error'):
-                        CACHE[key] = (time.monotonic(), tile)
-                        CACHE.move_to_end(key)
-                while len(CACHE) > 96:
-                    CACHE.popitem(last=False)
-            return json_ok({'tiles': [CACHE[t][1] if t in CACHE and time.monotonic() - CACHE[t][0] <= 600
-                            else {'level': t[0], 'x': t[1], 'y': t[2], 'error': 'unsupported-tile'} for t in tiles]})
+                        cached[key] = tile
+                        try:
+                            disk.write(key, tile, cache_generation)
+                        except (OSError, sqlite3.Error):
+                            current_app.logger.error('amap disk cache write failed; serving downloaded tile')
+            return json_ok({'tiles': [cached.get(t, {'level': t[0], 'x': t[1], 'y': t[2], 'error': 'unsupported-tile'}) for t in tiles]})
         except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
             # Never log raw stderr or exception messages containing signed URLs.
             detail = ''

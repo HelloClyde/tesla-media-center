@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import MapCacheSettings from '@/components/MapCacheSettings.vue';
 import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
 import AudioOutputTest from '@/components/AudioOutputTest.vue';
@@ -177,6 +178,7 @@ onUnmounted(() => {
 
             </section>
             </el-tab-pane>
+            <el-tab-pane label="地图缓存" name="map-cache"><MapCacheSettings v-if="activeTab === 'map-cache'" /></el-tab-pane>
             <el-tab-pane label="录音与语音" name="audio">
             <section class="settings-grid">
                 <article class="settings-card">

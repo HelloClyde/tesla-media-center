@@ -1,5 +1,7 @@
+import gzip
 import json
-import time
+import tempfile
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,11 +13,42 @@ class MapTest(unittest.TestCase):
     def setUp(self):
         app = Flask(__name__)
         app.secret_key = 'test-only'
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        app.config['AMAP_CACHE_PATH'] = str(Path(temporary.name) / 'map.sqlite3')
+        self.disk = amap_map.MapCache(app.config['AMAP_CACHE_PATH'])
         amap_map.add_amap_map_route(app)
         self.app, self.client = app, app.test_client()
-        amap_map.CACHE.clear()
         with self.client.session_transaction() as session:
             session['last_visit'] = 1
+
+    def test_map_response_gzip_negotiation(self):
+        tile = {'level': 3, 'x': 1, 'y': 2, 'surfaces': [{'name': '道路', 'coordinates': [[116.123, 39.45]] * 500}]}
+        self.disk.write((3, 1, 2), tile, 0)
+        payload = {'level': 3, 'tiles': [[1, 2]]}
+        with patch.object(amap_map.subprocess, 'run') as run:
+            plain = self.client.post('/api/amap-app/map', json=payload)
+            compressed = self.client.post('/api/amap-app/map', json=payload, headers={'Accept-Encoding': 'gzip, deflate, br'})
+            disabled = self.client.post('/api/amap-app/map', json=payload, headers={'Accept-Encoding': 'gzip;q=0, identity;q=1'})
+            run.assert_not_called()
+        self.assertEqual(compressed.headers['Content-Encoding'], 'gzip')
+        self.assertEqual(json.loads(gzip.decompress(compressed.data)), plain.json)
+        self.assertLess(len(compressed.data), len(plain.data) / 2)
+        self.assertEqual(int(compressed.headers['Content-Length']), len(compressed.data))
+        self.assertIn('Accept-Encoding', compressed.headers['Vary'])
+        self.assertNotIn('Content-Encoding', disabled.headers)
+        self.assertNotIn('Content-Encoding', self.client.get('/api/amap-app/cache', headers={'Accept-Encoding': 'gzip'}).headers)
+
+    def test_cache_settings_api(self):
+        for method in ['get', 'put', 'delete']:
+            response = getattr(self.app.test_client(), method)('/api/amap-app/cache', json={})
+            self.assertEqual(response.json['status'], 'need_login')
+        self.assertEqual(self.client.put('/api/amap-app/cache', json={'ttlHours': 0, 'maxMB': 16}).status_code, 400)
+        response = self.client.put('/api/amap-app/cache', json={'ttlHours': 24, 'maxMB': 32})
+        self.assertEqual(response.json['data']['ttlHours'], 24)
+        self.disk.write((3, 1, 2), {'x': 1, 'y': 2}, response.json['data']['generation'])
+        self.assertEqual(self.client.get('/api/amap-app/cache').json['data']['count'], 1)
+        self.assertEqual(self.client.delete('/api/amap-app/cache').json['data']['count'], 0)
 
     def test_auth_and_batch_validation(self):
         with patch.object(amap_map.subprocess, 'run') as run:
@@ -31,7 +64,7 @@ class MapTest(unittest.TestCase):
             self.assertEqual(self.client.post('/api/amap-app/map', json={'tiles': [[1, 2], [2, 2]]}).json['status'], 'ok')
             self.client.post('/api/amap-app/map', json={'tiles': [[1, 2]]})
             self.assertEqual(run.call_count, 1)
-            self.assertNotIn((14, 2, 2), amap_map.CACHE)
+            self.assertNotIn((14, 2, 2), self.disk.read([(14, 2, 2)])[0])
 
     def test_zoom_cache_isolation_and_partial_layer_retry(self):
         tile = {'x': 1, 'y': 2, 'collection': {'type': 'FeatureCollection', 'features': []}, 'missingLayers': ['surfaces']}
@@ -42,14 +75,13 @@ class MapTest(unittest.TestCase):
             self.assertEqual(run.call_count, 2)
             self.client.post('/api/amap-app/map', json={'level': 14, 'tiles': [[1, 2]]})
             self.assertEqual(run.call_count, 3)
-            self.assertIn((12, 1, 2), amap_map.CACHE)
-            self.assertIn((14, 1, 2), amap_map.CACHE)
+            self.assertEqual(self.disk.status()['count'], 0)
             self.assertEqual(self.client.post('/api/amap-app/map', json={'level': 12, 'tiles': [[4096, 0]]}).status_code, 400)
             self.assertEqual(self.client.post('/api/amap-app/map', json={'level': 13, 'tiles': [[1, 2]]}).status_code, 400)
 
     def test_busy_worker_returns_pending_and_cached_tiles_remain_available(self):
         tile = {'level': 3, 'x': 6, 'y': 2, 'surfaces': []}
-        amap_map.CACHE[(3, 6, 2)] = (time.monotonic(), tile)
+        self.disk.write((3, 6, 2), tile, self.disk.status()['generation'])
         with amap_map.LOCK, patch.object(amap_map.subprocess, 'run') as run:
             cached = self.client.post('/api/amap-app/map', json={'level': 3, 'tiles': [[6, 2]]})
             self.assertEqual(cached.status_code, 200)
