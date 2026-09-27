@@ -5,7 +5,7 @@ defineOptions({ name: 'QQMusicView' });
 import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { VideoPlay, VideoPause, ArrowLeft, ArrowRight, Search, Headset, Check } from '@element-plus/icons-vue';
+import { VideoPlay, ArrowLeft, ArrowRight, Search, Headset, Check } from '@element-plus/icons-vue';
 import { roomImpulse, routeSpatialOutput, type Room } from './qqMusicSpatial';
 import { nextIndex, type PlayMode } from './qqMusicQueue';
 import QQMusicControlIcon from './QQMusicControlIcon.vue';
@@ -507,6 +507,7 @@ async function play(song: Song, fromList = false) {
     if (disposed || generation !== playGeneration) return;
     const result = cached || await api(`play?mid=${encodeURIComponent(song.mid)}&quality=${quality.value}`);
     if (disposed || generation !== playGeneration || !audio.value) return;
+    if (result.quality && result.quality !== quality.value) ElMessage.info(`此歌曲已自动降级为${qualityOptions.find(option => option.value === result.quality)?.label || result.quality}`);
     sources = result.urls || [result.url];
     audio.value.src = sources[0];
     if (eqContext?.state === 'suspended') await eqContext.resume();
@@ -701,7 +702,7 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
       <section v-if="tab === 'queue'" class="queue-tab"><h2>播放队列 <small>{{ queue.length }} 首</small></h2><p v-if="radioActive">猜你喜欢连续推荐模式</p><div class="queue-list"><div v-for="(song, index) in queue" :key="song.mid + index" class="queue-row"><el-button text :type="song.mid === current?.mid ? 'primary' : 'default'" @click="play(song)">{{ index + 1 }}. {{ song.title }}</el-button><el-button text :disabled="index === 0" @click="moveQueue(index)">上移</el-button><el-button text @click="removeQueue(index)">移除</el-button></div><p v-if="!queue.length">队列为空</p></div></section>
       <template v-if="tab === 'home'">
         <template v-if="homeMode === 'cards'">
-          <div class="home-intro"><el-button class="explore-top" @click="openBrowse('singers', '', '歌手')">歌手</el-button><el-button class="explore-top" @click="openBrowse('tops', '', '音乐排行榜')">排行榜</el-button><h2>让音乐陪你出发</h2><p>今天的好歌，和下一首惊喜</p></div>
+          <div class="home-intro"><div class="home-intro-copy"><h2>让音乐陪你出发</h2><p>今天的好歌，和下一首惊喜</p></div><nav class="home-explore" aria-label="音乐发现"><el-button @click="openBrowse('tops', '', '音乐排行榜')">排行榜</el-button><el-button @click="openBrowse('singers', '', '歌手')">歌手</el-button></nav></div>
           <div class="discovery-cards">
             <button class="discovery-card daily-card" @click="openDaily">
               <span class="calendar-art"><small>每日</small><b>{{ today }}</b></span>
@@ -757,10 +758,10 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
       <div class="play-controls">
         <el-button circle :disabled="radioActive" :aria-label="radioActive ? '猜你喜欢连续推荐' : modeLabels[mode] + '，点击切换'" :title="radioActive ? '猜你喜欢保持连续推荐模式' : modeLabels[mode] + '，点击切换'" @click="cycleMode"><QQMusicControlIcon :kind="mode" /></el-button>
         <el-button circle :class="{ 'eq-active': eqEnabled }" :aria-label="eqEnabled ? '均衡器已开启，调整音效' : '打开均衡器'" :title="eqEnabled ? '均衡器 · ' + eqPresets[eqPreset].name : '均衡器'" @click="eqOpen = true"><QQMusicControlIcon kind="equalizer" /></el-button>
-        <el-button circle aria-label="播放队列" title="播放队列" @click="openQueue()">☷</el-button>
-        <el-button v-if="current" circle :loading="collectionBusy" :title="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" :aria-label="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" @click="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)">{{ knownLikes[current.mid] ? '♥' : '♡' }}</el-button>
+        <el-button circle aria-label="播放队列" title="播放队列" @click="openQueue()"><QQMusicControlIcon kind="queue" /></el-button>
+        <el-button v-if="current" circle :loading="collectionBusy" :title="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" :aria-label="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" @click="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)"><QQMusicControlIcon :kind="knownLikes[current.mid] ? 'heart-filled' : 'heart'" /></el-button>
         <el-button circle :icon="ArrowLeft" aria-label="上一首" :disabled="!current || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0)" @click="step(-1)" />
-        <el-button circle type="primary" :icon="playing ? VideoPause : VideoPlay" :aria-label="playing ? '暂停' : '播放'" :loading="loadingTrack" :disabled="!current" @click="toggle" />
+        <el-button circle type="primary" :aria-label="playing ? '暂停' : '播放'" :loading="loadingTrack" :disabled="!current" @click="toggle"><QQMusicControlIcon v-if="!loadingTrack" :kind="playing ? 'pause' : 'play'" /></el-button>
         <el-button circle :icon="ArrowRight" aria-label="下一首" :disabled="!current || advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" @click="step(1)" />
       </div>
       <div class="seek"><span>{{ time(elapsed) }}</span><input type="range" min="0" :max="duration || 1" step="0.1" :value="elapsed" :style="{ '--seek-progress': `${duration > 0 ? Math.min(100, Math.max(0, elapsed / duration * 100)) : 0}%` }" :disabled="!duration || loadingTrack" :aria-valuetext="`${time(elapsed)} / ${time(duration)}`" aria-label="播放进度" @input="seek" /><span>{{ time(duration) }}</span></div>
@@ -790,13 +791,13 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
 .spatial-settings{display:flex;flex-direction:column;gap:16px;margin-top:20px;border-top:1px solid var(--color-border);padding-top:16px}.spatial-settings label{font-size:13px}.spatial-settings p{font-size:12px;line-height:1.7;color:var(--color-text-soft);margin:0}
 .play-controls .eq-active{color:#159766;border-color:#8dd6b9;background:#eaf8f1}@media(max-width:480px){.player .now-playing,.player .play-controls{grid-column:1/-1}.player .play-controls{justify-content:flex-end}}
 .eq-settings{display:flex;align-items:center;gap:12px;margin-top:12px}.eq-settings .el-select{width:150px}
-.song-row{display:flex;gap:6px;align-items:center}.song-row>.song{min-width:0;flex:1}.explore-top{float:right}.search-words{display:flex;flex-wrap:wrap;gap:3px}.queue-list{max-height:50vh;overflow:auto;margin-top:14px}.queue-row{display:flex;align-items:center}.queue-row>.el-button:first-child{flex:1;min-width:0;justify-content:flex-start;overflow:hidden}.playlist-choice{display:block;margin:10px 0;width:100%}.comment{border-bottom:1px solid var(--color-border);padding:14px 0}.comment p{white-space:pre-wrap;line-height:1.7}.comment small{color:var(--color-text-soft)}
+.song-row{display:flex;gap:6px;align-items:center}.song-row>.song{min-width:0;flex:1}.search-words{display:flex;flex-wrap:wrap;gap:3px}.queue-list{max-height:50vh;overflow:auto;margin-top:14px}.queue-row{display:flex;align-items:center}.queue-row>.el-button:first-child{flex:1;min-width:0;justify-content:flex-start;overflow:hidden}.playlist-choice{display:block;margin:10px 0;width:100%}.comment{border-bottom:1px solid var(--color-border);padding:14px 0}.comment p{white-space:pre-wrap;line-height:1.7}.comment small{color:var(--color-text-soft)}
 .music-header{flex-wrap:nowrap;min-width:0;gap:10px}.music-header .brand{flex-shrink:0;white-space:nowrap}.music-navigation{flex:1;min-width:0;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap}.music-navigation :deep(.el-radio-button){flex-shrink:0}.music-header .header-quality{flex-shrink:0}.music-header .account-entry{margin-left:0;max-width:140px;flex-shrink:0}.music-header .header-search{margin-left:0;flex-shrink:0}@media(max-width:800px){.music-header{gap:8px}.music-header .brand{gap:7px;font-size:18px}.music-navigation :deep(.el-radio-button__inner){padding:8px 10px}.music-header .account-entry{max-width:110px}}@media(max-width:600px){.music-header .brand strong{display:none}.music-header .account-entry{max-width:90px}}
 .quality-option{display:flex;align-items:center;justify-content:space-between;gap:20px;min-width:140px;min-height:32px}.quality-selected{color:var(--color-accent);font-weight:600}
 .qqmusic-logo{width:30px;height:30px;object-fit:contain;flex-shrink:0}
 .song-badges{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;max-width:210px;flex-shrink:0}.quality-badge{font-size:11px;white-space:nowrap;border:1px solid #b7d9cd;border-radius:5px;padding:3px 6px;color:#28745c;background:#eef9f4}.quality-badge.master,.quality-badge.premium{color:#765293;border-color:#d7c4e5;background:#f6f0fc}@media(max-width:650px){.song-badges{max-width:112px}}
 .account-entry{max-width:190px}.account-entry span{overflow:hidden;text-overflow:ellipsis}.access-badge{flex-shrink:0;font-size:11px;border-radius:5px;padding:3px 6px;background:var(--color-surface);color:var(--color-text-soft);border:1px solid var(--color-border)}.access-badge.vip{color:#956918;background:#fff4d9;border-color:#edd5a0}.access-badge.purchase,.access-badge.paid{color:#ac5744;background:#fff1eb;border-color:#efcfbf}.membership-label{font-weight:600}
-.home-intro{margin:12px 0 20px}.home-intro h2{font-size:24px;font-weight:650;margin:0 0 8px}.home-intro p{margin:0;color:var(--color-text-soft);font-size:14px}
+.home-intro{margin:12px 0 20px;padding-inline-end:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}.home-intro-copy{min-width:0;flex:1 1 220px}.home-explore{display:flex;align-items:center;gap:8px;flex:0 0 auto;margin-left:auto}.home-explore .el-button+.el-button{margin-left:0}.home-intro h2{font-size:24px;font-weight:650;margin:0 0 8px}.home-intro p{margin:0;color:var(--color-text-soft);font-size:14px}
 .discovery-cards{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;padding:2px 2px 16px}
 .discovery-card{position:relative;min-height:238px;padding:24px;border:0;border-radius:24px;text-align:left;overflow:hidden;cursor:pointer;color:#fff;display:flex;flex-direction:column;align-items:flex-start;isolation:isolate;box-shadow:0 8px 22px #12352b12;transition:transform .18s,box-shadow .18s}
 .discovery-card:hover{transform:translateY(-2px);box-shadow:0 12px 26px #12352b24}.discovery-card:focus-visible{outline:3px solid #409eff;outline-offset:3px}.discovery-card:disabled{cursor:wait}.daily-card{background:linear-gradient(130deg,#276b58,#163f38)}.radio-card{background:linear-gradient(130deg,#74538a,#34375c)}

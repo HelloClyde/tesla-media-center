@@ -483,28 +483,33 @@ def add_qqmusic_route(app):
         quality = request.args.get('quality', 'standard')
         if quality not in QUALITIES:
             raise InputError('不支持的音质')
-        file_type, size_field, label = QUALITIES[quality]
         if not re.fullmatch(r'[a-zA-Z0-9]{1,32}', mid):
             raise InputError('歌曲标识无效')
         async def resolve(client):
             detail = await client.song.get_detail(mid)
-            sizes = getattr(detail.track.file, 'size_new', [])
-            available = (sizes[size_field] if len(sizes) > size_field else 0) if isinstance(size_field, int) else getattr(detail.track.file, size_field, 0)
-            if not available:
-                raise InputError(f'此歌曲没有{label}音源，请选择其他音质')
-            urls = await client.song.get_song_urls([SongFileInfo(mid=mid, media_mid=detail.track.file.media_mid or None)], file_type=file_type)
-            if not urls.data or not urls.data[0].purl:
-                return None
-            cdn = await client.song.get_cdn_dispatch()
-            roots = sorted(set(x for x in cdn.sip if x.startswith('https://')), key=lambda x: '.stream.qqmusic.qq.com' not in x)
-            playable = []
-            for root in roots:
-                url = urljoin(root, urls.data[0].purl)
-                host = urlparse(url).hostname or ''
-                if urlparse(url).scheme == 'https' and (host.endswith('.qq.com') or host.endswith('.qqmusic.com')) and url not in playable:
-                    playable.append(url)
-            return playable
-        urls = run(identity(), resolve)
-        if not urls:
-            return json_fail(message=f'无法获取{label}音源，请登录有相应权益的 QQ 音乐账号，或选择其他音质')
-        return json_ok({'url': urls[0], 'urls': urls, 'quality': quality})
+            file = detail.track.file
+            sizes = getattr(file, 'size_new', [])
+            tiers = list(QUALITIES)
+            for actual in reversed(tiers[:tiers.index(quality) + 1]):
+                file_type, size_field, _ = QUALITIES[actual]
+                available = (sizes[size_field] if len(sizes) > size_field else 0) if isinstance(size_field, int) else getattr(file, size_field, 0)
+                if not available:
+                    continue
+                urls = await client.song.get_song_urls([SongFileInfo(mid=mid, media_mid=file.media_mid or None)], file_type=file_type)
+                if not urls.data or not urls.data[0].purl:
+                    continue
+                cdn = await client.song.get_cdn_dispatch()
+                roots = sorted(set(x for x in cdn.sip if x.startswith('https://')), key=lambda x: '.stream.qqmusic.qq.com' not in x)
+                playable = []
+                for root in roots:
+                    url = urljoin(root, urls.data[0].purl)
+                    host = urlparse(url).hostname or ''
+                    if urlparse(url).scheme == 'https' and (host.endswith('.qq.com') or host.endswith('.qqmusic.com')) and url not in playable:
+                        playable.append(url)
+                if playable:
+                    return {'url': playable[0], 'urls': playable, 'quality': actual, 'requestedQuality': quality}
+            return None
+        result = run(identity(), resolve)
+        if not result:
+            return json_fail(message='所有可选音质均无可用音源，请检查账号播放权益或更换歌曲')
+        return json_ok(result)

@@ -252,8 +252,18 @@ class QQMusicTest(unittest.TestCase):
                 self.assertEqual(song.get_song_urls.call_args.kwargs['file_type'], file_type)
             song.get_song_urls.reset_mock()
             file.size_flac = 0
-            self.assertEqual(self.client.get('/api/qqmusic/play?mid=test&quality=lossless').status_code, 400)
-            song.get_song_urls.assert_not_called()
+            result = self.client.get('/api/qqmusic/play?mid=test&quality=lossless')
+            self.assertEqual(result.json['data']['quality'], 'high')
+            self.assertEqual(song.get_song_urls.call_args.kwargs['file_type'], qqmusic.QUALITIES['high'][0])
+            song.get_song_urls.reset_mock()
+            song.get_song_urls.side_effect = [SimpleNamespace(data=[]), SimpleNamespace(data=[SimpleNamespace(purl='song.mp3')])]
+            result = self.client.get('/api/qqmusic/play?mid=test&quality=high')
+            self.assertEqual(result.json['data']['quality'], 'standard')
+            self.assertEqual(song.get_song_urls.await_count, 2)
+            song.get_song_urls.side_effect = None
+            song.get_song_urls.return_value = SimpleNamespace(data=[])
+            result = self.client.get('/api/qqmusic/play?mid=test&quality=master')
+            self.assertNotEqual(result.json['status'], 'ok')
 
     def test_login_provider_selection_and_replacement(self):
         login = SimpleNamespace(get_qrcode=AsyncMock(side_effect=lambda kind: SimpleNamespace(

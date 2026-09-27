@@ -1,7 +1,8 @@
 <script setup lang="ts">
+import QQMusicControlIcon from '@/views/apps/QQMusicControlIcon.vue';
 import { ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { VideoPlay, VideoPause, ArrowLeft, ArrowRight, Close } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Close } from '@element-plus/icons-vue';
 import { backgroundMusic as music, musicCommands } from '@/stores/backgroundMusic';
 const router = useRouter(), open = ref(false), failedCover = ref(false);
 watch(() => router.currentRoute.value.path, () => { open.value = false; });
@@ -21,7 +22,7 @@ async function fullPlayer() { await router.push('/apps/qqmusic'); musicCommands.
         <progress :value="music.elapsed" :max="music.duration || 1" aria-label="歌曲播放进度" />
         <div class="music-actions">
           <button aria-label="上一首" :disabled="music.loading || music.previousDisabled" @click="musicCommands.previous?.()"><el-icon><ArrowLeft /></el-icon></button>
-          <button class="music-toggle" :aria-label="music.playing ? '暂停音乐' : '播放音乐'" :disabled="music.loading" @click="musicCommands.toggle?.()"><el-icon><VideoPause v-if="music.playing" /><VideoPlay v-else /></el-icon></button>
+          <button class="music-toggle" :aria-label="music.playing ? '暂停音乐' : '播放音乐'" :disabled="music.loading" @click="musicCommands.toggle?.()"><QQMusicControlIcon :kind="music.playing ? 'pause' : 'play'" /></button>
           <button aria-label="下一首" :disabled="music.loading || music.nextDisabled" @click="musicCommands.next?.()"><el-icon><ArrowRight /></el-icon></button>
           <button class="full-player" @click="fullPlayer">打开播放器</button>
         </div>

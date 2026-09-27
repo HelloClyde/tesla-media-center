@@ -116,3 +116,51 @@ BaseSugRequest.fetch
 截至目前，业务请求、参数组织和安全组件调用入口已明确；未验证的关键点是
 实际 App 的运行时配置、组件输出，以及成功的匿名搜索响应。
 普通 Python HTTP 尚不能被视为完整替代；本轮未尝试伪造安全组件输出或绕过拦截。
+
+## 官方 App 运行验证准备
+
+- Windows Hypervisor Platform 的 InstallState 为 1，系统 HypervisorPresent 为 true。
+  WMI 的处理器虚拟化字段为 false，不能单凭该字段判断 BIOS 未启用虚拟化。
+- adb 未列出连接设备；本地 APK 只包含 arm64-v8a 原生库。
+- 计划验证 Google APIs Android 11 x86_64 镜像与该 ARM64 APK 的兼容性，
+  尚未把转译可用性当作已验证事实。
+- 官方 SDK 清单的稳定版 emulator 包为 `emulator-windows_x64-15917651.zip`，
+  标注大小 441926448、SHA-1 `54fa750822ff462d57e04fc8e98e60f08df2bb61`。
+  单连接下载缓慢；分段下载的范围校验随后失败。
+- 独立请求 bytes=0-1023 返回 HTTP 206，但 Content-Range 总大小为 441830240。
+  重新获取官方清单仍为 441926448。来源元数据与下载响应不一致，原因未确认，
+  没有忽略校验或执行该安装包。
+- 下载任务已经结束；部分文件只在忽略目录 `.local-data/amap-sdk/downloads`。
+  没有安装系统镜像、修改虚拟化设置或启动高德 App。
+
+下一步需取得与官方清单一致且通过校验的模拟器包，再验证启动、ARM64 兼容性，
+最后才是未登录官方 App 的实际搜索。当前仍没有成功搜索样本。
+
+## 更换模拟器版本：已完成
+
+改用官方归档的 Android Emulator 36.4.9 Stable（build 14788078）。
+来源：https://developer.android.com/studio/emulator_archive
+
+- 下载入口：官方归档链接的 `redirector.gvt1.com/edgedl/android/repository/`。
+  对相同文件，`dl.google.com` 的范围响应仍报告不同总大小，原因未确认；
+  官方归档入口的大小为 419394474，与归档元数据一致。
+- 使用 1 MiB 分段下载并检查 Content-Range，整包 SHA-256 校验通过：
+  `f93b0d51b3ea443ba7a068f2bc39cfdb30fae3ad0c98d001a7790d9acc85c6d5`。
+- 已解压至忽略目录 `.local-data/amap-sdk/android-sdk/emulator/`。
+- `emulator.exe -version` 实测返回 36.4.9.0、build_id 14788078。
+- `emulator.exe -accel-check` 返回 0，报告 WHPX(10.0.19045) installed and usable。
+- 未修改系统虚拟化功能，未重启电脑。
+
+模拟器程序现已可用；Android 系统镜像尚未安装，因此还未启动 Android、
+验证 ARM64 转译或在官方高德 App 内完成未登录搜索。不要将加速自检通过
+表述为 App 搜索已经成功。
+
+## Android 系统镜像已安装
+
+- Google APIs Android 11 / API 30 / x86_64 revision 16 镜像下载、校验和解压完成。
+- 官方镜像大小 1438186618 字节，整包 SHA-1 实测与清单一致：
+  `6ae21030eaadc041078444d3798e4b399f3e787d`。
+- 安装目录：`.local-data/amap-sdk/android-sdk/system-images/android-30/google_apis/x86_64`。
+- 已准备独立的 `tmc-amap` AVD 配置和后台启动脚本，均在本地忽略目录。
+- 用户要求先处理 QQ 音乐首页按钮，下载在后台完成；尚未启动此 AVD、
+  安装高德或确认 ARM64 转译和未登录搜索。

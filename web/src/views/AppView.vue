@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { House, VideoPlay, Monitor } from '@element-plus/icons-vue';
-import { reactive } from 'vue';
+import { Grid } from '@element-plus/icons-vue';
+import { applications } from '@/apps';
+import { markRaw, reactive } from 'vue';
 import { RouterView,useRouter } from 'vue-router';
 import BackgroundMusic from '@/components/BackgroundMusic.vue';
 
@@ -16,19 +17,8 @@ const router = useRouter();
 const state = reactive({
   // isTesla: navigator.userAgent.toLowerCase().indexOf('tesla') >= 0,
   isTesla: true,
-  menuTopItems: [{icon: House, label: '首页', route:'/apps/home'}],
-  menuItems: [
-    {icon: '/icon/AMAP_LOGO.ico', label: '高德导航（实验）', route: '/apps/amap'},
-    {icon: '/icon/TESLA_LOGO.svg', label: '特斯拉', route: '/apps/tesla'},
-    {icon: '/icon/QQMUSIC_LOGO.ico', label: 'QQ 音乐', route: '/apps/qqmusic'},
-    {icon: '/icon/BILIBILI_LOGO.svg', label: '哔哩哔哩', route: '/apps/bilibili'},
-    {icon: '/icon/GBA_LOGO.svg', label: '游戏', route: '/apps/gba'},
-    {icon: VideoPlay, label: '本地播放器', route: '/apps/video'},
-    // {icon: SwitchFilled, route: 'game'},
-    {icon: Monitor, label: '设置与调试', route: '/apps/debug'},
-    // {icon: Setting, route: 'setting'},
-    // {icon: Compass, route: 'brower'},
-  ]
+  menuTopItems: [{icon: markRaw(Grid), label: '应用列表', route:'/apps/home'}],
+  menuItems: applications
 })
 
 
