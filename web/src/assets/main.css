@@ -27,3 +27,32 @@ a,
     padding-left: 0;
   }
 }
+
+/* Shared by the QQ Music vertical list and horizontal playlist shelves. */
+.music-scroll {
+  --music-scroll-thumb: rgba(55, 139, 115, .32);
+  --music-scroll-active: rgba(25, 185, 120, .65);
+  scrollbar-width: thin;
+  scrollbar-color: var(--music-scroll-thumb) transparent;
+}
+:root[data-theme='dark'] .music-scroll {
+  --music-scroll-thumb: rgba(150, 199, 179, .3);
+  --music-scroll-active: rgba(150, 219, 189, .65);
+}
+@supports selector(::-webkit-scrollbar) {
+  .music-scroll {
+    /* Modern Chromium's standard properties otherwise override pseudo styles. */
+    scrollbar-width: auto !important;
+    scrollbar-color: auto;
+  }
+  .music-scroll::-webkit-scrollbar { width: 4px; height: 4px; }
+  .music-scroll::-webkit-scrollbar-track,
+  .music-scroll::-webkit-scrollbar-corner { background: transparent; }
+  .music-scroll::-webkit-scrollbar-thumb {
+    background: var(--music-scroll-thumb);
+    border-radius: 999px;
+  }
+  .music-scroll::-webkit-scrollbar-thumb:hover,
+  .music-scroll::-webkit-scrollbar-thumb:active { background: var(--music-scroll-active); }
+  .music-scroll::-webkit-scrollbar-button { display: none; width: 0; height: 0; }
+}

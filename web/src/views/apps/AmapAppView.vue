@@ -1,0 +1,333 @@
+<script setup lang="ts">
+import { computed, nextTick, watch, onBeforeUnmount, onMounted, ref } from 'vue';
+import axios from 'axios';
+import { useRouter } from 'vue-router';
+import L from 'leaflet';
+import 'leaflet-rotate';
+import { bearingBetween, movementHeading, smoothHeading } from './amapHeading';
+import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
+const mapStatus = ref('');
+const layerMenu = ref(false);
+const mapAppearance = ref<AppMapAppearance>({ theme: 'day', surfaces: true, roads: true, labels: true, transit: true, places: true });
+watch(mapAppearance, value => appMap?.setAppearance(value), { deep: true });
+let appMap: ReturnType<typeof attachAppMap> | undefined;
+import 'leaflet/dist/leaflet.css';
+import { wgs84togcj02 } from 'coordtransform';
+import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
+const router = useRouter();
+const mapElement = ref<HTMLElement>();
+const topPanel = ref<HTMLElement>(), footerPanel = ref<HTMLElement>();
+const overviewActive = ref(false), orientation = ref<'north' | 'heading'>('north');
+const heading = ref<number>();
+let headingAnchor: Point | undefined, overviewGeneration = 0;
+function applyOrientation() {
+  if (!map) return;
+  const bearing = orientation.value === 'heading' && !overviewActive.value ? -(heading.value || 0) : 0;
+  if (Math.abs(((map.getBearing() - bearing + 540) % 360) - 180) > .5) map.setBearing(bearing);
+  marker?.setRotation((heading.value || 0) * Math.PI / 180);
+}
+const viewModeLabel = computed(() => overviewActive.value ? '路线全览' : orientation.value === 'heading' ? '车头向上' : '北向上');
+const nextViewModeLabel = computed(() => overviewActive.value ? '北向上' : !following.value ? viewModeLabel.value : orientation.value === 'north' ? '车头向上' : current.value ? '路线全览' : '北向上');
+function cycleViewMode() {
+  if (!overviewActive.value && !following.value) { followLocation(); return; }
+  if (!overviewActive.value && orientation.value === 'heading' && current.value) { void overview(); return; }
+  orientation.value = overviewActive.value || orientation.value === 'heading' ? 'north' : 'heading';
+  followLocation();
+}
+async function overview() {
+  overviewActive.value = true;
+  following.value = false;
+  applyOrientation();
+  const id = ++overviewGeneration;
+  await nextTick();
+  if (disposed || id !== overviewGeneration || !overviewActive.value || !map || !current.value) return;
+  const bounds = L.latLngBounds([...current.value.path, origin.value, destination.value].map(latLng));
+  if (!bounds.isValid()) return;
+  const top = (topPanel.value?.offsetTop ?? 14) + (topPanel.value?.offsetHeight ?? 0) + 24;
+  const bottom = map.getSize().y - (footerPanel.value?.offsetTop ?? map.getSize().y) + 24;
+  map.fitBounds(bounds, { paddingTopLeft: [32, top], paddingBottomRight: [92, bottom], maxZoom: 17, animate: false });
+}
+function followLocation() {
+  overviewActive.value = false; overviewGeneration++;
+  following.value = true;
+  if (heading.value === undefined && current.value) {
+    const ahead = pointAt(current.value, progress.value + 25);
+    heading.value = bearingBetween(pointAt(current.value, progress.value), ahead);
+  }
+  applyOrientation();
+  if (map) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
+}
+const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
+type Place = { id: string; name: string; address: string; location: Point };
+const searching = ref(false), searchMessage = ref('');
+const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
+const origin = ref<Point>([116.3975, 39.9087]), destination = ref<Point>([116.41, 39.916]);
+const originName = ref('北京示例起点'), destinationName = ref('北京示例终点');
+const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following = ref(true), muted = ref(false);
+const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
+const current = computed(() => routes.value[selected.value]);
+const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
+const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
+let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
+const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
+let resizeObserver: ResizeObserver | undefined;
+let watchId: number | undefined, simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnType<typeof setInterval> | undefined;
+let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, lastFix = 0, offCount = 0, lastReplan = 0, spoken = '';
+const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
+function speak(text: string) {
+  if (muted.value || !('speechSynthesis' in window)) return;
+  window.speechSynthesis.cancel();
+  const speech = new SpeechSynthesisUtterance(text); speech.lang = 'zh-CN'; window.speechSynthesis.speak(speech);
+}
+function endpoints() {
+  if (!map) return;
+  startMarker?.remove(); endMarker?.remove();
+  const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
+  startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
+  endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
+}
+function draw(fit = true) {
+  if (!map) return;
+  lines.forEach(line => line.remove()); lines = [];
+  routes.value.forEach((route, index) => {
+    const chunks = [0, ...route.breaks, route.path.length];
+    for (let i = 1; i < chunks.length; i++) {
+      const path = route.path.slice(chunks[i - 1], chunks[i]);
+      if (path.length < 2) continue;
+      lines.push(L.polyline(path.map(latLng), { color: index === selected.value ? '#12bc87' : '#8aa1b3', weight: index === selected.value ? 8 : 5,
+        opacity: index === selected.value ? 1 : .55, lineJoin: 'round', lineCap: 'round' }).addTo(map));
+    }
+  });
+  endpoints();
+  if (fit && lines.length) void overview();
+}
+function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; draw(); }
+function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
+function setPoint(point: Point, name: string) {
+  cancelSearch();
+  clearRoute();
+  if (picking.value === 'origin') { origin.value = point; originName.value = name; picking.value = 'destination'; }
+  else { destination.value = point; destinationName.value = name; }
+  tips.value = []; query.value = ''; endpoints();
+}
+let searchGeneration = 0, searchController: AbortController | undefined;
+function cancelSearch() {
+  searchGeneration++; searchController?.abort(); searching.value = false;
+  tips.value = []; searchMessage.value = '';
+}
+watch([query, picking], cancelSearch, { flush: 'sync' });
+function selectPlace(place: Place) {
+  setPoint(place.location, place.name);
+  following.value = false;
+  map?.setView(latLng(place.location), 16);
+  status.value = '地点已选择，可以规划路线';
+}
+async function search() {
+  cancelSearch();
+  const keywords = query.value.trim();
+  if (!keywords) return;
+  const values = keywords.split(/[,，\s]+/).map(Number);
+  if (values.length === 2 && values.every(Number.isFinite) && Math.abs(values[0]) <= 180 && Math.abs(values[1]) <= 85) {
+    selectPlace({ id: 'coordinate', location: values as Point, name: '坐标选点', address: '' });
+    return;
+  }
+  const id = searchGeneration;
+  searchController = new AbortController(); searching.value = true;
+  try {
+    const response = await axios.post('/api/amap-app/search', { keywords, location: location.value || origin.value }, { signal: searchController.signal, timeout: 20000 });
+    if (disposed || id !== searchGeneration) return;
+    if (response.data.status !== 'ok') throw new Error(response.data.message || '地点搜索暂不可用');
+    tips.value = response.data.data.places;
+    if (!tips.value.length) searchMessage.value = '没有找到地点，试试加上城市名称';
+  } catch (exception) {
+    if (disposed || id !== searchGeneration) return;
+    searchMessage.value = axios.isAxiosError(exception) ? exception.response?.data?.message || '地点搜索失败，请稍后重试' : (exception as Error).message;
+  } finally {
+    if (id === searchGeneration) searching.value = false;
+  }
+}
+
+async function plan(replan = false) {
+  if (busy.value) return;
+  if (!replan) stop();
+  const id = ++generation;
+  controller?.abort(); controller = new AbortController();
+  busy.value = true; error.value = ''; arrived.value = false;
+  try {
+    const response = await axios.post('/api/amap-app/route', { origin: origin.value, destination: destination.value }, { signal: controller.signal, timeout: 45000 });
+    if (disposed || id !== generation) return;
+    if (response.data.status === 'need_login') { await router.replace('/login'); return; }
+    const data = response.data.data;
+    if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length) throw new Error(response.data.message || '这条路线暂未成功解析，请更换地点或重试');
+    routes.value = data.routes; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; draw(!replan);
+    status.value = replan ? '路线已重新规划' : '路线已就绪，选择方案后开始导航';
+    if (replan) speak('已为您重新规划路线');
+  } catch (exception) {
+    if (id !== generation || disposed) return;
+    error.value = axios.isAxiosError(exception) ? exception.response?.data?.message || '路线请求失败，请重试' : (exception as Error).message;
+    if (replan) status.value = '偏离路线，重算失败；请稍后重试';
+    else { routes.value = []; draw(false); }
+  } finally { if (id === generation) busy.value = false; }
+}
+function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null) {
+  const direction = movementHeading(headingAnchor, point, accuracy, gpsHeading, speed);
+  if (direction !== undefined) { heading.value = smoothHeading(heading.value, direction); headingAnchor = point; }
+  else if (!headingAnchor && accuracy <= 60) headingAnchor = point;
+  location.value = point;
+  if (!marker) marker = L.marker(latLng(point), { icon: L.divIcon({ className: '', html: '<div class="amap-vehicle">▲</div>', iconSize: [36,36], iconAnchor: [18,18] }), rotateWithView: true, zIndexOffset: 1000 }).addTo(map);
+  marker.setLatLng(latLng(point));
+  if (following.value) applyOrientation();
+  else marker.setRotation((heading.value || 0) * Math.PI / 180);
+  if (following.value && mode.value !== 'idle') map.panTo(latLng(point), { animate: false });
+  if (!current.value || mode.value === 'idle') return;
+  if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
+  const match = matchPosition(current.value, point, progress.value);
+  if (match.distance > Math.max(40, accuracy * 1.5)) {
+    offCount++;
+    status.value = '已偏离路线';
+    if (mode.value === 'live' && offCount >= 3 && !busy.value && Date.now() - lastReplan > 20000) {
+      lastReplan = Date.now(); origin.value = point; originName.value = '当前位置'; status.value = '正在重新规划'; void plan(true);
+    }
+    return;
+  }
+  offCount = 0; progress.value = Math.max(progress.value, match.progress);
+  status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置' : '实时导航中';
+  if (remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
+    stop(); arrived.value = true; status.value = '已到达目的地附近'; speak('已到达目的地附近'); return;
+  }
+  const turn = next.value;
+  if (turn && turn.distance < 250) {
+    const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
+    if (key !== spoken) { spoken = key; speak(`${formatDistance(turn.distance)}后${turn.text}，进入${turn.road}`); }
+  }
+}
+function toggleVoice() { muted.value = !muted.value; if (muted.value && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
+function stop() {
+  locationGeneration++;
+  if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
+  watchId = undefined;
+  if (simulation) clearInterval(simulation);
+  if (staleTimer) clearInterval(staleTimer);
+  simulation = undefined; staleTimer = undefined; mode.value = 'idle';
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+}
+function startDemo() {
+  if (!current.value) return;
+  stop(); overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
+  headingAnchor = current.value.path[0]; heading.value = bearingBetween(headingAnchor, pointAt(current.value, 25));
+  map.setZoom(17); updatePosition(current.value.path[0]);
+  simulation = setInterval(() => { if (current.value) updatePosition(pointAt(current.value, progress.value + 15)); }, 500);
+}
+function locate(navigate = false) {
+  if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
+  stop(); const id = locationGeneration; error.value = ''; status.value = '等待定位授权和当前位置';
+  if (navigate) { overviewActive.value = false; overviewGeneration++; mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined; heading.value = undefined; applyOrientation(); map.setZoom(17); }
+  const receive = (position: GeolocationPosition) => {
+    if (disposed || id !== locationGeneration || Date.now() - position.timestamp > 15000) return;
+    const point = wgs84togcj02(position.coords.longitude, position.coords.latitude) as Point;
+    lastFix = Date.now();
+    if (!navigate) { clearRoute(); origin.value = point; originName.value = '当前位置'; endpoints(); map.panTo(latLng(point)); status.value = '已定位，请选择目的地'; }
+    updatePosition(point, position.coords.accuracy, position.coords.heading, position.coords.speed);
+  };
+  const failed = () => { if (!disposed && id === locationGeneration) { stop(); error.value = '无法获取定位，请允许浏览器位置权限并检查信号'; status.value = '定位不可用'; } };
+  if (navigate) {
+    watchId = navigator.geolocation.watchPosition(receive, failed, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+    lastFix = Date.now();
+    staleTimer = setInterval(() => { if (Date.now() - lastFix > 15000) status.value = '定位信号中断，导航提示已暂停'; }, 3000);
+  } else navigator.geolocation.getCurrentPosition(receive, failed, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+}
+onMounted(() => {
+  if (!mapElement.value) return;
+  map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView(latLng(origin.value), 16);
+  map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
+  appMap = attachAppMap(map, message => { mapStatus.value = message; });
+  map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
+  map.on('dragstart', () => { following.value = false; overviewActive.value = false; overviewGeneration++; });
+  resizeObserver = new ResizeObserver(() => {
+    map.invalidateSize({ pan: false });
+    if (overviewActive.value) void overview();
+  });
+  resizeObserver.observe(mapElement.value);
+  if (footerPanel.value) resizeObserver.observe(footerPanel.value);
+  mapReady.value = true; endpoints();
+});
+onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+</script>
+
+<template>
+  <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
+    <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
+    <div v-if="!mapReady" class="map-loading">{{ error || '正在加载地图…' }}</div>
+    <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
+      <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
+      <div class="search-line"><select v-model="picking" aria-label="选点类型"><option value="destination">终点</option><option value="origin">起点</option></select>
+        <input v-model="query" :aria-label="picking === 'destination' ? '搜索目的地' : '搜索起点'" placeholder="搜索地点、地址，或输入经纬度" maxlength="100" @keydown.enter="!$event.isComposing && search()" />
+        <button :disabled="!mapReady || busy || searching || !query.trim()" @click="search">{{ searching ? '搜索中' : '搜索' }}</button><button :disabled="!mapReady || busy" @click="locate(false)">定位</button></div>
+      <p v-if="searchMessage" class="search-message" role="status">{{ searchMessage }}</p>
+      <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
+    </header>
+    <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><span class="turn-arrow">{{ next.arrow }}</span><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
+    <div class="map-controls">
+      <button title="地图图层" aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
+      <button class="view-mode" :class="{ active: overviewActive || following }" :disabled="!mapReady" :title="`${viewModeLabel} · 点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" :aria-label="`视角：${viewModeLabel}，点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" @click="cycleViewMode">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <template v-if="overviewActive"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><path d="m8 16 3-8 5 8"/><circle cx="11" cy="8" r="1"/></template>
+          <template v-else-if="orientation === 'heading'"><path d="m12 3 8 17-8-4-8 4Z" fill="currentColor" stroke="none"/></template>
+          <template v-else><circle cx="12" cy="12" r="9"/><path d="M9 16V8l6 8V8"/></template>
+        </svg>
+      </button>
+      <button aria-label="放大" @click="overviewActive = false; overviewGeneration++; following = false; map?.zoomIn()">＋</button>
+      <button aria-label="缩小" @click="overviewActive = false; overviewGeneration++; following = false; map?.zoomOut()">−</button>
+    </div>
+    <div v-if="layerMenu" class="layer-menu glass" role="group" aria-label="地图图层设置">
+      <strong>地图图层</strong>
+      <div class="map-themes"><button :class="{ active: mapAppearance.theme === 'day' }" @click="mapAppearance.theme = 'day'">日间</button><button :class="{ active: mapAppearance.theme === 'night' }" @click="mapAppearance.theme = 'night'">夜间</button></div>
+      <label><input type="checkbox" v-model="mapAppearance.surfaces" />地块与水域</label>
+      <label><input type="checkbox" v-model="mapAppearance.roads" />道路</label>
+      <label><input type="checkbox" v-model="mapAppearance.labels" />道路名称</label>
+      <label><input type="checkbox" v-model="mapAppearance.places" />省市名称</label>
+      <label><input type="checkbox" v-model="mapAppearance.transit" />公共交通标注</label>
+    </div>
+    <footer ref="footerPanel" class="navigation-footer glass">
+      <p v-if="mapStatus" class="map-notice">{{ mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="appMap?.retry()">重试</button></p>
+      <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <template v-if="mode === 'idle'">
+        <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
+        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong>{{ formatDistance(route.distance) }}</strong><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
+        <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
+      </template>
+      <div v-else class="footer-line"><button @click="stop(); controller?.abort(); generation++; busy = false; status = '导航已结束'; draw()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}</small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+    </footer>
+  </section>
+</template>
+
+<style scoped>
+.layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:9px}.brand>span{display:grid;place-items:center;background:#10ac82;color:white;border-radius:10px;width:29px;height:29px;font-size:25px}.brand small{color:#80918d;letter-spacing:2px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{font-size:58px;line-height:1}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
+</style>
+<style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
+
+<style>
+.navigation-map.leaflet-container{background:#142b32}.map-day .navigation-map.leaflet-container{background:#e8eced}.map-day .app-road-label{color:#485759;text-shadow:0 1px 3px white,1px 0 3px white}.app-road-label{color:#e1eeed;text-align:center;white-space:nowrap;font-size:11px;text-shadow:0 1px 3px #142b32,1px 0 3px #142b32;pointer-events:none}.map-notice{position:absolute;bottom:calc(100% + 8px);left:0;max-width:100%;font-size:12px;color:#e1eeed;background:#142b32e6;border-radius:9px;padding:5px 9px;margin:0}.navigation-app .map-notice button{min-height:24px;padding:2px 8px;margin-left:6px;font-size:12px}
+</style>
+
+<style>.app-transit-label{text-align:center;white-space:nowrap;font-size:11px;color:#62b7ff;text-shadow:0 1px 2px #142b32}.map-day .app-transit-label{color:#347ec3;text-shadow:0 1px 2px white}.app-transit-label span{border-bottom:2px solid currentColor}</style>
+
+<style>
+.app-place-label{pointer-events:none;text-align:center;white-space:nowrap;line-height:24px;font-size:12px;font-weight:600;color:#eaf4f2;text-shadow:0 0 3px #142b32,0 1px 3px #142b32,1px 0 2px #142b32}
+.app-place-province{font-size:13px;letter-spacing:.5px;font-weight:500;color:#b7cecc}
+.map-day .app-place-label{color:#34444e;text-shadow:0 0 3px white,0 1px 3px white,1px 0 2px white}
+.map-day .app-place-province{color:#657475}
+</style>
+
+<style scoped>
+.map-controls .view-mode{display:grid;place-items:center}
+.map-controls .view-mode svg{width:24px;height:24px}
+.map-controls .active{background:#e4f8ef;border-color:#19b88b;color:#078161}
+</style>
+
+<style scoped>
+.search-message{margin:10px 0 0;font-size:12px;color:#80634c}
+.search-tips button{display:flex;flex-direction:column;gap:5px;white-space:normal;line-height:1.4;padding:12px 8px}
+.search-tips button:hover{background:#e4f8ef}.search-tips strong{font-weight:500}
+.search-tips{overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b2cec5 transparent}
+</style>

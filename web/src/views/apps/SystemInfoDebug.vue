@@ -2,12 +2,14 @@
 import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
 import AudioOutputTest from '@/components/AudioOutputTest.vue';
+import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import { get, post } from '@/functions/requests';
 import { ElMessage } from 'element-plus';
 import { useRouter } from 'vue-router';
+import { vConsoleEnabled, setVConsoleEnabled } from '@/functions/debugConsole';
 
 const router = useRouter();
 const activeTab = ref('diagnostics');
@@ -67,7 +69,7 @@ function refreshViewport() {
 function refresh() {
     refreshViewport();
     state.tts = {
-        voices: JSON.stringify(window.speechSynthesis.getVoices(), null, '\t'),
+        voices: JSON.stringify(window.speechSynthesis?.getVoices() || [], null, '\t'),
     };
 
     navigator.mediaDevices?.enumerateDevices()
@@ -134,11 +136,19 @@ onUnmounted(() => {
             <section class="settings-grid">
                 <article class="settings-card">
                     <div class="card-head">
+                        <h2>调试控制台</h2>
+                        <el-switch :model-value="vConsoleEnabled" aria-label="开启 vConsole" @update:model-value="setVConsoleEnabled($event === true)" />
+                    </div>
+                    <p class="console-hint">开启后显示 vConsole 悬浮入口，用于查看日志和网络请求。设置仅保存在当前浏览器，刷新后仍生效。</p>
+                </article>
+                <article class="settings-card">
+                    <div class="card-head">
                         <div>
                             <p class="card-kicker">Maps</p>
-                            <h2>高德地图</h2>
+                            <h2>特斯拉行程轨迹</h2>
                         </div>
                     </div>
+                    <p class="console-hint">仅用于特斯拉页面的行程轨迹底图；高德导航无需此 Key。</p>
                     <div class="setting-input" v-loading="state.mapLoading">
                         <span class="setting-label">Web JS API Key</span>
                         <el-input
@@ -188,7 +198,7 @@ onUnmounted(() => {
             </section>
 
             </el-tab-pane>
-            <el-tab-pane label="声音测试" name="sound"><AudioOutputTest v-if="activeTab === 'sound'" /></el-tab-pane>
+            <el-tab-pane label="声音测试" name="sound"><template v-if="activeTab === 'sound'"><NavigationSpeechTest /><AudioOutputTest /></template></el-tab-pane>
             <el-tab-pane label="摄像头测试" name="camera">
                 <article class="settings-card">
                     <div class="card-head"><h2>摄像头测试</h2></div>
@@ -235,6 +245,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.console-hint { margin: 0; color: var(--color-text-soft); font-size: 13px; line-height: 1.6; }
 .debug-tabs { min-width: 0; }
 .debug-tabs :deep(.el-tabs__item) { font-size: clamp(14px, 1.8vw, 18px); height: 44px; padding: 0 14px; }
 .debug-tabs :deep(.el-tabs__nav) { height: 44px; }

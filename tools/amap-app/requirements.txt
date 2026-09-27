@@ -1,0 +1,4 @@
+unicorn==2.1.4
+zstandard==0.25.0
+requests>=2.31
+cryptography>=42

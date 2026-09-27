@@ -50,7 +50,7 @@ onBeforeUnmount(() => { disposed = true; observer?.disconnect(); });
 <template>
   <section ref="section" class="playlist-shelf" :aria-label="theme + '歌单'">
     <header><h3>{{ theme }}</h3><span>精选歌单</span><div class="shelf-arrows"><el-button circle :icon="ArrowLeft" :aria-label="theme + '歌单向左滑动'" @click="slide(-1)" /><el-button circle :icon="ArrowRight" :aria-label="theme + '歌单向右滑动'" @click="slide(1)" /></div></header>
-    <div ref="track" class="shelf-track" tabindex="0" :aria-label="theme + '歌单，左右滑动浏览'" @keydown.left.prevent="slide(-1)" @keydown.right.prevent="slide(1)">
+    <div ref="track" class="shelf-track music-scroll" tabindex="0" :aria-label="theme + '歌单，左右滑动浏览'" @keydown.left.prevent="slide(-1)" @keydown.right.prevent="slide(1)">
       <button v-for="item in items" :key="item.id" class="playlist-tile" @click="emit('open', item)"><img :src="item.cover" alt="" loading="lazy" /><strong>{{ item.title }}</strong></button>
       <div v-if="busy && !items.length" v-for="n in 4" :key="'placeholder-' + n" class="shelf-placeholder" aria-hidden="true"></div>
       <div v-if="error" class="shelf-message" role="status"><p>{{ error }}</p><el-button @click="load">重试</el-button></div>

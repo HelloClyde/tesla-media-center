@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { House, Position, Headset, VideoPlay, SwitchFilled, InfoFilled, Setting, Switch, Film, Compass, Monitor, MapLocation } from '@element-plus/icons-vue';
-import { onMounted, reactive, watch } from 'vue';
-import { RouterView,useRouter, useRoute } from 'vue-router';
-import { tsUnknownKeyword } from '@babel/types';
+import { watchEffect } from 'vue';
+import { RouterView } from 'vue-router';
+import { backgroundMusic } from './stores/backgroundMusic';
 
 
-onMounted(() => {
-})
+// Keep track information visible even while another application is open.
+watchEffect(() => {
+  const song = backgroundMusic.song;
+  document.title = backgroundMusic.playing && song
+    ? `${[song.title, song.singer].filter(Boolean).join(' - ')} · TMC`
+    : 'TMC · 车载媒体中心';
+});
 
 </script>
 

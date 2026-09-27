@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
+import { backgroundMusic, musicCommands, clearBackgroundMusic } from '@/stores/backgroundMusic';
+defineOptions({ name: 'QQMusicView' });
 import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { VideoPlay, VideoPause, ArrowLeft, ArrowRight, Search } from '@element-plus/icons-vue';
+import { VideoPlay, VideoPause, ArrowLeft, ArrowRight, Search, Headset, Check } from '@element-plus/icons-vue';
 import { roomImpulse, routeSpatialOutput, type Room } from './qqMusicSpatial';
 import { nextIndex, type PlayMode } from './qqMusicQueue';
 import QQMusicControlIcon from './QQMusicControlIcon.vue';
 import QQMusicPlaylistShelf from './QQMusicPlaylistShelf.vue';
 import QQMusicBrowse from './QQMusicBrowse.vue';
 import QQMusicNowPlaying from './QQMusicNowPlaying.vue';
+import QQMusicComments from './QQMusicComments.vue';
 import { freshRadioBatch } from './qqMusicRadio';
+import { NextTrackPreload } from './qqMusicPreload';
 
 interface Song { mid: string; title: string; singer: string; album: string; cover: string; duration: number; access?: string; maxQuality?: string; singers?: {mid: string; name: string}[]; albumMid?: string }
 interface Playlist { id: string; title: string; cover: string; count: number }
@@ -36,7 +40,7 @@ let radioGeneration = 0;
 let radioRequest: Promise<void> | undefined;
 const mode = ref<PlayMode>('order');
 const modeLabels = { order: '顺序播放', loop: '列表循环', single: '单曲循环', shuffle: '随机播放' };
-const queueOpen = ref(false);
+function openQueue() { nowPlayingOpen.value = false; tab.value = 'queue'; }
 const eqOpen = ref(false);
 function cycleMode() {
   if (radioActive.value) return;
@@ -90,6 +94,8 @@ async function setEq(enabled: boolean, resumeAfterError = false) {
   const wasPlaying = playing.value || resumeAfterError;
   const position = elapsed.value;
   ++playGeneration;
+  releasePlaybackPreload?.();
+  clearNextPreload();
   audio.value?.pause(); audio.value?.removeAttribute('src'); audio.value?.load();
   if (eqContext) { void eqContext.close(); eqContext = undefined; }
   spatialRouting?.dispose(); spatialRouting = undefined; routingMode = undefined; spatialChannels.value = 2;
@@ -158,8 +164,8 @@ function rememberSearch(word: string) {
   try { localStorage.setItem('qqmusic-search-history', JSON.stringify(searchHistory.value)); } catch {}
 }
 function clearSearchHistory() { searchHistory.value = []; try { localStorage.removeItem('qqmusic-search-history'); } catch {} }
-function openBrowse(kind: string, id: string, title: string) { nowPlayingOpen.value = false; browseItem.value = { kind, id, title, cover: '' }; }
-async function playBrowse(song: Song, tracks: Song[]) { stopRadio(); queue.value = [...tracks]; browseItem.value = undefined; await play(song); }
+function openBrowse(kind: string, id: string, title: string) { nowPlayingOpen.value = false; browseItem.value = { kind, id, title, cover: '' }; tab.value = 'browse'; }
+async function playBrowse(song: Song, tracks: Song[]) { stopRadio(); queue.value = [...tracks]; await play(song); }
 async function collection(action: string, song?: Song, playlist?: string) {
   if (!account.value.loggedIn) { accountOpen.value = true; return; }
   if (collectionBusy.value) return;
@@ -173,7 +179,7 @@ async function collection(action: string, song?: Song, playlist?: string) {
     await api('collection', { action, mid: song?.mid, playlist, name });
     if (song && (action === 'like' || action === 'unlike')) knownLikes.value[song.mid] = action === 'like';
     ElMessage.success(action === 'create' ? '歌单已创建' : '已更新 QQ 音乐收藏');
-    if (tab.value === 'library') void loadLibrary();
+    if (tab.value === 'library' || tab.value === 'playlist') void loadLibrary();
     if (action === 'add') addSong.value = undefined;
     if (action === 'create' && addSong.value) ownedPlaylists.value = (await api('library?kind=created')).playlists;
   } catch (e) { if (e !== 'cancel' && e !== 'close') ElMessage.error(message(e)); }
@@ -187,11 +193,14 @@ function enqueue(song: Song) { if (!queue.value.some(s => s.mid === song.mid)) q
 function removeQueue(index: number) { queue.value.splice(index, 1); }
 function moveQueue(index: number) { if (index > 0) [queue.value[index - 1], queue.value[index]] = [queue.value[index], queue.value[index - 1]]; }
 async function openComments(song: Song) {
+  if (current.value?.mid === song.mid) nowPlayingOpen.value = true;
+  else { nowPlayingOpen.value = false; tab.value = 'comments'; }
+  ++commentsGeneration; commentsBusy.value = false;
   commentsSong.value = song; comments.value = []; commentsPage = 0; commentsCursor = ''; commentsMore.value = false; commentsOpen.value = true;
   await loadComments();
 }
 async function loadComments() {
-  if (!commentsSong.value) return;
+  if (!commentsSong.value || commentsBusy.value) return;
   const generation = ++commentsGeneration; commentsBusy.value = true; commentsError.value = '';
   try {
     const result = await api(`comments?mid=${encodeURIComponent(commentsSong.value.mid)}&page=${commentsPage + 1}&cursor=${encodeURIComponent(commentsCursor)}`);
@@ -225,7 +234,7 @@ const libraryPage = ref(1);
 const libraryMore = ref(false);
 const recent = ref<Song[]>([]);
 let libraryGeneration = 0;
-const visibleSongs = computed(() => tab.value === 'home' ? homeMode.value === 'daily' ? recommendations.value : [] : tab.value === 'search' ? songs.value : libraryKind.value === 'recent' ? recent.value : librarySongs.value);
+const visibleSongs = computed(() => tab.value === 'home' ? homeMode.value === 'daily' ? recommendations.value : [] : tab.value === 'search' ? songs.value : (tab.value === 'library' || tab.value === 'playlist') ? libraryKind.value === 'recent' ? recent.value : librarySongs.value : []);
 let recommendGeneration = 0;
 const queue = ref<Song[]>([]);
 const page = ref(1);
@@ -234,7 +243,10 @@ const busy = ref(false);
 const loadingTrack = ref(false);
 const current = ref<Song>();
 const nowPlayingOpen = ref(false);
-watch(current, value => { if (!value) nowPlayingOpen.value = false; });
+watch(current, value => {
+  if (!value) { nowPlayingOpen.value = false; commentsOpen.value = false; ++commentsGeneration; }
+  else if (commentsOpen.value && nowPlayingOpen.value) void openComments(value);
+});
 const audio = ref<HTMLAudioElement>();
 const playing = ref(false);
 const elapsed = ref(0);
@@ -290,11 +302,31 @@ function updateMediaSession() {
 watch([current, playing], updateMediaSession);
 let sources: string[] = [];
 let sourceIndex = 0;
+const nextTrackPreload = new NextTrackPreload();
+let releasePlaybackPreload: (() => void) | undefined;
+let reservedNext: { from: string; song: Song; key: string } | undefined;
+function preloadKey(song: Song) { return JSON.stringify([song.mid, quality.value, account.value.account, account.value.loggedIn, eqEnabled.value]); }
+function clearNextPreload() { reservedNext = undefined; nextTrackPreload.clear(); }
+function preloadNext() {
+  if (disposed || !playing.value || loadingTrack.value || !current.value || !duration.value || duration.value - elapsed.value > 30) return;
+  // Repeating the current song already has its media buffered.
+  if (!radioActive.value && mode.value === 'single') return;
+  if (reservedNext) return;
+  const index = queue.value.findIndex(song => song.mid === current.value?.mid);
+  if (index < 0) return;
+  const next = radioActive.value ? index + 1 : nextIndex(queue.value.length, index, 1, mode.value, true);
+  const song = queue.value[next];
+  if (!song || song.mid === current.value.mid) return;
+  const key = preloadKey(song);
+  const selectedQuality = quality.value;
+  reservedNext = { from: current.value.mid, song, key };
+  nextTrackPreload.prepare(key, () => api(`play?mid=${encodeURIComponent(song.mid)}&quality=${selectedQuality}`, undefined, true), eqEnabled.value);
+}
 
-async function api(path: string, data?: object) {
+async function api(path: string, data?: object, background = false) {
   const response = await axios.request({ url: '/api/qqmusic/' + path, method: data ? 'POST' : 'GET', data, timeout: 30000, validateStatus: () => true });
   if (response.data.status === 'need_login') {
-    router.push('/login');
+    if (!background) router.push('/login');
     throw new Error('请先登录媒体中心');
   }
   if (response.data.status !== 'ok') throw new Error(response.data.message || 'QQ 音乐请求失败，请稍后重试');
@@ -307,7 +339,7 @@ async function refreshAccount() {
   void refreshMembership();
   loadRecent();
   restoreSession();
-  if (tab.value === 'library') void loadLibrary();
+  if (tab.value === 'library' || tab.value === 'playlist') void loadLibrary();
   if (homeMode.value === 'daily') void loadRecommendations();
 }
 async function refreshMembership() {
@@ -358,9 +390,9 @@ async function loadLibrary(append = false) {
   } catch (e) { if (generation === libraryGeneration && !disposed) libraryError.value = message(e); }
   finally { if (generation === libraryGeneration) libraryBusy.value = false; }
 }
-function openPlaylist(playlist?: Playlist) { selectedPlaylist.value = playlist; void loadLibrary(); }
+function openPlaylist(playlist?: Playlist) { selectedPlaylist.value = playlist; tab.value = playlist ? 'playlist' : 'library'; if (playlist) void loadLibrary(); }
 watch(libraryKind, () => { selectedPlaylist.value = undefined; void loadLibrary(); });
-watch(tab, value => { if (value === 'library') void loadLibrary(); });
+watch(tab, value => { if (value === 'library') { selectedPlaylist.value = undefined; void loadLibrary(); } });
 function openDaily() { homeMode.value = 'daily'; void loadRecommendations(); }
 function stopRadio() {
   ++radioGeneration;
@@ -403,6 +435,8 @@ async function startRadio() {
   radioActive.value = true;
   const generation = radioGeneration;
   ++playGeneration;
+  releasePlaybackPreload?.();
+  clearNextPreload();
   audio.value?.pause();
   loadingTrack.value = false;
   current.value = undefined;
@@ -450,6 +484,11 @@ async function search(loadMore = false) {
   finally { busy.value = false; }
 }
 async function play(song: Song, fromList = false) {
+  loadingTrack.value = true;
+  releasePlaybackPreload?.();
+  const prepared = !fromList ? nextTrackPreload.take(preloadKey(song)) : undefined;
+  releasePlaybackPreload = prepared?.release;
+  clearNextPreload();
   if (current.value?.mid !== song.mid) restoredPosition = 0;
   const generation = ++playGeneration;
   sources = [];
@@ -464,7 +503,9 @@ async function play(song: Song, fromList = false) {
   loadingTrack.value = true;
   error.value = '';
   try {
-    const result = await api(`play?mid=${encodeURIComponent(song.mid)}&quality=${quality.value}`);
+    const cached = await prepared?.result;
+    if (disposed || generation !== playGeneration) return;
+    const result = cached || await api(`play?mid=${encodeURIComponent(song.mid)}&quality=${quality.value}`);
     if (disposed || generation !== playGeneration || !audio.value) return;
     sources = result.urls || [result.url];
     audio.value.src = sources[0];
@@ -473,7 +514,11 @@ async function play(song: Song, fromList = false) {
     if (radioActive.value && generation === playGeneration && queue.value.length - queue.value.findIndex(s => s.mid === song.mid) <= 2) void refillRadio();
   } catch (e) {
     if (generation === playGeneration && !disposed && sourceIndex === 0) error.value = message(e);
-  } finally { if (generation === playGeneration) loadingTrack.value = false; }
+  } finally {
+    prepared?.release();
+    if (releasePlaybackPreload === prepared?.release) releasePlaybackPreload = undefined;
+    if (generation === playGeneration) loadingTrack.value = false;
+  }
 }
 function mediaError() {
   if (eqEnabled.value && !eqBusy.value) { ElMessage.info('此音源不支持浏览器音效处理，已切回原声'); void setEq(false, true); return; }
@@ -489,12 +534,21 @@ function mediaError() {
 }
 async function step(delta: number, ended = false) {
   if (advancing.value || loadingTrack.value) return;
+  if (ended && !radioActive.value && mode.value === 'single' && audio.value?.getAttribute('src')) {
+    audio.value.currentTime = 0;
+    try { await audio.value.play(); } catch { error.value = '播放被浏览器暂停，请再次点击播放'; }
+    return;
+  }
   const generation = radioGeneration;
   const trackGeneration = playGeneration;
   advancing.value = true;
   try {
     const currentIndex = queue.value.findIndex(s => s.mid === current.value?.mid);
     let i = radioActive.value ? currentIndex + delta : nextIndex(queue.value.length, currentIndex, delta, mode.value, ended);
+    if (delta > 0 && reservedNext && reservedNext.from === current.value?.mid && reservedNext.key === preloadKey(reservedNext.song)) {
+      const reservedIndex = queue.value.findIndex(song => song.mid === reservedNext?.song.mid);
+      if (reservedIndex >= 0) i = reservedIndex;
+    }
     if (radioActive.value && delta > 0 && i >= queue.value.length) await refillRadio();
     if (disposed || generation !== radioGeneration || trackGeneration !== playGeneration) return;
     if (i >= 0 && i < queue.value.length) {
@@ -515,8 +569,14 @@ function updateTime() {
   elapsed.value = audio.value?.currentTime || 0;
   const value = audio.value?.duration || 0;
   duration.value = Number.isFinite(value) ? value : 0;
+  preloadNext();
   if (Date.now() - lastSnapshot > 5000) { lastSnapshot = Date.now(); saveSession(); }
 }
+watch([quality, mode, eqEnabled, () => account.value.account, () => account.value.loggedIn,
+  radioActive, () => queue.value.map(song => song.mid).join(',')], () => {
+  clearNextPreload();
+  preloadNext();
+}, { flush: 'sync' });
 function seek(event: Event) { if (audio.value) audio.value.currentTime = Number((event.target as HTMLInputElement).value); }
 function stopPoll() { ++loginGeneration; clearTimeout(timer); }
 async function startLogin() {
@@ -563,6 +623,8 @@ async function logout() {
     stopPoll();
     stopRadio();
     ++playGeneration;
+    releasePlaybackPreload?.();
+    clearNextPreload();
     audio.value?.pause();
     audio.value?.removeAttribute('src');
     audio.value?.load();
@@ -581,7 +643,21 @@ async function logout() {
     qr.value = '';
   } catch (e) { ElMessage.error(message(e)); }
 }
+watch([current, playing, loadingTrack, elapsed, duration, error, mode, queue, radioActive, advancing], () => {
+  Object.assign(backgroundMusic, {
+    song: current.value ? { title: current.value.title, singer: current.value.singer, cover: current.value.cover } : null,
+    playing: playing.value, loading: loadingTrack.value, elapsed: elapsed.value, duration: duration.value, error: error.value,
+    previousDisabled: mode.value === 'order' && queue.value.findIndex(s => s.mid === current.value?.mid) <= 0,
+    nextDisabled: advancing.value || (!radioActive.value && mode.value === 'order' && queue.value.findIndex(s => s.mid === current.value?.mid) >= queue.value.length - 1),
+  });
+}, { immediate: true });
+onDeactivated(() => { accountOpen.value = false; eqOpen.value = false; addSong.value = undefined; stopPoll(); saveSession(); });
+onBeforeUnmount(clearBackgroundMusic);
 onMounted(() => {
+  musicCommands.toggle = () => { void toggle(); };
+  musicCommands.previous = () => { void step(-1); };
+  musicCommands.next = () => { void step(1); };
+  musicCommands.open = () => { if (current.value) nowPlayingOpen.value = true; };
   refreshAccount().catch(e => { error.value = message(e); });
   if ('mediaSession' in navigator) {
     const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
@@ -592,19 +668,26 @@ onMounted(() => {
     for (const [action, handler] of Object.entries(handlers)) try { navigator.mediaSession.setActionHandler(action as MediaSessionAction, handler!); } catch {}
   }
 });
-onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if ('mediaSession' in navigator) { for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'seekto'] as MediaSessionAction[]) try { navigator.mediaSession.setActionHandler(action, null); } catch {} } disposed = true; clearTimeout(suggestionTimer); ++suggestionGeneration; ++commentsGeneration; stopPoll(); stopRadio(); ++playGeneration; audio.value?.pause(); audio.value?.removeAttribute('src'); audio.value?.load(); });
+onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSession(); if (eqContext) void eqContext.close(); if ('mediaSession' in navigator) { for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'seekto'] as MediaSessionAction[]) try { navigator.mediaSession.setActionHandler(action, null); } catch {} } disposed = true; clearTimeout(suggestionTimer); ++suggestionGeneration; ++commentsGeneration; stopPoll(); stopRadio(); ++playGeneration; audio.value?.pause(); audio.value?.removeAttribute('src'); audio.value?.load(); });
 </script>
 
 <template>
   <section class="music-page">
     <header class="music-header">
       <div class="brand"><img class="qqmusic-logo" src="/icon/QQMUSIC_LOGO.ico" alt="" /><strong>QQ 音乐</strong></div>
-      <el-radio-group v-model="tab" class="music-navigation" aria-label="音乐页面"><el-radio-button value="home">首页</el-radio-button><el-radio-button value="library">我的音乐</el-radio-button></el-radio-group>
-      <el-select v-model="quality" aria-label="播放音质" title="播放音质，下次播放生效" style="width: 132px; margin-left: auto" @change="changeQuality">
-        <el-option v-for="option in qualityOptions" :key="option.value" :label="option.label" :value="option.value" :disabled="['lossless', 'premium', 'master'].includes(option.value) && !audio?.canPlayType('audio/flac')" />
-      </el-select>
+      <el-radio-group v-model="tab" class="music-navigation" aria-label="音乐页面"><el-radio-button value="home">首页</el-radio-button><el-radio-button value="library">我的音乐</el-radio-button><el-radio-button v-if="browseItem" value="browse">{{ browseItem.kind === 'playlist' ? '歌单' : '浏览' }}</el-radio-button><el-radio-button v-if="selectedPlaylist" value="playlist">我的歌单</el-radio-button><el-radio-button v-if="commentsSong && tab === 'comments'" value="comments">评论</el-radio-button><el-radio-button value="queue">播放队列</el-radio-button></el-radio-group>
+      <el-button class="header-search" circle :icon="Search" aria-label="搜索音乐" title="搜索音乐" :type="tab === 'search' ? 'primary' : 'default'" @click="openSearch" />
+      <el-dropdown class="header-quality" trigger="click" placement="bottom-end" @command="(value: string) => { quality = value; changeQuality(); }">
+        <el-button circle :icon="Headset" :aria-label="`选择音质，当前${qualityOptions.find(option => option.value === quality)?.label}`" :title="`音质：${qualityOptions.find(option => option.value === quality)?.label}，下次播放生效`" />
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item v-for="option in qualityOptions" :key="option.value" :command="option.value" :disabled="['lossless', 'premium', 'master'].includes(option.value) && !audio?.canPlayType('audio/flac')">
+              <span class="quality-option" :class="{ 'quality-selected': quality === option.value }"><span>{{ option.label }}</span><el-icon v-if="quality === option.value" aria-label="当前音质"><Check /></el-icon></span>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
       <el-button round class="account-entry" @click="accountOpen = true"><span>{{ account.loggedIn ? membership.label : '登录 QQ 音乐' }}<small v-if="account.loggedIn && membership.level"> · LV{{ membership.level }}</small></span></el-button>
-      <el-button circle :icon="Search" aria-label="搜索音乐" title="搜索音乐" :type="tab === 'search' ? 'primary' : 'default'" @click="openSearch" />
     </header>
     <form v-if="tab === 'search'" class="search" @submit.prevent="search()">
       <el-input ref="searchInput" v-model="query" :prefix-icon="Search" placeholder="搜索歌曲、歌手或专辑" maxlength="100" clearable aria-label="搜索歌曲" />
@@ -612,7 +695,10 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
     </form>
     <div v-if="tab === 'search'" class="search-tools"><el-radio-group v-model="searchKind" size="small"><el-radio-button v-for="entry in [{id:'song',name:'歌曲'},{id:'singer',name:'歌手'},{id:'album',name:'专辑'},{id:'playlist',name:'歌单'},{id:'mv',name:'MV'},{id:'audio',name:'有声'}]" :key="entry.id" :value="entry.id">{{ entry.name }}</el-radio-button></el-radio-group><div class="search-words"><el-button v-for="word in (suggestions.length ? suggestions : searchHistory)" :key="word" size="small" text @click="query = word; search()">{{ word }}</el-button><el-button v-if="!suggestions.length && searchHistory.length" size="small" text @click="clearSearchHistory">清空历史</el-button></div></div>
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false" />
-    <div class="results">
+    <div class="results music-scroll">
+      <QQMusicComments v-if="tab === 'comments' && commentsSong" :key="commentsSong.mid" :title="commentsSong.title" :comments="comments" :busy="commentsBusy" :error="commentsError" :more="commentsMore" @more="loadComments" />
+      <QQMusicBrowse v-if="browseItem" v-show="tab === 'browse'" :active="tab === 'browse'" :initial="browseItem" :api="api" @play="playBrowse" @video="audio?.pause()" />
+      <section v-if="tab === 'queue'" class="queue-tab"><h2>播放队列 <small>{{ queue.length }} 首</small></h2><p v-if="radioActive">猜你喜欢连续推荐模式</p><div class="queue-list"><div v-for="(song, index) in queue" :key="song.mid + index" class="queue-row"><el-button text :type="song.mid === current?.mid ? 'primary' : 'default'" @click="play(song)">{{ index + 1 }}. {{ song.title }}</el-button><el-button text :disabled="index === 0" @click="moveQueue(index)">上移</el-button><el-button text @click="removeQueue(index)">移除</el-button></div><p v-if="!queue.length">队列为空</p></div></section>
       <template v-if="tab === 'home'">
         <template v-if="homeMode === 'cards'">
           <div class="home-intro"><el-button class="explore-top" @click="openBrowse('singers', '', '歌手')">歌手</el-button><el-button class="explore-top" @click="openBrowse('tops', '', '音乐排行榜')">排行榜</el-button><h2>让音乐陪你出发</h2><p>今天的好歌，和下一首惊喜</p></div>
@@ -639,8 +725,8 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
           <p v-else-if="!recommendations.length" class="empty">暂时没有推荐歌曲，请刷新重试</p>
         </template>
       </template>
-      <template v-else-if="tab === 'library'">
-        <el-radio-group v-model="libraryKind" class="library-tabs" aria-label="我的音乐分类">
+      <template v-else-if="tab === 'library' || tab === 'playlist'">
+        <el-radio-group v-if="tab === 'library'" v-model="libraryKind" class="library-tabs" aria-label="我的音乐分类">
           <el-radio-button value="songs">收藏歌曲</el-radio-button><el-radio-button value="playlists">收藏歌单</el-radio-button><el-radio-button value="created">自建歌单</el-radio-button><el-radio-button value="recent">最近播放</el-radio-button>
         </el-radio-group>
         <el-button v-if="libraryKind === 'created'" :loading="collectionBusy" @click="collection('create')">新建歌单</el-button>
@@ -652,7 +738,7 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
         <p v-else-if="!libraryBusy && !visibleSongs.length && !playlists.length" class="empty">{{ libraryKind === 'recent' ? '还没有本机播放记录，播放歌曲后会显示在这里' : '这里暂时没有内容' }}</p>
         <button v-for="playlist in playlists" :key="playlist.id" class="song" @click="openPlaylist(playlist)"><img v-if="playlist.cover" :src="playlist.cover" alt="" loading="lazy" /><span class="song-text"><strong>{{ playlist.title }}</strong><span>{{ playlist.count }} 首歌曲</span></span><el-icon><ArrowRight /></el-icon></button>
       </template>
-      <template v-else>
+      <template v-else-if="tab === 'search'">
         <p v-if="!searched && !busy" class="empty">搜索你喜欢的歌曲、歌手或专辑</p>
         <p v-else-if="!songs.length && !busy" class="empty">没有找到相关歌曲，试试其他关键词</p>
       </template>
@@ -663,28 +749,25 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
         <span class="muted">{{ time(song.duration) }}</span><el-icon><VideoPlay /></el-icon>
       </button><el-dropdown trigger="click" @command="(command: string) => songAction(command, song)"><el-button circle aria-label="歌曲操作">···</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item :command="knownLikes[song.mid] ? 'unlike' : 'like'" :disabled="collectionBusy">{{ knownLikes[song.mid] ? '取消红心收藏' : '红心收藏' }}</el-dropdown-item><el-dropdown-item v-if="knownLikes[song.mid] === undefined" command="unlike">取消已有收藏</el-dropdown-item><el-dropdown-item command="queue">加入播放队列</el-dropdown-item><el-dropdown-item command="add">添加到歌单</el-dropdown-item><el-dropdown-item command="comments">热门评论</el-dropdown-item><el-dropdown-item v-if="song.albumMid" command="album">查看专辑</el-dropdown-item><el-dropdown-item v-for="singer in song.singers" :key="singer.mid" :command="'singer:' + singer.mid">歌手 · {{ singer.name }}</el-dropdown-item><el-dropdown-item v-if="selectedPlaylist && libraryKind === 'created'" command="remove">从此歌单移除</el-dropdown-item></el-dropdown-menu></template></el-dropdown></div>
       <el-button v-if="tab === 'search' && more" class="load-more" :loading="busy" @click="search(true)">加载更多</el-button>
-      <el-button v-if="tab === 'library' && libraryMore" class="load-more" :loading="libraryBusy" @click="loadLibrary(true)">加载更多</el-button>
+      <el-button v-if="(tab === 'library' || tab === 'playlist') && libraryMore" class="load-more" :loading="libraryBusy" @click="loadLibrary(true)">加载更多</el-button>
     </div>
     <el-alert v-if="radioActive && radioError" :title="radioError" type="warning" :closable="false" show-icon />
     <footer class="player">
-      <button class="now-playing" :disabled="!current" aria-label="打开正在播放页面" @click="nowPlayingOpen = true"><img v-if="current" :src="current.cover" alt="" /><div class="song-text"><strong>{{ current?.title || '还没有播放歌曲' }}</strong><span>{{ loadingTrack ? '正在加载…' : current?.singer || '从搜索结果中选择歌曲' }}</span></div></button>
+      <button class="now-playing" :disabled="!current" aria-label="打开正在播放页面" @click="commentsOpen = false; nowPlayingOpen = true"><img v-if="current" :src="current.cover" alt="" /><div class="song-text"><strong>{{ current?.title || '还没有播放歌曲' }}</strong><span>{{ loadingTrack ? '正在加载…' : current?.singer || '从搜索结果中选择歌曲' }}</span></div></button>
       <div class="play-controls">
         <el-button circle :disabled="radioActive" :aria-label="radioActive ? '猜你喜欢连续推荐' : modeLabels[mode] + '，点击切换'" :title="radioActive ? '猜你喜欢保持连续推荐模式' : modeLabels[mode] + '，点击切换'" @click="cycleMode"><QQMusicControlIcon :kind="mode" /></el-button>
         <el-button circle :class="{ 'eq-active': eqEnabled }" :aria-label="eqEnabled ? '均衡器已开启，调整音效' : '打开均衡器'" :title="eqEnabled ? '均衡器 · ' + eqPresets[eqPreset].name : '均衡器'" @click="eqOpen = true"><QQMusicControlIcon kind="equalizer" /></el-button>
-        <el-button circle aria-label="播放队列" title="播放队列" @click="queueOpen = true">☷</el-button>
+        <el-button circle aria-label="播放队列" title="播放队列" @click="openQueue()">☷</el-button>
         <el-button v-if="current" circle :loading="collectionBusy" :title="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" :aria-label="knownLikes[current.mid] ? '取消红心收藏' : '红心收藏'" @click="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)">{{ knownLikes[current.mid] ? '♥' : '♡' }}</el-button>
         <el-button circle :icon="ArrowLeft" aria-label="上一首" :disabled="!current || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0)" @click="step(-1)" />
         <el-button circle type="primary" :icon="playing ? VideoPause : VideoPlay" :aria-label="playing ? '暂停' : '播放'" :loading="loadingTrack" :disabled="!current" @click="toggle" />
         <el-button circle :icon="ArrowRight" aria-label="下一首" :disabled="!current || advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" @click="step(1)" />
       </div>
-      <div class="seek"><span>{{ time(elapsed) }}</span><input type="range" min="0" :max="duration || 1" step="0.1" :value="elapsed" :disabled="!duration || loadingTrack" aria-label="播放进度" @input="seek" /><span>{{ time(duration) }}</span></div>
+      <div class="seek"><span>{{ time(elapsed) }}</span><input type="range" min="0" :max="duration || 1" step="0.1" :value="elapsed" :style="{ '--seek-progress': `${duration > 0 ? Math.min(100, Math.max(0, elapsed / duration * 100)) : 0}%` }" :disabled="!duration || loadingTrack" :aria-valuetext="`${time(elapsed)} / ${time(duration)}`" aria-label="播放进度" @input="seek" /><span>{{ time(duration) }}</span></div>
     </footer>
-    <QQMusicNowPlaying v-if="nowPlayingOpen && current" :song="current" :mode="mode" :mode-label="modeLabels[mode]" :radio-active="radioActive" :eq-enabled="eqEnabled" @mode="cycleMode" @equalizer="eqOpen = true" :liked="!!knownLikes[current.mid]" :collection-busy="collectionBusy" :load-word-lyrics="() => api('word-lyrics?mid=' + encodeURIComponent(current!.mid))" @queue="queueOpen = true" @like="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)" @comments="openComments(current)" @add="openAdd(current)" :playing="playing" :elapsed="elapsed" :duration="duration" :loading="loadingTrack" :previous-disabled="mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0" :next-disabled="advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" :error="error" :load-lyrics="() => api('lyrics?mid=' + encodeURIComponent(current!.mid))" @close="nowPlayingOpen = false" @toggle="toggle" @previous="step(-1)" @next="step(1)" @seek="value => { if (audio && duration) audio.currentTime = Math.min(duration, value); }" />
+    <QQMusicNowPlaying v-if="nowPlayingOpen && current" :song="current" :comments-open="commentsOpen" :comments="comments" :comments-busy="commentsBusy" :comments-error="commentsError" :comments-more="commentsMore" @lyrics="commentsOpen = false" @more-comments="loadComments" :mode="mode" :mode-label="modeLabels[mode]" :radio-active="radioActive" :eq-enabled="eqEnabled" @mode="cycleMode" @equalizer="eqOpen = true" :liked="!!knownLikes[current.mid]" :collection-busy="collectionBusy" :load-word-lyrics="() => api('word-lyrics?mid=' + encodeURIComponent(current!.mid))" @queue="openQueue()" @like="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)" @comments="openComments(current)" @add="openAdd(current)" :playing="playing" :elapsed="elapsed" :duration="duration" :loading="loadingTrack" :previous-disabled="mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0" :next-disabled="advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" :error="error" :load-lyrics="() => api('lyrics?mid=' + encodeURIComponent(current!.mid))" @close="nowPlayingOpen = false; commentsOpen = false" @toggle="toggle" @previous="step(-1)" @next="step(1)" @seek="value => { if (audio && duration) audio.currentTime = Math.min(duration, value); }" />
     <el-dialog v-model="eqOpen" title="音效 · 均衡器与空间感" width="min(440px, 94vw)" align-center><div class="eq-settings"><el-switch :model-value="eqEnabled" :loading="eqBusy" active-text="开启音效" @change="(value: string | number | boolean) => setEq(!!value)" /><el-select v-if="eqEnabled" v-model="eqPreset" aria-label="均衡器音效" @change="applyEq"><el-option v-for="(preset, id) in eqPresets" :key="id" :value="id" :label="preset.name" /></el-select></div><div class="spatial-settings"><el-switch v-model="spatialEnabled" :disabled="!eqEnabled || eqBusy" active-text="空间音效" @change="applySpatial" /><template v-if="spatialEnabled && eqEnabled"><el-tag>{{ spatialChannels === 8 ? '7.1 合成环绕' : spatialChannels === 6 ? '5.1 合成环绕' : '双声道混响' }}</el-tag><el-switch v-model="forceStereo" active-text="兼容模式（强制双声道）" @change="applySpatial" /><el-radio-group v-model="spatialRoom" @change="updateRoom"><el-radio-button value="room">小房间</el-radio-button><el-radio-button value="hall">音乐厅</el-radio-button></el-radio-group><label>空间强度 {{ spatialAmount }}%<el-slider v-model="spatialAmount" :min="0" :max="50" aria-label="空间混响强度" @input="applySpatial" /></label></template><p>自动尝试 7.1 → 5.1 → 双声道；音效失败时恢复原声。当前为普通歌曲合成环绕，不是原生全景声解码。若车机声场异常，可开启兼容模式。</p></div></el-dialog>
-    <el-dialog v-model="queueOpen" title="播放队列" width="min(620px, 94vw)" align-center><p v-if="radioActive">猜你喜欢连续推荐模式</p><div class="queue-list"><div v-for="(song, index) in queue" :key="song.mid + index" class="queue-row"><el-button text :type="song.mid === current?.mid ? 'primary' : 'default'" @click="play(song)">{{ index + 1 }}. {{ song.title }}</el-button><el-button text :disabled="index === 0" @click="moveQueue(index)">上移</el-button><el-button text @click="removeQueue(index)">移除</el-button></div><p v-if="!queue.length">队列为空</p></div></el-dialog>
-    <el-dialog :model-value="!!browseItem" title="发现音乐" width="min(900px, 94vw)" align-center destroy-on-close @update:model-value="(value: boolean) => { if (!value) browseItem = undefined; }"><QQMusicBrowse v-if="browseItem" :initial="browseItem" :api="api" @play="playBrowse" @video="audio?.pause()" /></el-dialog>
     <el-dialog :model-value="!!addSong" title="添加到我的歌单" width="min(500px, 94vw)" align-center @update:model-value="(value: boolean) => { if (!value) addSong = undefined; }"><el-button :loading="collectionBusy" @click="collection('create')">新建歌单</el-button><p v-if="!ownedPlaylists.length">暂无自建歌单</p><el-button v-for="playlist in ownedPlaylists" :key="playlist.id" class="playlist-choice" :disabled="collectionBusy" @click="collection('add', addSong, playlist.id)">{{ playlist.title }}</el-button></el-dialog>
-    <el-dialog v-model="commentsOpen" :title="(commentsSong?.title || '') + ' · 热门评论'" width="min(650px, 94vw)" align-center @closed="++commentsGeneration"><el-alert v-if="commentsError" :title="commentsError" type="warning" /><article v-for="comment in comments" :key="comment.id" class="comment"><strong>{{ comment.name }}</strong><p>{{ comment.text }}</p><small>赞 {{ comment.likes }}</small></article><p v-if="!comments.length && !commentsBusy && !commentsError">暂无评论</p><el-button v-if="commentsMore || commentsError || commentsBusy" :loading="commentsBusy" @click="loadComments">{{ commentsError ? '重试' : '加载更多' }}</el-button></el-dialog>
     <audio :key="audioKey" :crossorigin="eqEnabled ? 'anonymous' : undefined" ref="audio" preload="metadata" @playing="recordPlayback" @pause="playing = false" @timeupdate="updateTime" @durationchange="updateTime" @loadedmetadata="loadedMetadata" @ended="playing = false; step(1, true)" @error="mediaError" />
     <el-dialog v-model="accountOpen" title="QQ 音乐账号" width="min(400px, 90vw)" align-center @close="stopPoll(); qrBusy = false; qr = ''; loginHint = `使用${scanApp}扫码，确认登录 QQ 音乐`">
       <div class="account-panel" v-if="account.loggedIn"><p>已登录账号 {{ account.account }}</p><p class="membership-label">{{ membership.label }}<span v-if="membership.level"> · LV{{ membership.level }}</span></p><el-button @click="refreshMembership">刷新会员信息</el-button><el-button @click="logout">退出 QQ 音乐登录</el-button></div>
@@ -703,11 +786,13 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
 </template>
 
 <style scoped>
+.queue-tab h2{font-size:20px}.queue-tab h2 small{font-size:13px;font-weight:400;color:var(--color-text-soft)}.queue-tab .queue-list{max-height:none}.music-navigation{max-width:100%;overflow-x:auto;flex-wrap:nowrap}
 .spatial-settings{display:flex;flex-direction:column;gap:16px;margin-top:20px;border-top:1px solid var(--color-border);padding-top:16px}.spatial-settings label{font-size:13px}.spatial-settings p{font-size:12px;line-height:1.7;color:var(--color-text-soft);margin:0}
 .play-controls .eq-active{color:#159766;border-color:#8dd6b9;background:#eaf8f1}@media(max-width:480px){.player .now-playing,.player .play-controls{grid-column:1/-1}.player .play-controls{justify-content:flex-end}}
 .eq-settings{display:flex;align-items:center;gap:12px;margin-top:12px}.eq-settings .el-select{width:150px}
 .song-row{display:flex;gap:6px;align-items:center}.song-row>.song{min-width:0;flex:1}.explore-top{float:right}.search-words{display:flex;flex-wrap:wrap;gap:3px}.queue-list{max-height:50vh;overflow:auto;margin-top:14px}.queue-row{display:flex;align-items:center}.queue-row>.el-button:first-child{flex:1;min-width:0;justify-content:flex-start;overflow:hidden}.playlist-choice{display:block;margin:10px 0;width:100%}.comment{border-bottom:1px solid var(--color-border);padding:14px 0}.comment p{white-space:pre-wrap;line-height:1.7}.comment small{color:var(--color-text-soft)}
-.music-header{flex-wrap:wrap;gap:10px}.music-header .brand{flex-shrink:0;white-space:nowrap}.music-navigation{flex-shrink:0}.music-header .account-entry{margin-left:0}@media(max-width:800px){.music-header{gap:8px}.music-header .brand{gap:7px;font-size:18px}.music-navigation :deep(.el-radio-button__inner){padding:8px 10px}}
+.music-header{flex-wrap:nowrap;min-width:0;gap:10px}.music-header .brand{flex-shrink:0;white-space:nowrap}.music-navigation{flex:1;min-width:0;flex-wrap:nowrap;overflow-x:auto;white-space:nowrap}.music-navigation :deep(.el-radio-button){flex-shrink:0}.music-header .header-quality{flex-shrink:0}.music-header .account-entry{margin-left:0;max-width:140px;flex-shrink:0}.music-header .header-search{margin-left:0;flex-shrink:0}@media(max-width:800px){.music-header{gap:8px}.music-header .brand{gap:7px;font-size:18px}.music-navigation :deep(.el-radio-button__inner){padding:8px 10px}.music-header .account-entry{max-width:110px}}@media(max-width:600px){.music-header .brand strong{display:none}.music-header .account-entry{max-width:90px}}
+.quality-option{display:flex;align-items:center;justify-content:space-between;gap:20px;min-width:140px;min-height:32px}.quality-selected{color:var(--color-accent);font-weight:600}
 .qqmusic-logo{width:30px;height:30px;object-fit:contain;flex-shrink:0}
 .song-badges{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px;max-width:210px;flex-shrink:0}.quality-badge{font-size:11px;white-space:nowrap;border:1px solid #b7d9cd;border-radius:5px;padding:3px 6px;color:#28745c;background:#eef9f4}.quality-badge.master,.quality-badge.premium{color:#765293;border-color:#d7c4e5;background:#f6f0fc}@media(max-width:650px){.song-badges{max-width:112px}}
 .account-entry{max-width:190px}.account-entry span{overflow:hidden;text-overflow:ellipsis}.access-badge{flex-shrink:0;font-size:11px;border-radius:5px;padding:3px 6px;background:var(--color-surface);color:var(--color-text-soft);border:1px solid var(--color-border)}.access-badge.vip{color:#956918;background:#fff4d9;border-color:#edd5a0}.access-badge.purchase,.access-badge.paid{color:#ac5744;background:#fff1eb;border-color:#efcfbf}.membership-label{font-weight:600}
@@ -726,4 +811,57 @@ onBeforeUnmount(() => { saveSession(); if (eqContext) void eqContext.close(); if
 .music-page{position:relative;height:100%;min-height:0;display:flex;flex-direction:column;gap:12px;padding:16px;box-sizing:border-box;color:var(--color-text)}
 .music-header,.brand,.search,.song,.now-playing,.play-controls,.seek{display:flex;align-items:center;gap:12px}
 .music-header{justify-content:space-between}.brand{font-size:20px}.brand .el-icon{color:#19b978}.search .el-input{flex:1}.results{flex:1;min-height:0;overflow:auto}.empty{text-align:center;padding:36px 8px;color:var(--color-text-soft)}.empty h2{margin:14px 0 6px}.empty p{font-size:14px}.muted{color:var(--color-text-soft);font-size:12px}.song{width:100%;padding:10px 8px;text-align:left;border:0;border-bottom:1px solid var(--color-border);background:transparent;color:inherit;cursor:pointer;border-radius:10px}.song:hover,.song.active{background:rgba(25,185,120,.09)}.song img,.now-playing img{width:44px;height:44px;object-fit:cover;border-radius:8px}.song-text{display:flex;flex-direction:column;gap:4px;min-width:0;flex:1}.song-text strong,.song-text span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.song-text strong{font-size:15px;font-weight:500}.song-text span{font-size:12px;color:var(--color-text-soft)}.song>.el-icon{font-size:24px;color:#19b978}.load-more{display:block;margin:12px auto}.player{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 16px;border-top:1px solid var(--color-border);padding-top:12px}.now-playing{min-width:0;text-align:left;border:0;background:transparent;color:inherit;padding:0;cursor:pointer}.now-playing:disabled{cursor:default}.now-playing:focus-visible{outline:2px solid #19b978;outline-offset:4px;border-radius:8px}.play-controls{gap:8px}.play-controls .el-button{margin:0;width:42px;height:42px}.seek{grid-column:1/-1;gap:10px;font-size:12px;font-variant-numeric:tabular-nums}.seek input{flex:1;min-width:0;accent-color:#19b978;height:28px;cursor:pointer}.account-panel{text-align:center}.qr{width:190px;height:190px;image-rendering:pixelated;background:white;padding:10px}.account-note{font-size:12px;color:var(--color-text-soft);line-height:1.8;margin-top:20px}@media(max-width:600px){.music-page{padding:10px;gap:10px}.brand{font-size:18px}.song{gap:8px}.player{gap:8px}.play-controls{gap:4px}.play-controls .el-button{width:36px;height:36px}}
+
+.player .seek { gap: 12px; color: var(--color-text-soft); font-size: 11px; }
+.player .seek > span { min-width: 3.2em; flex-shrink: 0; }
+.player .seek > span:last-child { text-align: right; }
+.player .seek input {
+  --seek-fill: #19b978;
+  --seek-track: var(--color-border);
+  -webkit-appearance: none;
+  appearance: none;
+  height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+.player .seek input::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--seek-fill) 0%, var(--seek-fill) var(--seek-progress), var(--seek-track) var(--seek-progress), var(--seek-track) 100%);
+}
+.player .seek input::-moz-range-track {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--seek-track);
+}
+.player .seek input::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--seek-fill); }
+.player .seek input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border: 2px solid var(--color-surface-strong);
+  border-radius: 50%;
+  background: var(--seek-fill);
+  box-shadow: 0 1px 5px #0002;
+}
+.player .seek input::-moz-range-thumb {
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--color-surface-strong);
+  border-radius: 50%;
+  background: var(--seek-fill);
+  box-shadow: 0 1px 5px #0002;
+}
+.player .seek input:active::-webkit-slider-thumb { box-shadow: 0 0 0 5px #19b97820; }
+.player .seek input:active::-moz-range-thumb { box-shadow: 0 0 0 5px #19b97820; }
+.player .seek input:focus-visible { outline: 2px solid #19b978; outline-offset: 2px; }
+.player .seek input:disabled { cursor: default; opacity: .45; }
+.player .seek input:disabled::-webkit-slider-thumb { visibility: hidden; }
+.player .seek input:disabled::-moz-range-thumb { visibility: hidden; }
 </style>

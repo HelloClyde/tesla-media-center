@@ -34,6 +34,16 @@ class QQMusicTest(unittest.TestCase):
         self.store.stop()
         self.directory.cleanup()
 
+    def test_search_titles_strip_highlight_markup(self):
+        self.assertEqual(qqmusic.music_text('抖音<em>流行</em>热歌 &amp; 精选'), '抖音流行热歌 & 精选')
+        self.assertEqual(qqmusic.music_text('&lt;em&gt;周杰伦&lt;/em&gt;'), '周杰伦')
+        self.assertEqual(qqmusic.music_text('Love <3'), 'Love <3')
+        item = SimpleNamespace(id=12, title='抖音<em>流行</em>热歌', picurl='https://example.com/cover')
+        search = SimpleNamespace(search_by_type=AsyncMock(return_value=SimpleNamespace(songlist=[item], nextpage=0)))
+        with patch.object(qqmusic, 'run', side_effect=lambda sid, op: asyncio.run(op(SimpleNamespace(search=search)))):
+            result = self.client.get('/api/qqmusic/browse?kind=playlist-search&q=test')
+            self.assertEqual(result.json['data']['items'][0]['title'], '抖音流行热歌')
+
     def test_requires_app_login(self):
         client = self.app.test_client()
         for method, path in [('get', 'singer-profile?id=test'), ('get', 'browse?kind=tops'), ('get', 'suggestions?q=x'), ('get', 'comments?mid=x'), ('get', 'mv?id=x'), ('get', 'word-lyrics?mid=x'), ('post', 'collection'), ('get', 'lyrics?mid=test'), ('get', 'account'), ('get', 'daily'), ('get', 'library'), ('get', 'recommend'), ('get', 'search?q=test'), ('get', 'play?mid=test'),

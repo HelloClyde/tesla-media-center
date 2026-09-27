@@ -1,6 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
 
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 import compresssionBuild from "rollup-plugin-compression";
@@ -12,7 +12,7 @@ import type { ICompressionOptions } from "rollup-plugin-compression";
 // };
 
 // https://vitejs.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
     // compresssionBuild(option)
@@ -29,11 +29,11 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080/api/',
+        target: process.env.TMC_API_PROXY || loadEnv(mode, process.cwd(), 'TMC_').TMC_API_PROXY || 'http://localhost:8080/api/',
         changeOrigin: true,
         ws: true,
         rewrite: (path) => path.replace(/^\/api/, '') // 不可以省略rewrite
       }
     }
   }
-})
+}))

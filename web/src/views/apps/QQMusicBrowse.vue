@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 interface Item { id: string; title: string; cover: string; kind: string; group?: string; subtitle?: string; count?: number }
-const props = defineProps<{ initial: Item; api: (path: string, data?: object) => Promise<any> }>();
+const props = defineProps<{ initial: Item; active?: boolean; api: (path: string, data?: object) => Promise<any> }>();
 const emit = defineEmits<{ play: [song: any, songs: any[]]; video: [] }>();
 const artistTab = ref('songs'), group = ref('全部');
 const profile = ref<{ title: string; cover: string; description: string; area?: string; genre?: string; updated?: string; period?: string; count?: number }>();
@@ -15,6 +15,8 @@ async function loadProfile() {
   try { const result = await props.api('singer-profile?id=' + encodeURIComponent(selected.value.id)); if (generation === profileGeneration) profile.value = result; }
   catch { if (generation === profileGeneration) profileError.value = '歌手资料暂时无法加载'; }
 }
+const video = ref<HTMLVideoElement>();
+watch(() => props.active, active => { if (active === false) video.value?.pause(); });
 const trail = ref<Item[]>([]);
 const selected = ref(props.initial);
 const items = ref<Item[]>([]), songs = ref<any[]>([]);
@@ -30,7 +32,7 @@ async function load(append = false) {
       const result = await props.api('mv?id=' + encodeURIComponent(selected.value.id));
       if (id !== generation) return;
       urls.value = result.urls;
-      emit('video');
+      if (props.active !== false) emit('video');
     } else {
       const kind = selected.value.kind === 'singer' && artistTab.value !== 'songs' ? 'singer-' + artistTab.value : selected.value.kind;
       const result = await props.api(`browse?kind=${kind}&id=${encodeURIComponent(selected.value.id)}&q=${encodeURIComponent(selected.value.id)}&page=${next}`);
@@ -58,7 +60,7 @@ function videoError() { if (urlIndex.value + 1 < urls.value.length) ++urlIndex.v
     <el-button v-if="songs.length" class="play-all" @click="emit('play', songs[0], songs)">播放当前列表 · {{ songs.length }} 首</el-button>
     <el-alert v-if="error" :title="error" type="warning" :closable="false" /><el-button v-if="error" @click="load()">重试</el-button>
     <p v-if="busy" role="status">正在加载…</p>
-    <video v-if="urls.length" :src="urls[urlIndex]" controls autoplay playsinline @play="emit('video')" @error="videoError" />
+    <video ref="video" v-if="urls.length && active !== false" :src="urls[urlIndex]" controls autoplay playsinline @play="emit('video')" @error="videoError" />
     <div class="cards"><button v-for="item in displayedItems" :key="item.kind + item.id" @click="open(item)"><img v-if="item.cover" :src="item.cover" alt="" loading="lazy" /><strong>{{ item.title }}</strong><small v-if="item.subtitle">{{ item.subtitle }}</small></button></div>
     <button v-for="(song, index) in songs" :key="song.mid" class="track" @click="emit('play', song, songs)"><b v-if="selected.kind === 'top'" class="rank" :class="{ podium: index < 3 }">{{ String(index + 1).padStart(2, '0') }}</b><img :src="song.cover" alt="" /><span>{{ song.title }}<small>{{ song.singer }}</small></span><span>播放</span></button>
     <p v-if="!busy && !error && !items.length && !songs.length && !urls.length">暂无内容</p>
@@ -67,6 +69,6 @@ function videoError() { if (urlIndex.value + 1 < urls.value.length) ++urlIndex.v
 </template>
 <style scoped>
 .profile-hero{display:flex;align-items:flex-start;gap:18px;padding:18px;border-radius:16px;background:linear-gradient(130deg,#1c6251,#263e50);color:white;margin-bottom:16px}.profile-hero img{width:100px;height:100px;object-fit:cover;border-radius:12px}.profile-hero img.portrait{border-radius:50%}.profile-hero h2{margin:0 0 10px;font-size:24px}.profile-hero p{font-size:13px;line-height:1.7}.description{white-space:pre-line}.profile-hero summary{cursor:pointer;font-size:13px;margin-top:10px}.browse-tabs{display:flex;flex-wrap:wrap;margin-bottom:14px}.play-all{margin-bottom:14px}.rank{width:30px;font-size:20px;font-variant-numeric:tabular-nums;color:var(--color-text-soft)}.rank.podium{color:#19b978}.cards small{display:block;margin-top:6px;color:var(--color-text-soft);font-size:11px}.profile-error{font-size:13px;color:var(--color-text-soft)}
-.browse{max-height:65vh;overflow:auto;overscroll-behavior:contain}
+.browse{min-height:0;overscroll-behavior:contain}
 header{display:flex;align-items:center;gap:12px}h3{margin:4px 0 18px}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}.cards button,.track{border:1px solid var(--color-border);background:var(--color-surface);color:var(--color-text);border-radius:12px;text-align:left;padding:10px;cursor:pointer}.cards img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px}.cards strong{display:block;margin-top:8px}.track{display:flex;align-items:center;gap:12px;width:100%;margin-bottom:6px}.track img{width:42px;height:42px;border-radius:6px}.track>span:first-of-type{flex:1}.track small{display:block;color:var(--color-text-soft);margin-top:5px}video{width:100%;max-height:65vh;background:#000}
 </style>

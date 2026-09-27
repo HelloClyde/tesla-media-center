@@ -2,6 +2,8 @@
 import asyncio
 import base64
 import hashlib
+from html import unescape
+from html.parser import HTMLParser
 import re
 import secrets
 import threading
@@ -52,6 +54,23 @@ def song_max_quality(song):
     if any(getattr(file, field, 0) > 0 for field in ('size_24aac', 'size_48aac', 'size_96aac', 'size_96ogg')):
         return 'smooth'
     return 'unknown'
+
+
+class _PlainMusicText(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def music_text(value):
+    # Search providers may return highlight markup even with highlight=False.
+    parser = _PlainMusicText()
+    parser.feed(unescape(str(value or '')))
+    parser.close()
+    return ''.join(parser.parts)
 
 
 class InputError(ValueError):
@@ -120,11 +139,11 @@ def add_qqmusic_route(app):
                 access = 'purchase' if pay.price_track or pay.price_album else 'paid'
             elif {'pay_play', 'pay_month'} <= pay.model_fields_set:
                 access = 'standard'
-        return {'mid': s.mid, 'title': s.title or s.name,
-                'singer': ' / '.join(x.name for x in s.singer),
-                'album': s.album.title, 'cover': s.album.cover_url(),
+        return {'mid': s.mid, 'title': music_text(s.title or s.name),
+                'singer': ' / '.join(music_text(x.name) for x in s.singer),
+                'album': music_text(s.album.title), 'cover': s.album.cover_url(),
                 'id': getattr(s, 'id', 0), 'songType': getattr(s, 'type', 0),
-                'singers': [{'mid': x.mid, 'name': x.name} for x in s.singer],
+                'singers': [{'mid': x.mid, 'name': music_text(x.name)} for x in s.singer],
                 'albumMid': getattr(s.album, 'mid', ''),
                 'duration': s.interval, 'access': access, 'maxQuality': song_max_quality(s)}
 
@@ -210,7 +229,7 @@ def add_qqmusic_route(app):
                 return {'songs': [song_summary(s) for s in result.songs if s.mid],
                         'playlists': [], 'more': bool(result.hasmore), 'loginRequired': False}
             return {'songs': [], 'playlists': [
-                {'id': str(p.id), 'dirid': getattr(p, 'dirid', 0), 'title': p.title, 'cover': p.picurl, 'count': p.songnum}
+                {'id': str(p.id), 'dirid': getattr(p, 'dirid', 0), 'title': music_text(p.title), 'cover': p.picurl, 'count': p.songnum}
                 for p in result.playlists if p.id and not getattr(p, 'invalid', False)],
                 'more': bool(result.hasmore) if kind == 'playlists' else False,
                 'loginRequired': False}
@@ -295,7 +314,7 @@ def add_qqmusic_route(app):
         if not 1 <= len(query) <= 100:
             raise InputError('关键词长度无效')
         result = run(identity(), lambda c: c.search.complete(query))
-        return json_ok({'words': list(dict.fromkeys(x.hint for x in result.items if x.hint))[:8]})
+        return json_ok({'words': list(dict.fromkeys(music_text(x.hint) for x in result.items if x.hint))[:8]})
 
     @app.get('/api/qqmusic/browse')
     @endpoint
@@ -309,18 +328,18 @@ def add_qqmusic_route(app):
         async def load(client):
             if kind == 'tops':
                 result = await client.top.get_category()
-                return {'items': [{'id': str(t.id), 'kind': 'top', 'title': t.name, 'cover': t.front_pic_url, 'group': g.name, 'subtitle': t.update_time, 'count': t.total_num} for g in result.group for t in g.toplist], 'songs': [], 'more': False}
+                return {'items': [{'id': str(t.id), 'kind': 'top', 'title': music_text(t.name), 'cover': t.front_pic_url, 'group': g.name, 'subtitle': t.update_time, 'count': t.total_num} for g in result.group for t in g.toplist], 'songs': [], 'more': False}
             if kind == 'singers':
                 result = await client.singer.get_singer_list()
-                return {'items': [{'id': x.mid, 'kind': 'singer', 'title': x.name, 'cover': x.singer_pic or x.cover_url(), 'subtitle': x.country} for x in result.singerlist if x.mid], 'songs': [], 'more': False}
+                return {'items': [{'id': x.mid, 'kind': 'singer', 'title': music_text(x.name), 'cover': x.singer_pic or x.cover_url(), 'subtitle': x.country} for x in result.singerlist if x.mid], 'songs': [], 'more': False}
             if kind in ('singer-albums', 'singer-mvs'):
                 valid_id(value)
                 if kind == 'singer-albums':
                     result = await client.singer.get_album_list(value, num=20, page=page)
-                    items = [{'id': x.mid, 'kind': 'album', 'title': x.name, 'cover': x.cover_url(), 'subtitle': x.time_public} for x in result.album_list]
+                    items = [{'id': x.mid, 'kind': 'album', 'title': music_text(x.name), 'cover': x.cover_url(), 'subtitle': x.time_public} for x in result.album_list]
                 else:
                     result = await client.singer.get_mv_list(value, num=20, page=page)
-                    items = [{'id': x.vid, 'kind': 'mv', 'title': x.title, 'cover': x.picurl} for x in result.mv_list if x.vid]
+                    items = [{'id': x.vid, 'kind': 'mv', 'title': music_text(x.title), 'cover': x.picurl} for x in result.mv_list if x.vid]
                 return {'items': items, 'songs': [], 'more': page * 20 < result.total}
             if kind in ('singer', 'album', 'playlist', 'top'):
                 valid_id(value)
@@ -354,13 +373,13 @@ def add_qqmusic_route(app):
             items = []
             for x in entries:
                 if field == 'singer':
-                    items.append({'id': x.mid, 'title': x.name, 'cover': x.pic, 'kind': 'singer'})
+                    items.append({'id': x.mid, 'title': music_text(x.name), 'cover': x.pic, 'kind': 'singer'})
                 elif field == 'album':
-                    items.append({'id': x.mid, 'title': x.title or x.name, 'cover': x.pic, 'kind': 'album'})
+                    items.append({'id': x.mid, 'title': music_text(x.title or x.name), 'cover': x.pic, 'kind': 'album'})
                 elif field == 'songlist':
-                    items.append({'id': str(x.id), 'title': x.title, 'cover': x.picurl, 'kind': 'playlist'})
+                    items.append({'id': str(x.id), 'title': music_text(x.title), 'cover': x.picurl, 'kind': 'playlist'})
                 else:
-                    items.append({'id': x.vid, 'title': x.title or x.name, 'cover': x.pic, 'kind': 'mv'})
+                    items.append({'id': x.vid, 'title': music_text(x.title or x.name), 'cover': x.pic, 'kind': 'mv'})
             return {'items': items, 'songs': [], 'more': result.nextpage > page}
         return json_ok(run(identity(), load))
 
@@ -372,7 +391,7 @@ def add_qqmusic_route(app):
         if not result.singer_list:
             raise InputError('暂未找到歌手资料')
         singer = result.singer_list[0]
-        return json_ok({'title': singer.basic_info.name, 'cover': singer.pic.pic or singer.basic_info.cover_url(),
+        return json_ok({'title': music_text(singer.basic_info.name), 'cover': singer.pic.pic or singer.basic_info.cover_url(),
                         'description': singer.ex_info.desc, 'area': singer.ex_info.area, 'genre': singer.ex_info.genre})
 
     @app.post('/api/qqmusic/collection')

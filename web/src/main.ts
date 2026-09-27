@@ -4,14 +4,14 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
-import Vconsole from 'vconsole'
+import { initDebugConsole } from '@/functions/debugConsole'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 
 import './assets/main.css'
 import './assets/player.css'
-const vConsole = new Vconsole();
+initDebugConsole();
 
 const syncTheme = (isDark: boolean) => {
   const root = document.documentElement;

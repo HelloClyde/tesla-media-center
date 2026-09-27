@@ -1,7 +1,6 @@
 import { createRouter, createWebHashHistory } from 'vue-router'
 import HomeView from '../views/apps/HomeView.vue'
 import SystemInfoDebug from '../views/apps/SystemInfoDebug.vue'
-import NavMap from '@/views/apps/NavMap.vue';
 import VideoPlayerViewVue from '@/views/apps/VideoPlayerView.vue';
 import LoginViewVue from '@/views/LoginView.vue';
 import AppViewVue from '@/views/AppView.vue';
@@ -17,6 +16,7 @@ const router = createRouter({
       name: 'apps',
       component: AppViewVue,
       children:[
+        { path: 'amap', name: 'amap-app', component: () => import('../views/apps/AmapAppView.vue') },
         { path: 'qqmusic', name: 'qqmusic', component: () => import('../views/apps/QQMusicView.vue') },
         {
           path: 'home',
@@ -26,7 +26,7 @@ const router = createRouter({
         {
           path: 'nav',
           name: 'nav',
-          component: NavMap
+          redirect: '/apps/amap'
         },
         {
           path: 'debug',

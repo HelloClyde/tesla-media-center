@@ -1,0 +1,94 @@
+# App 目的地搜索核对（2026-09-27）
+
+## 当前结论
+
+已定位 APK 中的一条地点联想搜索链路，尚未取得有效的线上地点结果。
+不能将 HTTP 200 当作接口成功：本次验证返回的是 HTML 访问拦截页，而非 JSON。
+没有证据证明拦截原因是缺少账号登录；也没有证据证明匿名 Python 请求已满足服务器要求。
+
+## 静态证据
+
+研究资源为本地 `amap-release.apk`，固定版本校验见
+`tools/amap-app/tmc_route_helper.py`。从 `assets/ajx.bundle/bundles.oajx`
+经现有 SPX 提取器读取以下资源（这里只记录文件名和行为，不提交提取的 App 源码）：
+
+1. `SinglePoiSearchLogic.js` 的 `fetchSuggPoiData` 获取搜索参数，然后调用
+   `SuggPoiSearchRequest.fetch`；未见调用前必须登录的检查。
+2. `SuggUtils.js` 的 `getSuggParam` 使用 `words`，而不是 `keywords`；
+   附带 `city`、`user_city`、`user_loc`、地图中心坐标、地图范围等。
+   `city` 来自坐标对应的行政区代码，并非固定城市。
+3. `BaseSugRequest.js` 使用 POST 调用 `$aos.m5$/ws/shield/search/sug`，
+   明确指定签名字段顺序为 `channel`、`city`、`words`。
+4. `CLNetwork.js` 构造 AosRequest，设置 `aos_params: true`，发布包默认
+   `ent: true`，最后通过 `natives.XMLHttpRequest.fetch` 交给原生层。
+   仅复制业务参数和签名不能证明已复现原生线上请求。
+5. `NetworkParam.java#getNetworkParamMap` 附加版本、设备及会话等公共参数；
+   `uid` 仅在非 null 时附加。`session` 是通过独立的 `getSession()` 获取的数值，
+   不能仅凭字段名称把它解释成账号登录 Token。
+6. `SinglePoiSearchLogic.js` 仅在 JSON `code === 1` 时读取 `tip_list`，
+   或汇总 `city_list[].tip_list`。失败还可能回退到 App 本地离线搜索，
+   所以手机界面显示结果也不直接证明某次网络请求成功。
+7. `SuggPoiParse.js` 将结果 `x/y` 解析为经纬度，并处理可选的入口坐标
+   `x_entr/y_entr`。后续适配必须区分有坐标 POI 与无坐标联想词。
+
+另发现导航业务 `TripSearchDriveSugRequest.js` 使用独立的
+`/ws/aos/route/search/sugList`（JSON POST），不能混用这两条请求的参数和签名规则。
+
+## 本轮 HTTP 验证
+
+先前 GET + keywords 的探测与上述调用链不符，不能用于判断是否需要登录。
+本轮按已确认的 POST、words/city、位置及签名字段进行一次验证，结果为：
+
+- HTTP 200；Content-Type 为 `text/html;charset=UTF-8`。
+- 内容为访问拦截页，不是 `code: 1` 的地点结果。
+- 未携带真实用户账号、登录 Cookie 或伪造设备标识。
+- 未实施验证码绕过、代理轮换或重复重试。
+- 脱敏结果保存在本地 `search-post-verification.json`；不保存签名 URL 或密钥。
+
+## 尚待验证
+
+原生请求层如何附加公共参数、执行 ent 处理，以及业务响应与访问拦截之间的区别，
+仍需核对。下一步应对照原生实现或在获授权的 App 运行环境观察匿名请求，
+而不是把登录账号当作默认解决方案。拿到真实成功响应前，不宣称目的地搜索已经可用。
+
+## 原生网络层追踪补充
+
+已继续追踪到 `com.autonavi.minimap.ajx3.modules.net.ModuleRequest`，
+它继承 `AbstractModuleXMLHttpRequest`，不是先前只看到的方法声明。
+
+调用顺序：
+
+```text
+BaseSugRequest.fetch
+  → CLNetwork.AosRequest / Request.send
+  → natives.XMLHttpRequest.fetch
+  → ModuleRequest.fetch / optionsToRequestInfo
+  → ModuleRequest.c.a（构造 AosPostRequest）
+  → AosRequest.buildHttpRequest
+  → AosPostRequest.processParams
+  → AosRequest.securityGuardSignByV2
+  → 网络发送
+```
+
+确认的请求结构差异：
+
+- `bodytransfer` 默认开启，原生层先将表单拆为业务参数，URL decode 值；
+  并不是把 JavaScript 中的 body 原样发送。
+- `aosSign.ent` 被映射到 `setEncryptStrategy(2)`；它确实是加密策略，
+  不是账号状态。
+- `aos_params_inbody` 默认 false。此分支把公共参数放到 URL 侧，
+  业务参数放到 body 侧；具体分配还受是否已有原始 body 等分支影响。
+- `AosPostRequest.processParams` 对业务参数调用 `xxTeaEncrypt`。
+  `AosRequest.buildHttpRequest` 对 URL 参数也有独立的加密封装。
+- 常规业务 `sign` 与后续 `securityGuardSign` 是两个不同阶段。
+  后者受 `withSecurityGuardSign()`、启动场景及运行时签名模式等条件控制，
+  会使用客户端安全组件。未证明本次搜索实际启用了哪条运行时分支。
+- `wua` 默认 false 不等于跳过全部安全校验；它只是传给安全组件的一个选项。
+- 找到 `IAosEncryptor` 实现 `rf2`：其字符串 `xxTeaEncrypt` 委托给
+  `serverkey.amapEncodeV2`，字节版本委托给 `amapEncodeBinaryV2`。
+  `withSecurityGuardSign` 在没有配置提供者时默认 true，有提供者时使用其值；
+  `isVirtualV2Sign` 和启动场景仍依赖运行时状态。这里没有账号登录判断。
+
+本轮没有再向服务器反复发送试探请求，也没有生成或伪造安全组件证明。
+结论仍是“普通 Python 表单请求不等价于 App 请求”，而非“已确定风控原因”。
+仍缺成功的匿名 App 请求观测，才能确认线上实际参数和分支。
