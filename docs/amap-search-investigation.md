@@ -92,3 +92,27 @@ BaseSugRequest.fetch
 本轮没有再向服务器反复发送试探请求，也没有生成或伪造安全组件证明。
 结论仍是“普通 Python 表单请求不等价于 App 请求”，而非“已确定风控原因”。
 仍缺成功的匿名 App 请求观测，才能确认线上实际参数和分支。
+
+## 默认配置和安全组件入口（后续核对）
+
+继续检查固定 APK 中的 `vu5` 与 `uu5`，确认：
+
+- `vu5` 实现 `ISecurityGuardSignConfigProvider`。首次读取
+  `network_config` 本地配置时，安全签名开关和 V2 签名模式的默认值均为 true。
+  这些默认值可能被云端配置更新，不能等同于某台实机的最终值。
+- `rf2.isVirtualV2Sign()` 读取该配置，而 V2 执行入口位于 `uu5.f`。
+- V2 执行通过 Android Application 初始化 SecurityGuard 的
+  `IUnifiedSecurityComponent`，最终调用 `getSecurityFactors`。
+  它依赖 App 运行环境中的组件和配置，不只是前文的业务 MD5 签名。
+- `uu5.f` 组件初始化失败、返回为空或抛异常时返回 null；这不表示请求一定成功，
+  也不提供服务器接受缺省安全字段的依据。
+- 这段初始化和调用链没有显式要求用户账号登录。它与运行环境校验有关，
+  不能用“缺少账号 Cookie”解释所有失败。
+
+本机已找到用于早期探针编译的 Android SDK（build-tools、platform-tools、platforms），
+但该 SDK 目录未包含 emulator 和 system-images。拥有编译 SDK 并不代表已经具备
+可运行完整 App 的环境。本轮未安装模拟器，也未请求用户账号。
+
+截至目前，业务请求、参数组织和安全组件调用入口已明确；未验证的关键点是
+实际 App 的运行时配置、组件输出，以及成功的匿名搜索响应。
+普通 Python HTTP 尚不能被视为完整替代；本轮未尝试伪造安全组件输出或绕过拦截。

@@ -129,10 +129,16 @@ function routeTo(name: string){
   flex: 0 0 var(--menu-width);
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-width: none;
   border-right: 0;
   background: transparent;
   height: 100%;
+}
+
+.menu::-webkit-scrollbar {
+  display: none;
 }
 
 .menu-bottom {
