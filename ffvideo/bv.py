@@ -46,7 +46,8 @@ qr_login = None
 qr_login_lock = threading.Lock()
 
 
-DEFAULT_BILIBILI_CACHE_DIR = '/tmp/tesla-media-center/bilibili-cache'
+from storage import data_path
+DEFAULT_BILIBILI_CACHE_DIR = str(data_path('bilibili-cache'))
 DEFAULT_BILIBILI_CACHE_SIZE_MB = 2048
 BILIBILI_DEFAULT_MAX_QUALITY = '_720P'
 BILIBILI_CREDENTIAL_CONFIG_KEYS = {
@@ -59,7 +60,7 @@ BILIBILI_CREDENTIAL_CONFIG_KEYS = {
 
 
 def get_bilibili_cache_dir():
-    cache_dir = get_config_by_key('bilibili_cache_dir', DEFAULT_BILIBILI_CACHE_DIR)
+    cache_dir = DEFAULT_BILIBILI_CACHE_DIR
     os.makedirs(cache_dir, exist_ok=True)
     return cache_dir
 

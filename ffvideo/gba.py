@@ -6,33 +6,34 @@ from urllib.parse import quote
 import requests
 
 from config import get_config_by_key
-from ffvideo.utils import json_ok
+from ffvideo.utils import json_ok, json_fail, login_check
 
 
-DEFAULT_GBA_PATH = './roms/gba'
-DEFAULT_GBA_SAVE_PATH = './roms/gba/saves'
-DEFAULT_GBA_STATE_PATH = './roms/gba/states'
+from storage import data_path
+DEFAULT_GBA_PATH = str(data_path('gba'))
+DEFAULT_GBA_SAVE_PATH = str(data_path('gba/saves'))
+DEFAULT_GBA_STATE_PATH = str(data_path('gba/states'))
 SUPPORTED_ROM_EXTENSIONS = ('.gba', '.agb', '.bin')
 REMOTE_GBA_CATALOG_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'web', 'public', 'catalogs', 'gba-js-org.json'))
 MAX_GBA_STATE_SLOTS = 5
 
 
 def get_gba_root_path():
-    prefix = get_config_by_key('gba_path', DEFAULT_GBA_PATH) or DEFAULT_GBA_PATH
+    prefix = DEFAULT_GBA_PATH
     prefix = os.path.abspath(prefix)
     os.makedirs(prefix, exist_ok=True)
     return prefix
 
 
 def get_gba_save_root_path():
-    prefix = get_config_by_key('gba_save_path', DEFAULT_GBA_SAVE_PATH) or DEFAULT_GBA_SAVE_PATH
+    prefix = DEFAULT_GBA_SAVE_PATH
     prefix = os.path.abspath(prefix)
     os.makedirs(prefix, exist_ok=True)
     return prefix
 
 
 def get_gba_state_root_path():
-    prefix = get_config_by_key('gba_state_path', DEFAULT_GBA_STATE_PATH) or DEFAULT_GBA_STATE_PATH
+    prefix = DEFAULT_GBA_STATE_PATH
     prefix = os.path.abspath(prefix)
     os.makedirs(prefix, exist_ok=True)
     return prefix
@@ -101,6 +102,33 @@ def infer_remote_file_size(headers):
 
 
 def add_gba_route(app):
+    @app.post('/api/gba/upload')
+    @login_check
+    def gba_upload():
+        name = request.args.get('name', '').strip()
+        if (not name or len(name) > 180 or any(c in name for c in '/\\:*?"<>|')
+                or any(ord(c) < 32 for c in name) or not name.lower().endswith('.gba')):
+            return json_fail(message='请选择有效的 .gba 文件'), 400
+        limit = 32 * 1024 * 1024
+        if request.content_length is not None and not 192 <= request.content_length <= limit:
+            return json_fail(message='GBA 文件大小须为 192 字节至 32 MB'), 413
+        data = request.stream.read(limit + 1)
+        if not 192 <= len(data) <= limit:
+            return json_fail(message='GBA 文件大小须为 192 字节至 32 MB'), 413
+        target = os.path.join(get_gba_root_path(), name)
+        try:
+            with open(target, 'xb') as output:
+                try:
+                    output.write(data)
+                except OSError:
+                    os.unlink(target)
+                    raise
+        except FileExistsError:
+            return json_fail(message='同名游戏已存在，请重命名后上传'), 409
+        except OSError:
+            return json_fail(message='无法保存游戏，请检查目录写入权限及磁盘空间'), 500
+        return json_ok({'name': name, 'size': len(data)})
+
     @app.route('/api/gba/list', methods=['GET'])
     def gba_list():
         root_path = get_gba_root_path()

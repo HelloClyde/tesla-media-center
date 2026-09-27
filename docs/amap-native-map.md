@@ -204,9 +204,9 @@ python tools/amap-app/preview_bmd_navigation.py
 优先淘汰最近最少访问的数据；失败或图层不完整的结果不写入磁盘。
 清空保留策略，代次控制阻止清空前发出的请求重新填入旧结果。
 
-默认本地目录 `.local-data/amap-cache`；Docker 默认 `/var/cache/tmc/amap`。
+默认本地目录 `data/amap-cache`；Docker 默认 `/data/amap-cache`。
 容器重启保留缓存；要跨镜像更新/容器重建保留缓存和设置，请添加命名卷：
-`--mount type=volume,src=tmc-amap-cache,dst=/var/cache/tmc/amap`。
+`-v /opt/tmc/data:/data`。
 也可设置 `TMC_AMAP_CACHE_DIR` 指向可写持久目录。
 
 缓存为当前服务器所有已登录用户共享，不是车机磁盘缓存。首次访问未缓存区域

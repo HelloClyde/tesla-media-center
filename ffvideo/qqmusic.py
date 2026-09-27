@@ -21,7 +21,8 @@ from qqmusic_api.modules.song import SongFileInfo, SongFileType
 from ffvideo.utils import json_ok, json_fail, login_check
 from ffvideo.qqmusic_daily import DailyApi
 
-STORE = Path(__file__).resolve().parent.parent / '.qqmusic'
+from storage import data_path
+STORE = data_path('qqmusic')
 LOCK = threading.RLock()
 PENDING = {}
 QUALITIES = {

@@ -2,6 +2,7 @@
 import os
 import gzip
 from ffvideo.amap_cache import MapCache
+from storage import data_path
 import json
 from pathlib import Path
 import subprocess
@@ -21,7 +22,7 @@ LOCK = threading.Lock()
 def grids(payload):
     tiles = payload.get('tiles') if isinstance(payload, dict) else None
     level = payload.get('level', 14) if isinstance(payload, dict) else 14
-    if type(level) is not int or level not in (3, 6, 8, 10, 12, 14):
+    if type(level) is not int or level not in (3, 6, 8, 10, 12, 14, 15):
         raise ValueError('invalid level')
     if not isinstance(tiles, list) or not 1 <= len(tiles) <= 24:
         raise ValueError('invalid batch')
@@ -51,7 +52,7 @@ def add_amap_map_route(app):
             response.headers['Content-Encoding'] = 'gzip'
         return response
 
-    disk = MapCache(app.config.get('AMAP_CACHE_PATH') or Path(os.environ.get('TMC_AMAP_CACHE_DIR', ROOT / '.local-data/amap-cache')) / 'map.sqlite3')
+    disk = MapCache(app.config.get('AMAP_CACHE_PATH') or data_path('amap-cache/map.sqlite3'))
 
     @app.route('/api/amap-app/cache', methods=['GET', 'PUT', 'DELETE'])
     @login_check

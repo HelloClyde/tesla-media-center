@@ -1,16 +1,39 @@
 import json
+import os
+import secrets
+import tempfile
+import threading
+from storage import data_path, initialize_storage
 
-_config_path = 'config.json'
+initialize_storage()
+
+_config_path = data_path('config.json')
+_config_lock = threading.RLock()
+if not _config_path.exists():
+    password = os.environ.get('TMC_PASSWORD') or secrets.token_urlsafe(16)
+    _config_path.write_text(json.dumps({'password': password}), encoding='utf-8')
+    if not os.environ.get('TMC_PASSWORD'):
+        print('TMC initial login password: ' + password, flush=True)
 
 def read_config():
-    with open(_config_path, 'r') as f:
+    with open(_config_path, 'r', encoding='utf-8') as f:
         content = f.read()
         return json.loads(content)
 
 def write_config(config_dict):
-    with open(_config_path, 'w') as wf:
-        wf.write(json.dumps(config_dict, indent=4))
-        
+    with _config_lock:
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=_config_path.parent, delete=False) as wf:
+                temporary = wf.name
+                json.dump(config_dict, wf, indent=4)
+                wf.flush()
+                os.fsync(wf.fileno())
+            os.replace(temporary, _config_path)
+        finally:
+            if temporary and os.path.exists(temporary):
+                os.unlink(temporary)
+
 def get_all_config_safe():
     config = read_config()
     config.pop('password', None)
@@ -26,10 +49,11 @@ def get_all_config_safe():
     return config
 
 def put_config_by_key(key, value):
-    config = read_config()
-    config[key] = value
-    write_config(config_dict=config)
-    
+    with _config_lock:
+        config = read_config()
+        config[key] = value
+        write_config(config_dict=config)
+
 def get_config_by_key(key, default_value=None):
     config = read_config()
     if key in config:

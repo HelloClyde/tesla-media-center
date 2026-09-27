@@ -189,7 +189,7 @@ def geographic_point(point, grid, width=13):
             90 - (y + 1) * 180 / (1 << level) + py * unit]
 
 
-def geographic_features(data, grid):
+def geographic_features(data, grid, paints=None):
     header = directory(data)
     entry = next((entry for entry in header['sections'] if entry['kind'] == 10), None)
     if not any(e['kind'] == 30 for e in header['sections']):
@@ -199,12 +199,20 @@ def geographic_features(data, grid):
         start = header['bodyOffset'] + entry['offset']
         table = names(data[start:start + entry['size']])
     result = []
-    for feature in decode(data):
+    decoded = decode(data)
+    from bmd_roads import road_levels
+    levels = road_levels(data, [len(f['points']) for f in decoded])
+    from bmd_styles import style_bindings
+    bindings = style_bindings(data, 31, len(decoded)) if paints is not None else {}
+    for feature_number, feature in enumerate(decoded):
         index = feature['nameIndex']
         if index is not None and index >= len(table):
             raise ValueError('invalid road name index')
         label = '' if index is None else table[index].get('zh-Hans', next(iter(table[index].values()), ''))
-        result.append({'type': 'Feature', 'properties': {'name': label, 'style': feature['style']},
+        binding = bindings.get(feature_number)
+        result.append({'type': 'Feature', 'properties': {'name': label, 'style': feature['style'],
+                       **({'levelMarkers': levels[feature_number]} if feature_number in levels else {}),
+                       **({'paintKey': f'{binding[0]}/{binding[1]}'} if binding else {})},
                        'geometry': {'type': 'LineString', 'coordinates': [geographic_point(p, grid, feature['coordinateBits']) for p in feature['points']]}})
     return {'type': 'FeatureCollection', 'features': result}
 

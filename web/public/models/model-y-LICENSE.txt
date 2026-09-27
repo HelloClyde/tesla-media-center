@@ -1,0 +1,10 @@
+2021 Tesla Model Y — original by tonielpro520
+https://sketchfab.com/3d-models/2021-tesla-model-y-59e2ead369984b1a85c800ff6cf6789d
+Licensed under Creative Commons Attribution 4.0:
+https://creativecommons.org/licenses/by/4.0/
+
+2022_tesla_model_y.glb is a TMC derivative edited in Blender:
+articulated doors/wheels, pivots and door animations, material changes,
+length normalization and Meshopt optimization. Not an exact engineering model.
+Original and modified assets are provided under CC-BY-4.0.
+Tesla and Model Y names identify the depicted vehicle; no endorsement is implied.

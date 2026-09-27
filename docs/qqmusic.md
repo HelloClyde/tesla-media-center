@@ -23,7 +23,7 @@
 - Python 3.10 或以上，安装 `requirement.txt`（新增固定版本 `qqmusic-api-python==0.7.3`）。
 - 运行 `python flask_app.py`，前端沿用现有 Vite 代理或生产静态文件。
 - `.qqmusic/` 保存每个浏览器的设备信息和加密登录凭据；凭据加密密钥由应用 `secret_key` 派生，不返回前端或配置接口。目录已排除 Git 和 Docker 构建上下文，生产环境需限制目录访问。
-- Docker 需要持久登录时，将独立数据卷挂载到 `/root/tesla-media-center/.qqmusic`，同时持久化原有 `config.json`。修改 `secret_key` 或清除浏览器会话后需要重新扫码。
+- Docker 统一挂载 `-v /opt/tmc/data:/data`，凭证保存在 `/data/qqmusic`，密钥保存在 `/data/config.json`。旧目录迁移见 `docs/persistence.md`。修改 `secret_key` 或清除浏览器会话后需要重新扫码。
 - 音频由浏览器直接请求 QQ 音乐的 HTTPS CDN。服务器需要能访问 QQ 登录和音乐 API，浏览器需要能访问 QQ 音乐 CDN。
 
 使用社区维护的 [QQMusicApi](https://github.com/l-1124/QQMusicApi)，不是腾讯官方开放平台授权集成，上游接口变化可能影响可用性。仅获取账号实际有权播放的音源。

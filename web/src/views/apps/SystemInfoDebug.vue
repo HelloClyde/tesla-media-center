@@ -5,6 +5,7 @@ import H5Recorder from '@/components/H5Recorder.vue';
 import AudioOutputTest from '@/components/AudioOutputTest.vue';
 import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
+import WebGLComputeTest from '@/components/WebGLComputeTest.vue';
 import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import { get, post } from '@/functions/requests';
@@ -211,6 +212,7 @@ onUnmounted(() => {
                     <CameraTest v-if="activeTab === 'camera'" />
                 </article>
             </el-tab-pane>
+            <el-tab-pane label="WebGL 算力" name="webgl"><WebGLComputeTest v-if="activeTab === 'webgl'" /></el-tab-pane>
             <el-tab-pane label="设备诊断" name="diagnostics">
             <section class="diagnostics-panel">
                 <div class="panel-head">

@@ -7,7 +7,7 @@ import time
 import zlib
 from pathlib import Path
 
-VERSION = 'bmd-17.00.0.2005-v1'
+VERSION = 'bmd-17.00.0.2005-v3-road-levels'
 
 class MapCache:
     def __init__(self, path):

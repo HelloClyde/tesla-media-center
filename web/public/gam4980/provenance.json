@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/HelloClyde/BBK9588-gam4980",
+  "commit": "73b884a056ca0595de1552e6e365138687fb25a1",
+  "runtime": {
+    "8.BIN": "1c8f0b75f478cc42b1cc4292ff6c3b022b11384f0b6fc1b9601873a9da656d6f",
+    "E.BIN": "9d13aa4593d97b790afc37d73da8be985e7a3aa7f3dcfe6b91c798671067aa5e",
+    "core.wasm": "352da1d81237fc0da67786123aeffa3a3d552e6f9a32cb9e5baa69dae3b94b61"
+  }
+}

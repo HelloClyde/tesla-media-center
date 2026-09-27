@@ -15,6 +15,34 @@ declare global {
   }
 }
 
+const uploadPicker = ref<HTMLInputElement>();
+const uploading = ref(false), uploadStatus = ref('');
+let uploadDisposed = false;
+async function uploadGames(event: Event) {
+  const input = event.target as HTMLInputElement, files = Array.from(input.files || []); input.value = '';
+  if (!files.length || uploading.value) return;
+  uploading.value = true;
+  let count = 0; const failures: string[] = [];
+  for (const file of files) {
+    if (uploadDisposed) break;
+    uploadStatus.value = '正在上传 ' + file.name;
+    if (!file.name.toLowerCase().endsWith('.gba') || file.size < 192 || file.size > 32 * 1024 * 1024) { failures.push(file.name + '：仅支持 192 字节至 32 MB 的 .gba 文件'); continue; }
+    try {
+      const response = await fetch('/api/gba/upload?name=' + encodeURIComponent(file.name), { method:'POST', headers:{'Content-Type':'application/octet-stream'}, body:file });
+      const result = await response.json();
+      if (!response.ok || result.status !== 'ok') throw Error(result.status === 'need_login' ? '请重新登录' : result.message || '上传失败');
+      count++;
+    } catch (e) { failures.push(file.name + '：' + (e as Error).message); }
+  }
+  if (!uploadDisposed) {
+    state.libraryTab = 'local';
+    try { await loadRomList(''); } catch { failures.push('刷新列表失败，请稍后重试'); }
+    uploadStatus.value = [count ? `已上传 ${count} 个游戏` : '', ...failures].filter(Boolean).join('；');
+    uploading.value = false;
+  }
+}
+onBeforeUnmount(() => { uploadDisposed = true; });
+
 const canvasRef = ref<HTMLCanvasElement | null>(null);
 const silentAudioRef = ref<HTMLAudioElement | null>(null);
 
@@ -1229,11 +1257,14 @@ onBeforeUnmount(() => {
             <p>本地 {{ romFiles.length }} 个 ROM、{{ folderItems.length }} 个文件夹；在线补充 {{ state.remoteItems.length }} 个 ROM</p>
           </div>
           <div class="library-actions">
+            <el-button :loading="uploading" @click="uploadPicker?.click()">上传游戏</el-button>
+            <input ref="uploadPicker" hidden type="file" accept=".gba" multiple @change="uploadGames" />
             <el-button v-if="state.activeRomName" @click="enterPlayMode">继续 {{ state.activeRomName }}</el-button>
             <el-button circle :icon="RefreshRight" :loading="state.loadingList || state.loadingRemote" @click="refreshLibrary()" />
           </div>
         </div>
 
+        <p v-if="uploadStatus" role="status">{{ uploadStatus }}</p>
         <div class="library-tabs">
           <button class="library-tab" :class="{ active: state.libraryTab === 'remote' }" @click="state.libraryTab = 'remote'">
             在线 ROM
@@ -1286,7 +1317,7 @@ onBeforeUnmount(() => {
 
           <div v-if="!state.loadingList && state.localItems.length === 0" class="empty-card">
             <strong>还没有可启动的 GBA ROM</strong>
-            <span>把 `.gba` 文件放到 {{ state.rootPath || './roms/gba' }} 后刷新即可。</span>
+            <span>点击“上传游戏”添加 .gba 文件，或放入 {{ state.rootPath || './roms/gba' }} 后刷新。</span>
           </div>
         </div>
 

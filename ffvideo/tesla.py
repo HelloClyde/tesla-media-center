@@ -20,7 +20,8 @@ DEFAULT_TESLA_API_BASE = 'https://owner-api.vn.cloud.tesla.cn'
 DEFAULT_TESLA_AUTH_BASE = 'https://auth.tesla.com'
 DEFAULT_TESLA_TOKEN_PATH = '/oauth2/v3'
 DEFAULT_TESLA_CLIENT_ID = 'ownerapi'
-DEFAULT_TESLA_DB_PATH = './db/tesla_history.sqlite3'
+from storage import data_path
+DEFAULT_TESLA_DB_PATH = str(data_path('tesla/tesla_history.sqlite3'))
 GLOBAL_TESLA_API_BASE = 'https://owner-api.teslamotors.com'
 CHINA_TESLA_API_BASE = 'https://owner-api.vn.cloud.tesla.cn'
 DEFAULT_TESLA_USER_AGENT = 'TeslaMediaCenter/1.0'
@@ -53,7 +54,7 @@ tesla_stream_phase = 'idle'
 
 
 def get_tesla_db_path():
-    return get_config_by_key('tesla_db_path', DEFAULT_TESLA_DB_PATH)
+    return DEFAULT_TESLA_DB_PATH
 
 
 def ensure_tesla_storage():

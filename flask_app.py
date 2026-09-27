@@ -9,7 +9,7 @@ from ffvideo import utils as futils
 from ffvideo.utils import login_check
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
-from ffvideo import bv, gba, local_video, tesla, qqmusic, amap_app
+from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app
 import time
 from cryptography import fernet
 import mimetypes
@@ -54,14 +54,12 @@ def update_config():
         'amap_security_js_code',
         'video_path',
         'home_page_iframe',
-        'bilibili_cache_dir',
         'bilibili_cache_size_mb',
         'bilibili_max_quality',
         'bilibili_danmaku_area',
         'bilibili_danmaku_max_count',
         'bilibili_danmaku_opacity',
         'bilibili_danmaku_font_size',
-        'gba_path',
     }
 
     if 'bilibili_danmaku_font_size' in data:
@@ -115,6 +113,7 @@ if __name__ == '__main__':
     # 运行Flask应用，并启用多线程支持
     local_video.add_local_video_route(app)
     gba.add_gba_route(app)
+    gam4980.add_gam4980_route(app)
     bv.add_bv_route(app)
     qqmusic.add_qqmusic_route(app)
     amap_app.add_amap_app_route(app)

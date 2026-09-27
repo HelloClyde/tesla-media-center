@@ -1,0 +1,16 @@
+{
+  "doors": [
+    "Door_FL",
+    "Door_FR",
+    "Door_RL",
+    "Door_RR"
+  ],
+  "wheels": [
+    "Wheel_FL",
+    "Wheel_FR",
+    "Wheel_RL",
+    "Wheel_RR"
+  ],
+  "meshCount": 9,
+  "triangles": 172427
+}

@@ -10,6 +10,16 @@ from ffvideo import amap_map
 
 
 class MapTest(unittest.TestCase):
+    def test_building_level_uses_own_cache(self):
+        tile = {'level': 15, 'x': 26985, 'y': 9103, 'buildings': [{'id': '7', 'parts': []}]}
+        self.disk.write((15, 26985, 9103), tile, 0)
+        with patch.object(amap_map.subprocess, 'run') as run:
+            response = self.client.post('/api/amap-app/map', json={'level': 15, 'tiles': [[26985, 9103]]})
+            run.assert_not_called()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json['data']['tiles'][0]['buildings'], tile['buildings'])
+        self.assertEqual(self.disk.read([(14, 26985, 9103)])[0], {})
+
     def setUp(self):
         app = Flask(__name__)
         app.secret_key = 'test-only'

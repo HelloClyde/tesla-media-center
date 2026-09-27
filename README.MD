@@ -110,7 +110,7 @@ GBA 模拟器内核基于 `gbajs2`，界面按车机横屏操作重新设计。
 
 ![gba](shot/gba.png)
 
-默认 ROM 目录为 `./roms/gba`，可通过 `config.json` 中的 `gba_path` 覆盖。
+GBA ROM 目录统一为数据根目录下的 `gba/`，支持网页上传。
 
 原始模拟器项目：
 https://github.com/andychase/gbajs2.git
@@ -155,21 +155,18 @@ npm run build
 cd ..
 ```
 
-4. 创建 `config.json`
+4. 可选：创建 `data/config.json`（旧根目录配置首次启动会自动迁移）
 
 ```json
 {
   "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
   "video_path": "./video",
-  "gba_path": "./roms/gba",
   "amap_key": "xxx",
   "password": "abc",
-  "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
   "bilibili_cache_size_mb": 2048,
   "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
   "tesla_auth_base_url": "https://auth.tesla.com",
-  "tesla_token_path": "/oauth2/v3",
-  "tesla_db_path": "./db/tesla_history.sqlite3"
+  "tesla_token_path": "/oauth2/v3"
 }
 ```
 
@@ -187,25 +184,24 @@ http://127.0.0.1:8080
 
 ## Docker 部署
 
-运行示例：
+运行示例（新版镜像）：
 
 ```bash
-docker run -it \
+mkdir -p /opt/tmc/data
+docker run -d --name tmc --restart unless-stopped \
   -p 8080:8080 \
-  -v ./config.json:/root/tesla-media-center/config.json \
-  -v ./video:/root/tesla-media-center/video \
-  -v ./roms:/root/tesla-media-center/roms \
-  -v ./db:/root/tesla-media-center/db \
-  -v ./tmc-cache:/tmp/tesla-media-center \
+  -e TMC_PASSWORD='替换为你的首次登录密码' \
+  -v /opt/tmc/data:/data \
   ghcr.io/helloclyde/tesla-media-center:latest
 ```
 
-推荐持久化以下目录：
+配置、QQ 音乐凭证、GBA 游戏及存档、GAM4980 游戏及存档、Tesla 历史数据库、地图缓存和 B 站缓存统一保存在 `/data`。`TMC_PASSWORD` 仅在没有配置文件时初始化密码；已有配置的密码和密钥保持不变。未设置初始密码时随机生成并输出到首次启动日志。
 
-1. `./video`：本地视频目录
-2. `./roms`：GBA ROM 目录，默认从 `./roms/gba` 读取
-3. `./db`：Tesla SQLite 数据库目录
-4. `./tmc-cache`：B 站兼容播放的合流缓存目录（直连播放不使用）
+升级前请按 [持久化与旧数据迁移](docs/persistence.md) 迁移旧数据，尤其同时保留 QQ 音乐凭证和配置密钥。本地运行默认使用项目下 `data/`，可以通过 `TMC_DATA_DIR` 指定其他根目录。
+
+本地视频属于自选媒体库，仍可按 `video_path` 另行挂载；也可将视频放入 `/data/video` 并设置该路径。
+
+B 站缓存目录仅用于兼容播放合流，直连播放不使用。
 
 镜像地址：
 
@@ -227,21 +223,18 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 
 ## 配置说明
 
-`config.json` 示例：
+`data/config.json` 示例：
 
 ```json
 {
   "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
   "video_path": "./video",
-  "gba_path": "./roms/gba",
   "amap_key": "xxx",
   "password": "abc",
-  "bilibili_cache_dir": "/tmp/tesla-media-center/bilibili-cache",
   "bilibili_cache_size_mb": 2048,
   "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
   "tesla_auth_base_url": "https://auth.tesla.com",
-  "tesla_token_path": "/oauth2/v3",
-  "tesla_db_path": "./db/tesla_history.sqlite3"
+  "tesla_token_path": "/oauth2/v3"
 }
 ```
 
@@ -249,15 +242,15 @@ docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:lat
 
 1. `home_page_iframe`：首页 iframe 内容
 2. `video_path`：本地视频目录
-3. `gba_path`：GBA ROM 目录，默认 `./roms/gba`
+3. `gba_path`：旧迁移字段；新版本统一使用数据根目录下 `gba/`
 4. `amap_key`：高德地图 Key
 5. `password`：Web 登录密码
-6. `bilibili_cache_dir`：B 站缓存目录
+6. `bilibili_cache_dir`：旧迁移字段；新版本统一使用 `bilibili-cache/`
 7. `bilibili_cache_size_mb`：B 站缓存上限，单位 MB
 8. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
 9. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
 10. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
-11. `tesla_db_path`：Tesla SQLite 数据库路径，默认 `./db/tesla_history.sqlite3`
+11. `tesla_db_path`：旧迁移字段；新版本统一使用 `tesla/tesla_history.sqlite3`
 
 补充说明：
 

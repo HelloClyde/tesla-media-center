@@ -7,6 +7,9 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { del, get, post } from '@/functions/requests';
 import getAMap from '@/functions/amapConfig';
+import { createTeslaMapGround } from './teslaMapGround';
+import { vehicleMapPoint } from './teslaMapCoordinates';
+import { createVehicleRoadMesh } from './teslaRoad';
 
 const pageRef = ref<HTMLElement | null>(null);
 const vehicleVisualRef = ref<HTMLElement | null>(null);
@@ -58,6 +61,33 @@ let vehicleMotionState = {
 };
 let vehicleWheelMeshes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; direction: 1 | -1 }> = [];
 let vehicleSplitWheelGroups: THREE.Group[] = [];
+let vehicleDoorNodes: THREE.Object3D[] = [];
+const modelDoorsOpen = ref(false);
+const mixedMap = ref(true);
+const mixedMapReady = ref(false);
+const mixedMapStatus = ref('等待车辆位置');
+let vehicleMapGround: ReturnType<typeof createTeslaMapGround> | undefined;
+const vehiclePosition = computed(() => vehicleMapPoint(state.latestSample));
+function syncMixedMap() {
+  const enabled = mixedMap.value && !!vehiclePosition.value && state.activeTab === 'status' && state.documentVisible && state.pageExposed;
+  if (!enabled) {
+    vehicleMapGround?.dispose(); vehicleMapGround = undefined; mixedMapReady.value = false;
+    mixedMapStatus.value = vehiclePosition.value ? '示意路面' : '等待车辆位置';
+    if (vehicleRoadMesh) vehicleRoadMesh.visible = true;
+    return;
+  }
+  if (!vehicleModelPivot || !vehicleRoadMesh) return;
+  if (!vehicleMapGround) {
+    vehicleMapGround = createTeslaMapGround((text, ready) => {
+      mixedMapStatus.value = text; mixedMapReady.value = ready;
+      if (vehicleRoadMesh) vehicleRoadMesh.visible = !ready;
+      updateVehicleVisualState();
+    });
+    vehicleModelPivot.add(vehicleMapGround.group);
+  }
+  vehicleMapGround.update(vehiclePosition.value!, Number(state.latestSample?.heading ?? state.latestSample?.native_heading ?? 0), vehicleRoadMesh.position.y);
+}
+
 
 const DEFAULT_VEHICLE_CAMERA_POSITION = new THREE.Vector3(0, 3.4, 8.2);
 const DEFAULT_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.35, 0);
@@ -67,8 +97,6 @@ const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
 const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
-const DRIVE_MOTION_SPEED = 1.4;
-const REVERSE_MOTION_SPEED = 0.9;
 const MOTION_REFERENCE_SPEED_KMH = 60;
 const MOTION_MAX_SPEED_SCALE = 3;
 
@@ -209,7 +237,7 @@ const currentVehicleSpeedKmh = computed(() => {
   if (!Number.isFinite(rawSpeed)) {
     return 0;
   }
-  return Math.max(0, rawSpeed);
+  return Math.max(0, rawSpeed) * (/mph|mi\/h/i.test(String(state.latestSample?.speed_unit)) ? 1.609344 : 1);
 });
 
 const RAW_COLUMN_ORDER = [
@@ -349,6 +377,7 @@ function getVehicleOrientationByShift(shiftState: string) {
 }
 
 function getVehicleCameraPresetByShift(shiftState: string) {
+  if (mixedMapReady.value) return { position: new THREE.Vector3(-28, 48, 55), target: new THREE.Vector3(0, 0, 0) };
   if (shiftState === 'D') {
     return {
       position: DRIVE_VEHICLE_CAMERA_POSITION,
@@ -365,117 +394,6 @@ function getVehicleCameraPresetByShift(shiftState: string) {
     position: PARK_VEHICLE_CAMERA_POSITION,
     target: PARK_VEHICLE_CAMERA_TARGET,
   };
-}
-
-function createVehicleRoadTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 512;
-  canvas.height = 1024;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    return null;
-  }
-
-  ctx.fillStyle = '#242a31';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  const roadGradient = ctx.createLinearGradient(0, 0, canvas.width, 0);
-  roadGradient.addColorStop(0, '#303843');
-  roadGradient.addColorStop(0.18, '#20262d');
-  roadGradient.addColorStop(0.5, '#1b2128');
-  roadGradient.addColorStop(0.82, '#20262d');
-  roadGradient.addColorStop(1, '#303843');
-  ctx.fillStyle = roadGradient;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.lineWidth = 6;
-  ctx.setLineDash([18, 22]);
-  ctx.beginPath();
-  ctx.moveTo(canvas.width * 0.18, 0);
-  ctx.lineTo(canvas.width * 0.18, canvas.height);
-  ctx.moveTo(canvas.width * 0.82, 0);
-  ctx.lineTo(canvas.width * 0.82, canvas.height);
-  ctx.stroke();
-
-  ctx.strokeStyle = '#f6d96b';
-  ctx.lineWidth = 10;
-  ctx.setLineDash([72, 52]);
-  ctx.beginPath();
-  ctx.moveTo(canvas.width * 0.5, 0);
-  ctx.lineTo(canvas.width * 0.5, canvas.height);
-  ctx.stroke();
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(1, 3.5);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  return texture;
-}
-
-function createVehicleParkingTexture() {
-  const canvas = document.createElement('canvas');
-  canvas.width = 1024;
-  canvas.height = 1024;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    return null;
-  }
-
-  ctx.fillStyle = '#d9dfe4';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.42)';
-  for (let y = 0; y < canvas.height; y += 96) {
-    ctx.fillRect(0, y, canvas.width, 3);
-  }
-
-  ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 12;
-  ctx.strokeRect(180, 120, canvas.width - 360, canvas.height - 240);
-
-  ctx.strokeStyle = '#f4c84c';
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  ctx.moveTo(220, 170);
-  ctx.lineTo(360, 310);
-  ctx.moveTo(canvas.width - 220, 170);
-  ctx.lineTo(canvas.width - 360, 310);
-  ctx.moveTo(220, canvas.height - 170);
-  ctx.lineTo(360, canvas.height - 310);
-  ctx.moveTo(canvas.width - 220, canvas.height - 170);
-  ctx.lineTo(canvas.width - 360, canvas.height - 310);
-  ctx.stroke();
-
-  ctx.fillStyle = 'rgba(46, 56, 67, 0.14)';
-  ctx.fillRect(canvas.width * 0.22, canvas.height * 0.18, canvas.width * 0.56, canvas.height * 0.64);
-
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.wrapS = THREE.RepeatWrapping;
-  texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(1, 1);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 8;
-  return texture;
-}
-
-function createVehicleRoadMesh() {
-  const driveTexture = createVehicleRoadTexture();
-  const parkTexture = createVehicleParkingTexture();
-  const material = new THREE.MeshStandardMaterial({
-    color: '#d5dbe1',
-    roughness: 0.96,
-    metalness: 0.02,
-    map: parkTexture || driveTexture || null,
-  });
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(6.4, 18), material);
-  road.rotation.x = -Math.PI / 2;
-  road.position.set(0, -0.82, 0.45);
-  road.userData.driveTexture = driveTexture;
-  road.userData.parkTexture = parkTexture;
-  return road;
 }
 
 function splitMeshIntoConnectedParts(sourceMesh: THREE.Mesh) {
@@ -577,7 +495,7 @@ function detectVehicleWheelMeshes(model: THREE.Object3D, modelBounds: THREE.Box3
     namedWheelNodes.push({
       mesh: child,
       axis: 'x',
-      direction: child.position.x >= 0 ? -1 : 1,
+      direction: child.userData.spinDirection === 1 ? 1 : child.userData.spinDirection === -1 ? -1 : child.position.x >= 0 ? -1 : 1,
     });
   });
 
@@ -668,8 +586,8 @@ function getVehicleMotionProfile() {
       active: true,
       direction: -1,
       moving: speedScale > 0,
-      roadSpeed: DRIVE_MOTION_SPEED * speedScale,
-      wheelSpeed: 5.8 * speedScale,
+      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / 18,
+      wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
     };
   }
   if (currentShiftState.value === 'R') {
@@ -677,8 +595,8 @@ function getVehicleMotionProfile() {
       active: true,
       direction: 1,
       moving: speedScale > 0,
-      roadSpeed: REVERSE_MOTION_SPEED * speedScale,
-      wheelSpeed: 4.2 * speedScale,
+      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / 18,
+      wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
     };
   }
   return {
@@ -1160,7 +1078,7 @@ function initVehicleViewer() {
   vehicleScene = new THREE.Scene();
   vehicleScene.background = new THREE.Color('#eef2f6');
 
-  vehicleCamera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+  vehicleCamera = new THREE.PerspectiveCamera(32, 1, 0.1, 1200);
   vehicleCamera.position.copy(DEFAULT_VEHICLE_CAMERA_POSITION);
   vehicleCamera.lookAt(DEFAULT_VEHICLE_CAMERA_TARGET);
 
@@ -1170,7 +1088,8 @@ function initVehicleViewer() {
   vehicleRenderer.outputColorSpace = THREE.SRGBColorSpace;
   vehicleRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   vehicleRenderer.toneMappingExposure = 1;
-  vehicleRenderer.shadowMap.enabled = false;
+  vehicleRenderer.shadowMap.enabled = true;
+  vehicleRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.innerHTML = '';
   container.appendChild(vehicleRenderer.domElement);
 
@@ -1199,6 +1118,11 @@ function initVehicleViewer() {
 
   const keyLight = new THREE.DirectionalLight('#ffffff', 2.4);
   keyLight.position.set(5, 8, 7);
+  keyLight.castShadow = true;
+  keyLight.shadow.mapSize.set(1024, 1024);
+  Object.assign(keyLight.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: .5, far: 25 });
+  keyLight.shadow.normalBias = .025;
+  keyLight.shadow.bias = -.0001;
   vehicleScene.add(keyLight);
 
   const rimLight = new THREE.DirectionalLight('#dbeafe', 1.1);
@@ -1219,7 +1143,7 @@ function initVehicleViewer() {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
-  loader.load('/models/2021_tesla_model_y.glb', (gltf: { scene: THREE.Group }) => {
+  loader.load('/models/2022_tesla_model_y.glb', (gltf: { scene: THREE.Group }) => {
     const model = gltf.scene;
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
@@ -1227,24 +1151,30 @@ function initVehicleViewer() {
     const maxAxis = Math.max(size.x, size.y, size.z) || 1;
     const scale = 4.8 / maxAxis;
 
-    model.position.sub(center);
-    model.position.y += size.y * 0.08;
+    model.position.copy(center).multiplyScalar(-scale);
+    model.position.y += size.y * scale * 0.08;
     model.scale.setScalar(scale);
+    if (vehicleRoadMesh) vehicleRoadMesh.position.y = -size.y * scale * .42 - .012;
     model.traverse((child: THREE.Object3D) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
-        mesh.castShadow = false;
+        mesh.castShadow = true;
         mesh.receiveShadow = false;
       }
     });
 
     vehicleModelRoot = model;
+    vehicleDoorNodes = [];
+    model.traverse(child => {
+      if (child.userData.partType === 'door' && /^Door_(FL|FR|RL|RR)$/.test(child.name)) vehicleDoorNodes.push(child);
+    });
     vehicleModelBasePositionY = model.position.y;
     vehicleModelPivot?.add(model);
     vehicleModelPivot?.updateMatrixWorld(true);
     detectVehicleWheelMeshes(model, new THREE.Box3().setFromObject(model));
     state.visualError = '';
     state.visualLoading = false;
+    syncMixedMap();
     updateVehicleVisualState(true);
     resizeVehicleViewer();
   }, undefined, (error: unknown) => {
@@ -1284,6 +1214,10 @@ function updateVehicleMotion(now: number) {
   const profile = getVehicleMotionProfile();
   const deltaSec = vehicleMotionState.lastFrameTime ? Math.min((now - vehicleMotionState.lastFrameTime) / 1000, 0.05) : 0;
   vehicleMotionState.lastFrameTime = now;
+  for (const door of vehicleDoorNodes) {
+    const angle = modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0;
+    door.rotation.y = THREE.MathUtils.damp(door.rotation.y, angle, 9, deltaSec);
+  }
 
   if (!profile.active) {
     vehicleMotionState.roadOffset = 0;
@@ -1293,7 +1227,7 @@ function updateVehicleMotion(now: number) {
       const parkTexture = vehicleRoadMesh.userData.parkTexture as THREE.Texture | null | undefined;
       if (parkTexture && material.map !== parkTexture) {
         material.map = parkTexture;
-        material.color.set('#d5dbe1');
+        material.color.set('#ffffff');
         material.needsUpdate = true;
       }
       if (material.map) {
@@ -1311,7 +1245,7 @@ function updateVehicleMotion(now: number) {
     const driveTexture = vehicleRoadMesh.userData.driveTexture as THREE.Texture | null | undefined;
     if (driveTexture && material.map !== driveTexture) {
       material.map = driveTexture;
-      material.color.set('#2a3038');
+      material.color.set('#ffffff');
       material.needsUpdate = true;
     }
     if (profile.moving) {
@@ -1402,7 +1336,8 @@ function updateVehicleVisualState(immediate = false) {
   if (!vehicleModelPivot) {
     return;
   }
-  const targetRotationY = getVehicleOrientationByShift(currentShiftState.value);
+  const targetRotationY = mixedMapReady.value ? Math.PI : getVehicleOrientationByShift(currentShiftState.value);
+  if (vehicleControls) { vehicleControls.minDistance = mixedMapReady.value ? 12 : 5.5; vehicleControls.maxDistance = mixedMapReady.value ? 100 : 11; vehicleControls.minPolarAngle = mixedMapReady.value ? .25 : Math.PI / 3.6; }
   const preset = getVehicleCameraPresetByShift(currentShiftState.value);
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
@@ -1487,6 +1422,7 @@ function resetVehicleView() {
 }
 
 function disposeVehicleViewer() {
+  vehicleMapGround?.dispose(); vehicleMapGround = undefined;
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
     vehicleResetViewTimer = null;
@@ -1509,7 +1445,9 @@ function disposeVehicleViewer() {
   if (vehicleRoadMesh) {
     vehicleRoadMesh.geometry.dispose();
     const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
-    material.map?.dispose();
+    vehicleRoadMesh.userData.driveTexture?.dispose();
+    vehicleRoadMesh.userData.parkTexture?.dispose();
+    material.alphaMap?.dispose();
     material.dispose();
   }
   if (vehicleModelRoot) {
@@ -1529,6 +1467,8 @@ function disposeVehicleViewer() {
   vehicleModelPivot = null;
   vehicleRoadMesh = null;
   vehicleWheelMeshes = [];
+  vehicleDoorNodes = [];
+  modelDoorsOpen.value = false;
   vehicleModelBasePositionY = 0;
   vehicleMotionState = {
     lastFrameTime: 0,
@@ -1719,13 +1659,20 @@ watch(() => state.activeTab, (tabName) => {
   }
 });
 
+watch([mixedMap, vehiclePosition, () => state.latestSample?.heading, () => state.latestSample?.native_heading,
+  () => state.activeTab, () => state.documentVisible, () => state.pageExposed], syncMixedMap);
+watch(() => state.selectedVin, () => {
+  vehicleMapGround?.dispose(); vehicleMapGround = undefined; mixedMapReady.value = false;
+  syncMixedMap();
+});
+watch(mixedMapReady, () => updateVehicleVisualState());
 watch(currentShiftState, () => {
   updateVehicleVisualState();
 });
 </script>
 
 <template>
-  <div ref="pageRef" class="tesla-page">
+  <div ref="pageRef" class="tesla-page" :class="{ 'tesla-page--visual': state.activeTab === 'status' }">
     <section class="tesla-tabs-card">
       <el-tabs v-model="state.activeTab" class="tesla-tabs">
         <el-tab-pane label="车辆状态" name="status">
@@ -1764,6 +1711,15 @@ watch(currentShiftState, () => {
                   </div>
                 </div>
                 <div ref="vehicleVisualRef" class="vehicle-visual-stage"></div>
+                <div class="vehicle-map-controls">
+                  <span class="vehicle-map-caption" role="status">{{ mixedMap ? mixedMapStatus : '示意路面' }}</span>
+                  <button v-if="mixedMap && vehiclePosition && (!mixedMapReady || mixedMapStatus.includes('不完整') || mixedMapStatus.includes('缺失'))" @click="vehicleMapGround?.retry()">重试地图</button>
+                  <button :aria-pressed="mixedMap" @click="mixedMap = !mixedMap">{{ mixedMap ? '切回车辆展示' : '3D 地图混合' }}</button>
+                </div>
+                <button class="model-door-preview" :aria-pressed="modelDoorsOpen" :disabled="state.visualLoading"
+                  title="仅演示模型，不控制真实车辆" @click="modelDoorsOpen = !modelDoorsOpen">
+                  {{ modelDoorsOpen ? '收起模型车门' : '展开模型车门' }}
+                </button>
               </div>
             </article>
           </section>
@@ -2343,6 +2299,21 @@ watch(currentShiftState, () => {
   position: relative;
 }
 
+.model-door-preview {
+  position: absolute;
+  left: 18px;
+  bottom: 16px;
+  z-index: 3;
+  padding: 9px 14px;
+  color: var(--color-text);
+  background: var(--color-panel-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  cursor: pointer;
+}
+.model-door-preview[aria-pressed="true"] { color: #168fbb; border-color: #62b8d5; }
+.model-door-preview:disabled { opacity: .5; cursor: default; }
+
 .vehicle-visual-overlay {
   position: absolute;
   top: 14px;
@@ -2528,9 +2499,70 @@ watch(currentShiftState, () => {
   }
 
   .vehicle-visual-overlay {
-    position: static;
-    width: 100%;
-    margin-bottom: 12px;
+    width: min(140px, 36%);
   }
 }
+
+/* The status view is a full-size scene; all UI floats over the canvas. */
+.tesla-page--visual {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.tesla-page--visual .tesla-tabs-card,
+.tesla-page--visual .tesla-card--visual {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.tesla-page--visual .tesla-tabs-card,
+.tesla-page--visual .tesla-tabs,
+.tesla-page--visual :deep(.el-tabs__content),
+.tesla-page--visual :deep(.el-tab-pane),
+.tesla-page--visual .tesla-grid--content,
+.tesla-page--visual .tesla-card--visual,
+.tesla-page--visual .vehicle-visual-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+.tesla-page--visual :deep(.el-tabs__header) {
+  position: absolute;
+  top: 12px;
+  left: 14px;
+  right: 14px;
+  margin: 0;
+  padding: 0 12px;
+  z-index: 4;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, .72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+.tesla-page--visual .vehicle-visual-stage {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+}
+.tesla-page--visual .vehicle-visual-overlay {
+  top: 72px;
+  pointer-events: none;
+}
+@media (max-height: 520px) {
+  .tesla-page--visual .vehicle-visual-overlay { gap: 4px; width: 190px; }
+  .tesla-page--visual .vehicle-overlay-card { flex-direction: row; align-items: baseline; justify-content: flex-end; gap: 8px; }
+  .tesla-page--visual .vehicle-overlay-card strong { font-size: 13px; }
+}
+</style>
+
+<style scoped>
+.vehicle-map-controls{position:absolute;right:18px;bottom:16px;display:flex;align-items:flex-end;gap:8px;z-index:3;flex-wrap:wrap;justify-content:flex-end;max-width:60%}
+.vehicle-map-controls button{border:1px solid #cfdfe3;border-radius:22px;background:#ffffffeb;backdrop-filter:blur(16px);padding:9px 14px;color:#365763;font:inherit;font-size:12px;cursor:pointer}
+.vehicle-map-caption{flex-basis:100%;text-align:right;font-size:11px;color:#3f5c68;text-shadow:0 1px 3px white}
 </style>
