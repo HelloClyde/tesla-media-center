@@ -19,6 +19,7 @@ function Decoder() {
     this.statusCallback     = null;
     this.audioCallback      = null;
     this.requestCallback    = null;
+    this.probeTime          = null;
 }
 
 Decoder.prototype.initDecoder = function (fileSize, chunkSize) {
@@ -157,6 +158,7 @@ Decoder.prototype.processReq = function (req) {
     //this.logger.logInfo("processReq " + req.t + ".");
     switch (req.t) {
         case kInitDecoderReq:
+            this.probeTime = typeof req.pt === 'number' ? req.pt : null;
             this.initDecoder(req.s, req.c);
             break;
         case kUninitDecoderReq:
@@ -196,6 +198,10 @@ Decoder.prototype.onWasmLoaded = function () {
     this.wasmLoaded = true;
 
     this.videoCallback = Module.addFunction(function (buff, size, timestamp) {
+        if (self.decoder.probeTime !== null) {
+            if (timestamp < self.decoder.probeTime - 0.000001) return;
+            timestamp = Math.max(0, timestamp - self.decoder.probeTime);
+        }
         var outArray = Module.HEAPU8.subarray(buff, buff + size);
         var data = new Uint8Array(outArray);
         var objData = {
@@ -207,6 +213,10 @@ Decoder.prototype.onWasmLoaded = function () {
     }, 'viid');
 
     this.audioCallback = Module.addFunction(function (buff, size, timestamp) {
+        if (self.decoder.probeTime !== null) {
+            if (timestamp < self.decoder.probeTime - 0.000001) return;
+            timestamp = Math.max(0, timestamp - self.decoder.probeTime);
+        }
         var outArray = Module.HEAPU8.subarray(buff, buff + size);
         var data = new Uint8Array(outArray);
         var objData = {

@@ -80,6 +80,11 @@ function Player() {
     this.initDecodeWorker();
     this.finishCallback     = null;
     this.timeCallback       = null;
+    this.browserSource      = null;
+    this.sourceEnded        = false;
+    this.sourceWatchdog     = null;
+    this.lastRenderedAt     = 0;
+    this.displayAnimationFrame = null;
 }
 
 Player.prototype.resetWorkers = function () {
@@ -97,7 +102,7 @@ Player.prototype.resetWorkers = function () {
 
 Player.prototype.initDownloadWorker = function () {
     var self = this;
-    this.downloadWorker = new Worker("downloader.js");
+    this.downloadWorker = new Worker("/downloader.js");
     this.downloadWorker.onmessage = function (evt) {
         var objData = evt.data;
         switch (objData.t) {
@@ -118,7 +123,10 @@ Player.prototype.initDownloadWorker = function () {
 
 Player.prototype.initDecodeWorker = function () {
     var self = this;
-    this.decodeWorker = new Worker("decoder.js");
+    this.decodeWorker = new Worker("/decoder.js");
+    this.decodeWorker.onerror = function () {
+        self.reportPlayError(-1, 0, 'WASM 解码器加载失败，请刷新后重试');
+    };
     this.decodeWorker.onmessage = function (evt) {
         var objData = evt.data;
         // console.log('decode frame', objData);
@@ -156,7 +164,7 @@ Player.prototype.initDecodeWorker = function () {
     }
 };
 
-Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream) {
+Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource) {
     this.logger.logInfo("Play " + url + ".");
     console.log('waitHeaderLength', waitHeaderLength);
     this.finishNotified = false;
@@ -237,6 +245,13 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
         this.decoderState = decoderStateIdle;
         this.playerState = playerStatePlaying;
         this.isStream = isStream;
+        this.browserSource = browserSource || null;
+        this.sourceEnded = false;
+        if (this.browserSource) {
+            this.duration = browserSource.duration;
+            this.streamBaseOffset = browserSource.startMs / 1000;
+            this.displayDuration = this.formatTime(this.duration / 1000);
+        }
         this.startTrackTimer();
         this.displayLoop();
 
@@ -253,11 +268,15 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
             };
             this.downloadWorker.postMessage(req);
         } else {
-            this.requestStream(url);
             this.onGetFileInfo({
                 sz: -1,
                 st: 200
             });
+            if (this.browserSource) {
+                this.consumeBrowserSource(this.browserSource);
+            } else {
+                this.requestStream(url);
+            }
         }
 
         var self = this;
@@ -412,6 +431,16 @@ Player.prototype.resume = function (fromSeek) {
 
 Player.prototype.stop = function () {
     this.logger.logInfo("Stop.");
+    if (this.browserSource) {
+        this.browserSource.cancel();
+        this.browserSource = null;
+    }
+    clearInterval(this.sourceWatchdog);
+    this.sourceWatchdog = null;
+    if (this.displayAnimationFrame !== null) {
+        cancelAnimationFrame(this.displayAnimationFrame);
+        this.displayAnimationFrame = null;
+    }
     if (this.playerState == playerStateIdle) {
         var ret = {
             e: -1,
@@ -456,6 +485,7 @@ Player.prototype.stop = function () {
     this.downloading        = false;
     this.downloadSwitch     = true;
     this.finishNotified     = false;
+    this.sourceEnded        = false;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -478,6 +508,71 @@ Player.prototype.stop = function () {
     this.resetWorkers();
 
     return ret;
+};
+
+// Consume browser-remuxed FLV with bounded lookahead and decoder backpressure.
+// No URL request, /info call, cache file or server FFmpeg process is involved.
+Player.prototype.consumeBrowserSource = async function (source) {
+    var self = this;
+    var active = () => self.browserSource === source && !source.signal.aborted;
+    var fail = (message) => {
+        if (!active()) return;
+        var callback = self.callback;
+        self.stop();
+        if (callback) callback({ error: -1, status: 0, message: message });
+    };
+    this.lastRenderedAt = Date.now();
+    this.sourceWatchdog = setInterval(() => {
+        if (active() && Date.now() - self.lastRenderedAt > 30000) {
+            fail('源流直连播放超时，请重试或使用兼容播放');
+        }
+    }, 1000);
+    try {
+        var loadedUntil = source.startMs / 1000;
+        for await (const chunk of source.chunks) {
+            while (active() && (!self.downloadSwitch || (self.decoderState === decoderStateReady &&
+                loadedUntil > source.startMs / 1000 + (self.pcmPlayer ? self.pcmPlayer.getTimestamp() : 0) + 12) ||
+                (self.decoderState !== decoderStateReady && self.streamReceivedLen >= 4 * 1024 * 1024))) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+            if (!active()) return;
+            for (var offset = 0; offset < chunk.data.byteLength; offset += defaultChunkSize) {
+                while (active() && !self.downloadSwitch) await new Promise(resolve => setTimeout(resolve, 25));
+                if (!active()) return;
+                var data = chunk.data.slice(offset, offset + defaultChunkSize).buffer;
+                var length = data.byteLength;
+                self.decodeWorker.postMessage({ t: kFeedDataReq, d: data }, [data]);
+                self.fileInfo.offset += length;
+                self.streamReceivedLen += length;
+                // Yield so decoder queue and high-water events can catch up.
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+            if (!active()) return;
+            if (self.decoderState === decoderStateIdle && self.streamReceivedLen >= self.waitHeaderLength) {
+                self.decoderState = decoderStateInitializing;
+                self.decodeWorker.postMessage({ t: kOpenDecoderReq });
+            }
+            loadedUntil = chunk.endTime;
+        }
+        if (active()) {
+            self.sourceEnded = true;
+            if (self.buffering && self.frameBuffer.length) self.stopBuffering();
+            if (self.decoderState === decoderStateIdle) {
+                self.decoderState = decoderStateInitializing;
+                self.decodeWorker.postMessage({ t: kOpenDecoderReq });
+            }
+        }
+    } catch (error) {
+        fail(error.message || '源流直连失败');
+    }
+};
+
+Player.prototype.destroy = function () {
+    this.stop();
+    if (this.downloadWorker) this.downloadWorker.terminate();
+    if (this.decodeWorker) this.decodeWorker.terminate();
+    this.downloadWorker = null;
+    this.decodeWorker = null;
 };
 
 Player.prototype.notifyFinish = function () {
@@ -571,7 +666,8 @@ Player.prototype.onGetFileInfo = function (info) {
         var req = {
             t: kInitDecoderReq,
             s: this.fileInfo.size,
-            c: this.fileInfo.chunkSize
+            c: this.fileInfo.chunkSize,
+            pt: this.browserSource ? this.browserSource.probeTime : null
         };
         this.decodeWorker.postMessage(req);
     } else {
@@ -748,6 +844,10 @@ Player.prototype.onOpenDecoder = function (objData) {
         this.logger.logInfo("Decoder ready now.");
         this.startDecoding();
     } else {
+        if (this.browserSource && this.sourceEnded) {
+            this.reportPlayError(objData.e, 0, '源流格式无法解码，请使用兼容播放');
+            return;
+        }
         if (this.isStream) {
             this.decoderState = decoderStateIdle;
             this.streamReceivedLen = this.fileInfo ? this.fileInfo.offset : this.streamReceivedLen;
@@ -791,7 +891,7 @@ Player.prototype.onVideoParam = function (v) {
     if (this.timeTrack) {
         this.timeTrack.min = 0;
         this.timeTrack.max = this.duration;
-        this.timeTrack.value = 0;
+        this.timeTrack.value = this.browserSource ? this.streamBaseOffset * 1000 : 0;
         this.displayDuration = this.formatTime(this.duration / 1000);
     }
 
@@ -853,6 +953,7 @@ Player.prototype.onAudioParam = function (a) {
     this.audioEncoding      = encoding;
     this.audioChannels      = channels;
     this.audioSampleRate    = sampleRate;
+    if (this.browserSource && this.buffering) this.pcmPlayer.pause();
 };
 
 Player.prototype.restartAudio = function () {
@@ -875,6 +976,7 @@ Player.prototype.bufferFrame = function (frame) {
         return;
     }
     this.frameBuffer.push(frame);
+    if (this.browserSource && this.sourceEnded && this.buffering) this.stopBuffering();
     //this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
     if (this.getBufferTimerLength() >= maxBufferTimeLength || this.decoderState == decoderStateFinished) {
         if (this.decoding) {
@@ -1016,7 +1118,7 @@ Player.prototype.onRequestData = function (offset, available) {
 
 Player.prototype.displayLoop = function() {
     if (this.playerState !== playerStateIdle) {
-        requestAnimationFrame(this.displayLoop.bind(this));
+        this.displayAnimationFrame = requestAnimationFrame(this.displayLoop.bind(this));
     }
     if (this.playerState != playerStatePlaying) {
         return;
@@ -1075,9 +1177,17 @@ Player.prototype.displayLoop = function() {
 };
 
 Player.prototype.startBuffering = function () {
+    if (this.browserSource && this.sourceEnded) {
+        // Let the already scheduled audio finish and the media clock reach EOF.
+        // Suspending here would prevent the completion/next-episode callback.
+        this.buffering = false;
+        this.hideLoading();
+        return;
+    }
     this.buffering = true;
     this.showLoading();
     if (this.isStream) {
+        if (this.browserSource && this.pcmPlayer) this.pcmPlayer.pause();
         return;
     }
     this.pause();
@@ -1087,12 +1197,14 @@ Player.prototype.stopBuffering = function () {
     this.buffering = false;
     this.hideLoading();
     if (this.isStream) {
+        if (this.browserSource && this.pcmPlayer) this.pcmPlayer.resume();
         return;
     }
     this.resume();
 }
 
 Player.prototype.renderVideoFrame = function (data) {
+    this.lastRenderedAt = Date.now();
     this.webglPlayer.renderFrame(data, this.videoWidth, this.videoHeight, this.yLength, this.uvLength);
 };
 
@@ -1183,6 +1295,7 @@ Player.prototype.updateTrackTime = function () {
         var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
         if (this.isStream) {
             currentPlayTime = this.pcmPlayer.getTimestamp() + this.streamBaseOffset;
+            if (this.browserSource) currentPlayTime += this.beginTimeOffset;
         }
         var maxPlayTime = this.duration > 0 ? this.duration / 1000 : 0;
         if (maxPlayTime > 0 && currentPlayTime > maxPlayTime) {

@@ -4,6 +4,7 @@ import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { MoreFilled } from '@element-plus/icons-vue';
 import { useAudioChannel } from '@/functions/useAudioChannel';
+import type { BrowserStreamSource } from '@/functions/biliDirect';
 
 const { channelAudio, startAudioChannel, restoreAudioChannel } = useAudioChannel();
 
@@ -14,6 +15,10 @@ const timeTrack = ref<HTMLInputElement | null>(null);
 const timeLabel = ref<HTMLLabelElement | null>(null);
 
 let videoPlayer: any = null;
+let playbackRequest = 0;
+let playbackController: AbortController | null = null;
+let disposed = false;
+let retryPosition = 0;
 const waitHeaderLength = 512 * 1024;
 const DEFAULT_DANMU_AREA = 'top_half';
 const DEFAULT_DANMU_MAX_COUNT = 30;
@@ -46,6 +51,8 @@ const state = reactive({
     danmuOpacity: DEFAULT_DANMU_OPACITY,
     danmuFontSize: DEFAULT_DANMU_FONT_SIZE,
     actionLoading: '',
+    playbackMode: 'direct' as 'direct' | 'relay',
+    playbackError: '',
 })
 
 const getDmKey = (dm: any) => dm.id_str;
@@ -129,10 +136,11 @@ function getDanmuUrl(seg: number) {
 }
 
 function loadDanmuForCurrentPosition(startSec = 0) {
+    const request = playbackRequest;
     resetDanmuState(startSec);
     const sourceKey = getDanmuSourceKey();
     return get(getDanmuUrl(state.dm_seg)).then(data => {
-        if (sourceKey !== getDanmuSourceKey()) {
+        if (disposed || request !== playbackRequest || sourceKey !== getDanmuSourceKey()) {
             return;
         }
         const initialDms = data.dm.filter((dm: any) => dm.dm_time >= startSec);
@@ -141,7 +149,7 @@ function loadDanmuForCurrentPosition(startSec = 0) {
             state.loadedDmKeys.add(getDmKey(dm));
         });
     }).catch(() => {
-        if (sourceKey !== getDanmuSourceKey()) {
+        if (disposed || request !== playbackRequest || sourceKey !== getDanmuSourceKey()) {
             return;
         }
         state.dms = [];
@@ -169,15 +177,42 @@ async function ensurePlayable(startMs = 0) {
 }
 
 async function playCurrentVideo(startMs = 0) {
+    const request = ++playbackRequest;
+    playbackController?.abort();
+    const controller = new AbortController();
+    playbackController = controller;
+    const isCurrent = () => !disposed && request === playbackRequest;
+    retryPosition = startMs;
+    state.playbackError = '';
     if (videoPlayer && videoPlayer.getState && videoPlayer.getState() !== 0) {
         videoPlayer.stop();
     }
     videoPlayer?.showLoading?.();
     state.isPlay = false;
-    await ensurePlayable(startMs);
-    const streamUrl = getStreamUrl(startMs);
+    let source: BrowserStreamSource | undefined;
+    let streamUrl = getStreamUrl(startMs);
+    try {
+        if (state.playbackMode === 'direct') {
+            const manifest = await get(`${getStreamUrl()}/source`, '获取 B 站源流失败');
+            if (!isCurrent()) return;
+            const { createDirectSource } = await import('@/functions/biliDirect');
+            source = await createDirectSource(manifest, startMs, controller);
+            startMs = source.startMs;
+            streamUrl = 'browser-dash';
+        } else {
+            await ensurePlayable(startMs);
+        }
+        if (!isCurrent()) { source?.cancel(); return; }
+    } catch (error: any) {
+        if (!isCurrent()) return;
+        controller.abort();
+        videoPlayer.hideLoading();
+        state.playbackError = error?.message || '获取播放源失败';
+        throw error;
+    }
     logPlayback('play:start', { startMs, streamUrl });
     videoPlayer.play(`stream://${streamUrl}`, playerCanvas.value, function (e: any) {
+        if (!isCurrent()) return;
         console.error(e);
         console.error("play error " + e.error + " status " + e.status + ".");
         if (e.error == 1) {
@@ -186,11 +221,15 @@ async function playCurrentVideo(startMs = 0) {
             return;
         }
         if (e.error) {
+            retryPosition = Number(timeTrack.value?.value) || startMs;
+            videoPlayer.stop();
+            controller.abort();
             state.isPlay = false;
+            state.playbackError = e.message || '播放失败，请重试';
             logPlayback('play:error', { startMs, streamUrl, error: e.error, status: e.status, message: e.message });
             ElMessage.error(e.message || `播放失败（error=${e.error}, status=${e.status || 0}）`);
         }
-    }, waitHeaderLength, true);
+    }, source ? 1 : waitHeaderLength, true, source);
     videoPlayer.streamBaseOffset = startMs / 1000;
     videoPlayer.beginTimeOffset = 0;
     if (timeTrack.value) {
@@ -201,6 +240,12 @@ async function playCurrentVideo(startMs = 0) {
     }
     state.isPlay = true;
     return loadDanmuForCurrentPosition(startMs / 1000);
+}
+
+function retryPlayback(mode: 'direct' | 'relay' = state.playbackMode) {
+    if (!state.playbackError) retryPosition = Number(timeTrack.value?.value) || retryPosition;
+    state.playbackMode = mode;
+    playCurrentVideo(retryPosition).catch(() => {});
 }
 
 function seekVideo(ms: number) {
@@ -309,9 +354,11 @@ onMounted(() => {
         state.danmuFontSize = DEFAULT_DANMU_FONT_SIZE;
     });
 
-    new Promise((resolve, reject) => {
+    (async () => {
         if (props.type == 'bv'){
             return get(`/api/bilibili/video/${props.id}`).then(data => {
+                if (disposed) return;
+                if (!data.epList?.length) throw new Error('当前视频没有可播放分集');
                 state.epList = data.epList;
                 state.title = data.title;
                 state.desc = data.desc;
@@ -319,39 +366,31 @@ onMounted(() => {
                 state.epid = null;
                 state.bvid = state.epList[0].bvid;
                 state.cid = state.epList[0].cid;
-                resolve(`/api/bilibili/bv/${state.bvid}/${state.cid}`);
+                return `/api/bilibili/bv/${state.bvid}/${state.cid}`;
             });
         }else if (props.type == 'bangumi_ss'){
             return get(`/api/bilibili/bangumi_ss/${props.id}`).then(data => {
+                if (disposed) return;
+                if (!data?.length) throw new Error('当前番剧没有可播放分集');
                 state.epList = data;
                 console.log('ep_list', state.epList);
                 state.epid = state.epList[0].epid;
                 state.bvid = state.epList[0].bvid;
                 state.cid = state.epList[0].cid;
-                resolve(`/api/bilibili/bangumi_ep/${state.epid}/${state.cid}`);
+                return `/api/bilibili/bangumi_ep/${state.epid}/${state.cid}`;
             })
         }
-    }).then(url => {
+    })().then(url => {
+        if (disposed) return;
         logPlayback('init:ready', { url });
         return playCurrentVideo(0);
-    }).then(() => {
-        if (timeTrack.value) {
-            timeTrack.value.oninput = (event: Event) => {
-                const target = event.target as HTMLInputElement;
-                if (timeLabel.value && videoPlayer.duration > 0) {
-                    timeLabel.value.innerHTML = `${videoPlayer.formatTime(Number(target.value) / 1000)}/${videoPlayer.displayDuration}`;
-                }
-            };
-            timeTrack.value.onchange = (event: Event) => {
-                const target = event.target as HTMLInputElement;
-                seekVideo(Number(target.value));
-            };
-        }
     }).catch((error) => {
+        if (disposed) return;
         console.error('init bilibili player failed', error);
         logPlayback('init:error', { message: error?.message || String(error) });
         state.isPlay = false;
-        props.onClose?.();
+        state.playbackError = error?.message || '初始化播放失败';
+        videoPlayer.hideLoading();
     });
     
     videoPlayer.setTimeCallback((t: number) => {
@@ -360,8 +399,9 @@ onMounted(() => {
         if (state.dm_seg < seg){
             state.dm_seg = seg;
             const sourceKey = getDanmuSourceKey();
+            const request = playbackRequest;
             get(getDanmuUrl(seg)).then(data => {
-                if (sourceKey !== getDanmuSourceKey()) {
+                if (disposed || request !== playbackRequest || sourceKey !== getDanmuSourceKey()) {
                     return;
                 }
                 const newDms = data.dm.filter((dm: any) => {
@@ -382,6 +422,19 @@ onMounted(() => {
     startAudioChannel();
 
     videoPlayer.setTrack(timeTrack.value, timeLabel.value);
+    if (timeTrack.value) {
+        timeTrack.value.oninput = (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            if (timeLabel.value && videoPlayer.duration > 0) {
+                timeLabel.value.innerHTML = `${videoPlayer.formatTime(Number(target.value) / 1000)}/${videoPlayer.displayDuration}`;
+            }
+        };
+        timeTrack.value.onchange = (event: Event) => {
+            const target = event.target as HTMLInputElement;
+            seekVideo(Number(target.value));
+        };
+    }
+
 
 })
 
@@ -474,11 +527,6 @@ async function switchEp(ep: any){
     if (state.switchingEp) {
         return;
     }
-    const previous = {
-        epid: state.epid,
-        bvid: state.bvid,
-        cid: state.cid,
-    };
     state.switchingEp = true;
     state.epid = ep.epid ?? null;
     state.bvid = ep.bvid;
@@ -490,9 +538,6 @@ async function switchEp(ep: any){
     } catch (error) {
         console.error('switch episode failed', error);
         logPlayback('switchEp:error', { targetTitle: ep?.title, targetEpid: ep?.epid, targetBvid: ep?.bvid, targetCid: ep?.cid, message: (error as any)?.message || String(error) });
-        state.epid = previous.epid;
-        state.bvid = previous.bvid;
-        state.cid = previous.cid;
         state.isPlay = false;
     } finally {
         state.switchingEp = false;
@@ -507,7 +552,10 @@ function isCurrentEp(ep: any) {
 }
 
 onUnmounted(() => {
-    videoPlayer.stop();
+    disposed = true;
+    ++playbackRequest;
+    playbackController?.abort();
+    videoPlayer.destroy();
 })
 
 
@@ -542,6 +590,12 @@ onUnmounted(() => {
         </div>
         </div>
         <div class="bv-bottom-controller">
+            <div v-if="state.playbackError" class="bv-playback-error" role="alert">
+                <span>{{ state.playbackError }}</span>
+                <el-button @click="retryPlayback()">重试</el-button>
+                <el-button v-if="state.playbackMode === 'direct'" @click="retryPlayback('relay')">使用兼容播放</el-button>
+                <el-button v-else @click="retryPlayback('direct')">重试直连</el-button>
+            </div>
             <div class="bv-toolbar">
                 <div class="player-actions bv-toolbar-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
@@ -556,6 +610,7 @@ onUnmounted(() => {
                         <el-button class="bv-more-button" :icon="MoreFilled" circle aria-label="更多播放操作" title="更多" />
                     </template>
                     <div class="bv-more-menu">
+                        <el-button v-if="state.playbackMode === 'relay'" @click="retryPlayback('direct')">切换直连播放</el-button>
                         <el-button @click="restoreAudioChannel">恢复声音</el-button>
                         <el-button :loading="state.actionLoading === 'coin'" :disabled="!!state.actionLoading || !state.bvid" @click="runVideoAction('coin')">投币</el-button>
                         <el-button :loading="state.actionLoading === 'favorite'" :disabled="!!state.actionLoading || !state.bvid" @click="runVideoAction('favorite')">收藏</el-button>
@@ -619,6 +674,15 @@ onUnmounted(() => {
     aspect-ratio: 1100 / 623;
     background: #000;
     overflow: hidden;
+}
+
+.bv-playback-error {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    padding: 10px;
+    color: var(--el-color-danger);
 }
 
 .bv-player-stage > canvas {
