@@ -28,7 +28,6 @@ def get_all_config_safe():
 def put_config_by_key(key, value):
     config = read_config()
     config[key] = value
-    print(config)
     write_config(config_dict=config)
     
 def get_config_by_key(key, default_value=None):

@@ -51,6 +51,7 @@ def update_config():
     data = request.json or {}
     allowed_keys = {
         'amap_key',
+        'amap_security_js_code',
         'video_path',
         'home_page_iframe',
         'bilibili_cache_dir',

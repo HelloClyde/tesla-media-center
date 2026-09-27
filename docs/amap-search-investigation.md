@@ -181,3 +181,74 @@ BaseSugRequest.fetch
 
 下一步应先解决运行环境兼容性（对照更新的官方 Android 镜像），
 再验证匿名搜索。当前没有新增可供 Web 接入的成功搜索样本。
+
+
+## Android 13 对照验证（2026-09-27）
+
+为排查 Android 11 转译兼容性，下载官方 Google APIs Android 13 / API 33 /
+x86_64 revision 17 镜像 `x86_64-33_r17.zip`。官方清单来自
+`https://dl.google.com/android/repository/sys-img/google_apis/sys-img2-3.xml`，
+下载使用官方 redirector.gvt1.com 入口。完整大小 1707857511 字节，SHA-1
+`2b96f5bd5c79bfe1cc645e70b3e630b5755d9711` 实测匹配。
+
+独立 AVD `tmc-amap-33` 在端口 5556 启动，最终 `sys.boot_completed=1`。
+此镜像运行时 ABI 仅为 `x86_64`，`ro.dalvik.vm.native.bridge=0`，没有
+`/system/lib64/libndk_translation.so`。完成启动后安装同一份官方 ARM64 APK，
+明确返回 `INSTALL_FAILED_NO_MATCHING_ABIS` / res=-113。
+
+结论：该 Android 13 镜像不能运行此 APK，不能用于判断原 Android 11 SIGILL
+是否消失。不能把系统版本更新等同于 ARM64 转译更完善。当前仍没有官方
+App 未登录成功搜索样本，没有新增可接入 Web 的搜索接口。
+
+下一轮先验证候选环境确实提供 ARM64 执行能力，再下载或启动；不要继续盲换
+x86_64 镜像。可行方向是可用的 ARM64 Android 环境或具有经验证 ARM64 转译
+能力的环境。此次未改 APK，也未修改现有 Web 地图、算路或缓存实现。
+
+
+## ARM64 候选环境核对（2026-09-27）
+
+优先候选：BlueStacks 5 的 Android 11 实例，ABI 选择 Custom / ARM 64 bit。
+官方 ABI 文档明确列出 ARM 64 bit；官方 Hyper-V 文档说明新版本 Android 11
+可在启用 Hyper-V 的 Windows 环境运行，适合当前仍需要 WSL 的主机。
+这是文档层面的候选，尚未安装或验证高德启动/搜索，不承诺其转译一定兼容。
+
+- https://support.bluestacks.com/hc/en-us/articles/360058929011-What-is-Application-Binary-Interface-ABI-in-BlueStacks-5
+- https://support.bluestacks.com/hc/en-us/articles/4415238471053-System-requirements-for-BlueStacks-5-on-Hyper-V-enabled-Windows-10-and-11
+
+备选：Genymotion SaaS 原生 ARM64 云设备，可通过 gmsaas 连接 ADB。
+需用户自己的服务账号及确认可用额度后再创建实例；本轮未创建云资源。
+其 Windows/Intel Desktop 版本不是等价替代，官方明确不支持 ARM64-only App。
+
+- https://www.genymotion.com/blog/genymotion-arm64-devices/
+- https://docs.genymotion.com/usage/saas/connect_adb/
+- https://support.genymotion.com/hc/en-us/articles/360010029677-How-to-run-applications-and-games-for-arm-arm64
+
+后续验收：运行时 ABI 包含 arm64-v8a → 官方 APK 安装成功 → App 首页稳定 →
+未登录搜索成功 → 核对线上请求而非离线结果。任何前一步失败都不能称搜索接口已打通。
+
+### 2026-09-27 本机 BlueStacks Android 11 实测
+
+- 官方 5.22.280.1025 主安装器签名有效；Rvc64 镜像 690081621 字节，MD5 与官方 metadata.txt 的 cf5045f7c9d3719a9471f34a969c97ef 一致。安装到 E:\BlueStacks_nxt，日志确认安装完成。
+- 旧 Android SDK 模拟器占用 5555，早期连接实际命中旧设备，不能算 BlueStacks 测试。已关闭旧模拟器。BlueStacks 默认端口未正常监听，使用 BstkVMMgr controlvm 添加仅 127.0.0.1:5585 → guest:5555 的 NAT 转发后连通；远程 ADB 仍关闭。
+- 核对新设备运行时 ABI 包含 arm64-v8a，官方高德 17.00.0.2005 APK 安装返回 Success。
+- 首次进入地图出现 ANR：SplashActivity Input dispatching timed out，等待焦点事件 5005ms。重启后成功显示地图首页及可关闭的登录提示，未登录任何账号。
+- 关闭登录提示、尝试进入搜索后，官方 App 显示“你的操作过于频繁，请稍后再试”。停止继续重试，尚未取得成功搜索请求。该提示本身不能确定是 IP、设备环境或其他策略原因，也不能证明必须登录。
+- 本地证据：.local-data/bluestacks-rvc64/{activity.log,screen.png,retry.png,search.png}。其中 retry.png 为地图首页，search.png 为限制提示。
+- 当前结论：本机 ARM64 转译环境与官方 App 首页已跑通；匿名搜索仍未验证成功，不能宣称 TMC 搜索接口已接通。后续需在限制解除后低频复核，并区分网络出口与模拟器兼容性问题。
+### 2026-09-27 搜索限制的静态排查
+
+本轮仅读取本地 APK / 已提取资源，没有发送搜索请求，也没有修改验证逻辑。
+
+已确认的联想业务链（不等于已证明截图使用此入口）：
+`SinglePoiSearchLogic.fetchSuggPoiData` → `SuggPoiSearchRequest.fetch` →
+`BaseSugRequest.fetch` → `NetworkBase.ajax.post` → `CLNetwork.Request.send` →
+`natives.XMLHttpRequest.fetch`。BaseSugRequest 指向 `/ws/shield/search/sug`。
+
+- SinglePoiSearchLogic.js:25–38：空关键词直接返回；非空关键词取消上一个请求，构造参数，非强制离线时发起联想请求。此方法内部没有固定延时；尚未追到输入组件的触发/防抖，不能断言每个按键必定请求一次。
+- SinglePoiSearchLogic.js:42 起：仅 `resText.code === 1` 视为在线业务成功，其他情况尝试离线联想。离线结果不能充当在线成功证据。
+- CLNetwork.js:58：HTTP 2xx 或 304 判为传输成功；368–374 行随后执行 JSON.parse，HTML 会走解析失败分支。因此 HTTP 200 与可用的搜索 JSON 是两回事。
+- ModuleRequest.java:174–249：AOS 成功回调将状态、响应正文、响应头与 csid 传回 JS；目前已读的这个回调中没有直接展示“操作过于频繁”的逻辑。
+- 对 APK 的 dex/html/js/so 明文扫描未找到完整限制提示。未覆盖压缩 AJX 内容、动态下载模块和服务器页面，因此不能根据未命中断言提示必定来自服务器。
+- classes4.dex 中发现 `X-Auth-Block` 字符串；反编译 ob1.java:191 仅看到读取响应头并调用 TextUtils.isEmpty，未建立与当前搜索入口/限制页面的连接，不能据此认定原因。classes4 JADX 输出有 9 个反编译错误，不能视为完整源码。
+
+结论：联想请求和 JSON 失败/离线回退链已确认；截图限制页的打开者、对应实际响应、模拟器/IP/频率判定原因仍未定位。仅静态客户端代码无法还原服务端实际命中的规则。后续应优先找限制页的导航来源及正常错误日志，不通过修改判断或伪造验证结果来推测成功。

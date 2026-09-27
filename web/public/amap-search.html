@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>TMC 地点搜索</title></head><body>
+<script>
+'use strict';
+let started = false;
+window.addEventListener('message', function (event) {
+  if (event.source !== parent || event.origin !== location.origin || started || event.data?.type !== 'tmc-search') return;
+  started = true;
+  const request = event.data;
+  const reply = (data) => parent.postMessage({ type: 'tmc-search-result', ...data }, location.origin);
+  if (request.securityCode) window._AMapSecurityConfig = { securityJsCode: request.securityCode };
+  window.tmcSearchReady = function () {
+    try {
+      const service = new AMap.PlaceSearch({ city: '全国', pageSize: 20, pageIndex: 1, extensions: 'base' });
+      service.search(request.keywords, function (status, result) {
+        if (status === 'no_data') return reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: [] } });
+        if (status !== 'complete') {
+          const info = typeof result === 'string' ? result : result?.info || 'UNKNOWN_ERROR';
+          return reply({ status: 'error', message: '高德地点搜索失败：' + info });
+        }
+        if (!Array.isArray(result?.poiList?.pois)) return reply({ status: 'error', message: '高德搜索结果格式异常' });
+        reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: result.poiList.pois.map(p => ({
+          id: p.id, name: p.name, address: [p.pname, p.cityname, p.adname, typeof p.address === 'string' ? p.address : ''].filter(Boolean).join(' '),
+          location: p.location ? [p.location.getLng(), p.location.getLat()] : null
+        })) } });
+      });
+    } catch (_) { reply({ status: 'error', message: '高德搜索服务初始化失败' }); }
+  };
+  const script = document.createElement('script');
+  script.src = 'https://webapi.amap.com/maps?v=1.4.15&plugin=AMap.PlaceSearch&callback=tmcSearchReady&key=' + encodeURIComponent(request.key);
+  script.onerror = () => reply({ status: 'error', message: '高德搜索 SDK 加载失败，请检查网络' });
+  document.head.appendChild(script);
+});
+parent.postMessage({ type: 'tmc-search-ready' }, location.origin);
+</script></body></html>

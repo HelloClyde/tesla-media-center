@@ -5,6 +5,8 @@ import { useRouter } from 'vue-router';
 import L from 'leaflet';
 import 'leaflet-rotate';
 import { bearingBetween, movementHeading, smoothHeading } from './amapHeading';
+import type { Place } from './amapSearch';
+import { searchWebPlaces } from './amapWebSearch';
 import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
 const mapStatus = ref('');
 const layerMenu = ref(false);
@@ -58,7 +60,6 @@ function followLocation() {
   if (map) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
-type Place = { id: string; name: string; address: string; location: Point };
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
 const origin = ref<Point>([116.3975, 39.9087]), destination = ref<Point>([116.41, 39.916]);
@@ -135,10 +136,9 @@ async function search() {
   const id = searchGeneration;
   searchController = new AbortController(); searching.value = true;
   try {
-    const response = await axios.post('/api/amap-app/search', { keywords, location: location.value || origin.value }, { signal: searchController.signal, timeout: 20000 });
+    const places = await searchWebPlaces(keywords, searchController.signal);
     if (disposed || id !== searchGeneration) return;
-    if (response.data.status !== 'ok') throw new Error(response.data.message || '地点搜索暂不可用');
-    tips.value = response.data.data.places;
+    tips.value = places;
     if (!tips.value.length) searchMessage.value = '没有找到地点，试试加上城市名称';
   } catch (exception) {
     if (disposed || id !== searchGeneration) return;

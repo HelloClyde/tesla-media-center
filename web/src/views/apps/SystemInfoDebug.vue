@@ -33,6 +33,7 @@ const state = reactive({
     browser: '',
     mapConfig: {
         amapKey: '',
+        securityCode: '',
     },
     mapLoading: false,
 });
@@ -100,6 +101,7 @@ function refreshMapConfig() {
     state.mapLoading = true;
     get('/api/config', '读取配置失败').then((data) => {
         state.mapConfig.amapKey = data.amap_key || '';
+        state.mapConfig.securityCode = data.amap_security_js_code || '';
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -109,6 +111,7 @@ function saveMapConfig() {
     state.mapLoading = true;
     post('/api/config', {
         amap_key: state.mapConfig.amapKey.trim(),
+        amap_security_js_code: state.mapConfig.securityCode.trim(),
     }, '保存高德 Key 失败').then(() => {
         ElMessage.success('地图配置已保存');
     }).finally(() => {
@@ -146,10 +149,10 @@ onUnmounted(() => {
                     <div class="card-head">
                         <div>
                             <p class="card-kicker">Maps</p>
-                            <h2>特斯拉行程轨迹</h2>
+                            <h2>高德搜索与行程轨迹</h2>
                         </div>
                     </div>
-                    <p class="console-hint">仅用于特斯拉页面的行程轨迹底图；高德导航无需此 Key。</p>
+                    <p class="console-hint">用于导航页地点搜索和特斯拉行程轨迹。地点搜索使用 Web JS API 1.4.15；请按需输入 Key 配套的安全密钥。</p>
                     <div class="setting-input" v-loading="state.mapLoading">
                         <span class="setting-label">Web JS API Key</span>
                         <el-input
@@ -160,6 +163,7 @@ onUnmounted(() => {
                         />
                     </div>
                     <div class="button-row top-gap">
+                        <el-input v-model="state.mapConfig.securityCode" type="password" show-password placeholder="安全密钥 securityJsCode（按 Key 要求填写）" aria-label="高德安全密钥" />
                         <el-button type="primary" round @click="saveMapConfig">保存 Key</el-button>
                     </div>
                 </article>
