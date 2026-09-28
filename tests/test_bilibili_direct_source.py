@@ -58,6 +58,7 @@ class DirectSourceTest(unittest.TestCase):
         app.secret_key = 'unit-test-only'
         add_bv_route(app)
         client = app.test_client()
+        self.assertEqual(client.get('/api/bilibili/media-range/forged').json['status'], 'need_login')
         routes = ['/api/bilibili/bv/BV1xx411c7mD/62131/source',
                   '/api/bilibili/bangumi_ep/123/456/source']
         for path in routes:
@@ -78,6 +79,9 @@ class DirectSourceTest(unittest.TestCase):
                 self.assertIn('no-store', response.headers['Cache-Control'])
             bv.return_value.get_download_url.assert_called_once_with(cid=62131)
             ep.return_value.get_download_url.assert_called_once_with()
+            proxied = client.get(routes[0] + '?transport=relay').json['data']
+            self.assertTrue(proxied['video']['urls'][0].startswith('/api/bilibili/media-range/'))
+            self.assertTrue(proxied['audio']['urls'][0].startswith('/api/bilibili/media-range/'))
             process.assert_not_called()
             media_download.assert_not_called()
             cache.assert_not_called()

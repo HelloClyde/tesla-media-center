@@ -27,6 +27,7 @@ function FileInfo(url) {
 }
 
 function Player() {
+    this.destroyed = false;
     this.fileInfo           = null;
     this.pcmPlayer          = null;
     this.canvas             = null;
@@ -76,8 +77,10 @@ function Player() {
     this.streamPauseParam   = null;
     this.logger             = new Logger("Player");
     this.finishNotified     = false;
-    this.initDownloadWorker();
-    this.initDecodeWorker();
+    if (!this.destroyed) {
+        this.initDownloadWorker();
+        this.initDecodeWorker();
+    }
     this.finishCallback     = null;
     this.timeCallback       = null;
     this.browserSource      = null;
@@ -96,14 +99,18 @@ Player.prototype.resetWorkers = function () {
         this.decodeWorker.terminate();
         this.decodeWorker = null;
     }
-    this.initDownloadWorker();
-    this.initDecodeWorker();
+    if (!this.destroyed) {
+        this.initDownloadWorker();
+        this.initDecodeWorker();
+    }
 };
 
 Player.prototype.initDownloadWorker = function () {
     var self = this;
     this.downloadWorker = new Worker("/downloader.js");
+    var worker = this.downloadWorker;
     this.downloadWorker.onmessage = function (evt) {
+        if (self.destroyed || self.downloadWorker !== worker) return;
         var objData = evt.data;
         switch (objData.t) {
             case kGetFileInfoRsp:
@@ -124,10 +131,13 @@ Player.prototype.initDownloadWorker = function () {
 Player.prototype.initDecodeWorker = function () {
     var self = this;
     this.decodeWorker = new Worker("/decoder.js");
+    var worker = this.decodeWorker;
     this.decodeWorker.onerror = function () {
+        if (self.destroyed || self.decodeWorker !== worker) return;
         self.reportPlayError(-1, 0, 'WASM 解码器加载失败，请刷新后重试');
     };
     this.decodeWorker.onmessage = function (evt) {
+        if (self.destroyed || self.decodeWorker !== worker) return;
         var objData = evt.data;
         // console.log('decode frame', objData);
         switch (objData.t) {
@@ -165,6 +175,7 @@ Player.prototype.initDecodeWorker = function () {
 };
 
 Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource) {
+    if (this.destroyed) return { e: -1, m: "Player destroyed" };
     this.logger.logInfo("Play " + url + ".");
     console.log('waitHeaderLength', waitHeaderLength);
     this.finishNotified = false;
@@ -430,6 +441,7 @@ Player.prototype.resume = function (fromSeek) {
 };
 
 Player.prototype.stop = function () {
+    var ret = { e: 0, m: "Success" };
     this.logger.logInfo("Stop.");
     if (this.browserSource) {
         this.browserSource.cancel();
@@ -441,14 +453,6 @@ Player.prototype.stop = function () {
         cancelAnimationFrame(this.displayAnimationFrame);
         this.displayAnimationFrame = null;
     }
-    if (this.playerState == playerStateIdle) {
-        var ret = {
-            e: -1,
-            m: "Not playing"
-        };
-        return ret;
-    }
-
     if (this.videoRendererTimer != null) {
         clearTimeout(this.videoRendererTimer);
         this.videoRendererTimer = null;
@@ -503,6 +507,11 @@ Player.prototype.stop = function () {
     if (this.fetchController) {
         this.fetchController.abort();
         this.fetchController = null;
+    }
+    if (this.infoRequest) {
+        this.infoRequest.onreadystatechange = null;
+        this.infoRequest.abort();
+        this.infoRequest = null;
     }
 
     this.resetWorkers();
@@ -568,11 +577,23 @@ Player.prototype.consumeBrowserSource = async function (source) {
 };
 
 Player.prototype.destroy = function () {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.finishCallback = null;
+    this.timeCallback = null;
     this.stop();
     if (this.downloadWorker) this.downloadWorker.terminate();
     if (this.decodeWorker) this.decodeWorker.terminate();
     this.downloadWorker = null;
     this.decodeWorker = null;
+    if (this.timeTrack) {
+        this.timeTrack.oninput = null;
+        this.timeTrack.onchange = null;
+    }
+    this.timeTrack = null;
+    this.timeLabel = null;
+    this.loadingDiv = null;
+    this.streamPauseParam = null;
 };
 
 Player.prototype.notifyFinish = function () {
@@ -1456,8 +1477,10 @@ Player.prototype.requestStream = function (url) {
         }
 
         var xhr = new XMLHttpRequest();
+        this.infoRequest = xhr;
         xhr.open('get', infoUrl, true);
         xhr.onreadystatechange = () => {
+            if (self.destroyed || self.infoRequest !== xhr || !self.fileInfo) return;
             var len = xhr.getResponseHeader("BV-Content-Length");
             var dur = xhr.getResponseHeader('BV-Duration');
             if (len) {
@@ -1502,14 +1525,16 @@ Player.prototype.requestStream = function (url) {
     
         fetch(url, {signal}).then(async function respond(response) {
             const reader = response.body.getReader();
-            reader.read().then(function processData({done, value}) {
+            if (signal.aborted || self.destroyed) return reader.cancel();
+            return reader.read().then(function processData({done, value}) {
+                if (signal.aborted || self.destroyed) return reader.cancel();
                 if (done) {
                     self.logger.logInfo("Stream done.");
                     return;
                 }
     
                 if (self.playerState != playerStatePlaying) {
-                    return;
+                    return reader.cancel();
                 }
     
                 var dataLength = value.byteLength;

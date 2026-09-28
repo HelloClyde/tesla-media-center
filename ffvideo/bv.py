@@ -17,6 +17,7 @@ from bilibili_api.exceptions import ResponseCodeException
 from bilibili_api import utils as bilibili_utils
 import base64
 from ffvideo.bili_source import build_direct_source
+from ffvideo.bili_relay import relay_source, media_range
 
 ffplay_stop_event = threading.Event()
 
@@ -475,6 +476,11 @@ def extract_bangumi_episode_items(payload):
 
 
 def add_bv_route(app):
+    @app.route('/api/bilibili/media-range/<string:token>', methods=['GET'])
+    @login_check
+    def get_media_range(token):
+        return media_range(app, token)
+
     @app.route('/api/bilibili/bv/<string:bvid>/<int:cid>/source', methods=['GET'])
     @app.route('/api/bilibili/bangumi_ep/<int:epid>/<int:cid>/source', methods=['GET'])
     @login_check
@@ -492,6 +498,8 @@ def add_bv_route(app):
             if error.code == -10403:
                 return json_fail('region_restricted', message='该视频因地区或权限限制暂时无法播放'), 451
             return json_fail('source_unavailable', message=error.msg or '无法获取 B 站源流'), 400
+        if request.args.get('transport') == 'relay':
+            source = relay_source(app, source)
         response = json_ok(source)
         # Signed CDN URLs expire and must not leak into shared caches.
         response.headers['Cache-Control'] = 'private, no-store'

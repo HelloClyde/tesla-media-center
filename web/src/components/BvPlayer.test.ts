@@ -57,23 +57,22 @@ afterEach(() => {
 
 it('defaults to the source API without invoking server media or info endpoints', async () => {
   open(); await flushPromises();
-  expect(mocks.get).toHaveBeenCalledWith('/api/bilibili/bv/BVtest/1/source', expect.any(String));
+  expect(mocks.get).toHaveBeenCalledWith('/api/bilibili/bv/BVtest/1/source?transport=relay', expect.any(String));
   expect(player.play).toHaveBeenCalledTimes(1);
   expect(player.play.mock.calls[0][0]).toBe('stream://browser-dash');
   expect(player.play.mock.calls[0][5]).toMatchObject({ startMs: 0 });
   expect(mocks.get.mock.calls.some(([url]) => url.endsWith('/info'))).toBe(false);
 });
 
-it('leaves direct failures visible and only enables server playback after the compatibility button', async () => {
+it('retries relay failures using browser processing without invoking legacy FFmpeg', async () => {
   mocks.create.mockRejectedValueOnce(new Error('CDN unavailable'));
   const view = open(); await flushPromises();
   expect(view.get('[role="alert"]').text()).toContain('CDN unavailable');
-  expect(player.play).not.toHaveBeenCalled();
-  expect(mocks.get.mock.calls.some(([url]) => url.endsWith('/info'))).toBe(false);
-  await view.findAll('button').find(b => b.text() === '使用兼容播放')!.trigger('click');
+  await view.findAll('button').find(b => b.text() === '重试')!.trigger('click');
   await flushPromises();
-  expect(mocks.get).toHaveBeenCalledWith('/api/bilibili/bv/BVtest/1/info', expect.any(String));
-  expect(player.play.mock.calls[0][0]).toBe('stream:///api/bilibili/bv/BVtest/1');
+  expect(player.play.mock.calls[0][0]).toBe('stream://browser-dash');
+  expect(player.play.mock.calls[0][5]).toMatchObject({ startMs: 0 });
+  expect(mocks.get.mock.calls.some(([url]) => url.endsWith('/info'))).toBe(false);
 });
 
 it('cancels a superseded request and ignores its late result when seeking', async () => {
@@ -106,4 +105,17 @@ it('aborts loading and destroys workers on unmount without starting late playbac
   expect(source.cancel).toHaveBeenCalled();
   expect(player.destroy).toHaveBeenCalled();
   expect(player.play).not.toHaveBeenCalled();
+});
+
+it('stops immediately on return even before the parent unmounts it', async () => {
+  const view = open(); await flushPromises();
+  const controller = mocks.create.mock.calls[0][2] as AbortController;
+  await view.get('[aria-label="返回视频列表"]').trigger('click');
+  expect(controller.signal.aborted).toBe(true);
+  expect(player.destroy).toHaveBeenCalledTimes(1);
+  await view.get('input[type="range"]').setValue('60000');
+  await flushPromises();
+  expect(player.play).toHaveBeenCalledTimes(1);
+  view.unmount(); wrapper = undefined;
+  expect(player.destroy).toHaveBeenCalledTimes(1);
 });

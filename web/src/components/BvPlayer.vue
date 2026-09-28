@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
+import { ref, onMounted, reactive, onBeforeUnmount, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { MoreFilled } from '@element-plus/icons-vue';
@@ -18,6 +18,7 @@ let videoPlayer: any = null;
 let playbackRequest = 0;
 let playbackController: AbortController | null = null;
 let disposed = false;
+const danmuTimers = new Set<ReturnType<typeof setInterval>>();
 let retryPosition = 0;
 const waitHeaderLength = 512 * 1024;
 const DEFAULT_DANMU_AREA = 'top_half';
@@ -51,7 +52,7 @@ const state = reactive({
     danmuOpacity: DEFAULT_DANMU_OPACITY,
     danmuFontSize: DEFAULT_DANMU_FONT_SIZE,
     actionLoading: '',
-    playbackMode: 'direct' as 'direct' | 'relay',
+    playbackMode: 'relay' as 'direct' | 'relay',
     playbackError: '',
 })
 
@@ -160,23 +161,8 @@ function getCurrentEpisodeLabel() {
     return state.epList[currentEpIndex.value]?.title || state.title || '当前视频';
 }
 
-async function ensurePlayable(startMs = 0) {
-    if ((!state.bvid && !state.epid) || !state.cid) {
-        throw new Error('当前分集缺少播放参数');
-    }
-    const infoUrl = getStreamInfoUrl(startMs);
-    logPlayback('ensurePlayable:start', { startMs, infoUrl });
-    try {
-        const data = await get(infoUrl, `获取《${getCurrentEpisodeLabel()}》播放地址失败`);
-        logPlayback('ensurePlayable:success', { startMs, infoUrl, size: data?.size, file: data?.file });
-        return data;
-    } catch (error: any) {
-        logPlayback('ensurePlayable:error', { startMs, infoUrl, message: error?.message || error?.status || String(error) });
-        throw error;
-    }
-}
-
 async function playCurrentVideo(startMs = 0) {
+    if (disposed) return;
     const request = ++playbackRequest;
     playbackController?.abort();
     const controller = new AbortController();
@@ -192,16 +178,13 @@ async function playCurrentVideo(startMs = 0) {
     let source: BrowserStreamSource | undefined;
     let streamUrl = getStreamUrl(startMs);
     try {
-        if (state.playbackMode === 'direct') {
-            const manifest = await get(`${getStreamUrl()}/source`, '获取 B 站源流失败');
-            if (!isCurrent()) return;
-            const { createDirectSource } = await import('@/functions/biliDirect');
-            source = await createDirectSource(manifest, startMs, controller);
-            startMs = source.startMs;
-            streamUrl = 'browser-dash';
-        } else {
-            await ensurePlayable(startMs);
-        }
+        const transport = state.playbackMode === 'relay' ? '?transport=relay' : '';
+        const manifest = await get(`${getStreamUrl()}/source${transport}`, '获取 B 站源流失败');
+        if (!isCurrent()) return;
+        const { createDirectSource } = await import('@/functions/biliDirect');
+        source = await createDirectSource(manifest, startMs, controller);
+        startMs = source.startMs;
+        streamUrl = 'browser-dash';
         if (!isCurrent()) { source?.cancel(); return; }
     } catch (error: any) {
         if (!isCurrent()) return;
@@ -332,6 +315,7 @@ onMounted(() => {
     };
     videoPlayer.setLoadingDiv(videoLoading.value);
     videoPlayer.setFinishCallback(() => {
+        if (disposed) return;
         state.isPlay = false;
         if (state.isAutoContinue) {
             playNextEp();
@@ -394,6 +378,7 @@ onMounted(() => {
     });
     
     videoPlayer.setTimeCallback((t: number) => {
+        if (disposed) return;
         popDanmu(t);
         const seg = Math.floor(t / (6 * 60));
         if (state.dm_seg < seg){
@@ -481,14 +466,17 @@ function getDanmuTop(containerHeight: number) {
 function moveDanmu(elem: any, container: any) {
     let pos = parseInt(elem.style.left);
     const id = setInterval(frame, 50);
+    danmuTimers.add(id);
 
     function frame() {
         if (!elem || !elem.parentNode || !container.contains(elem)) {
             clearInterval(id);
+            danmuTimers.delete(id);
             return;
         }
         if (pos < -elem.offsetWidth) {
             clearInterval(id);
+            danmuTimers.delete(id);
             if (elem.parentNode) {
                 elem.parentNode.removeChild(elem);
             }
@@ -551,12 +539,30 @@ function isCurrentEp(ep: any) {
     return ep.bvid === state.bvid && String(ep.cid) === String(state.cid);
 }
 
-onUnmounted(() => {
+function disposePlayback() {
+    if (disposed) return;
     disposed = true;
     ++playbackRequest;
     playbackController?.abort();
-    videoPlayer.destroy();
-})
+    playbackController = null;
+    state.isPlay = false;
+    for (const timer of danmuTimers) clearInterval(timer);
+    danmuTimers.clear();
+    videoPlayer?.destroy();
+    const audio = channelAudio.value;
+    if (audio) {
+        audio.pause();
+        audio.removeAttribute('src');
+        audio.load();
+    }
+}
+
+function closePlayer() {
+    disposePlayback();
+    props.onClose?.();
+}
+
+onBeforeUnmount(disposePlayback);
 
 
 </script>
@@ -593,12 +599,12 @@ onUnmounted(() => {
             <div v-if="state.playbackError" class="bv-playback-error" role="alert">
                 <span>{{ state.playbackError }}</span>
                 <el-button @click="retryPlayback()">重试</el-button>
-                <el-button v-if="state.playbackMode === 'direct'" @click="retryPlayback('relay')">使用兼容播放</el-button>
+                <el-button v-if="state.playbackMode === 'direct'" @click="retryPlayback('relay')">使用服务端转接</el-button>
                 <el-button v-else @click="retryPlayback('direct')">重试直连</el-button>
             </div>
             <div class="bv-toolbar">
                 <div class="player-actions bv-toolbar-actions">
-                    <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="props.onClose" circle />
+                    <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="closePlayer" circle />
                 </div>
                 <span class="bv-inline-title" :title="state.title || ''">{{ state.title }}</span>
                 <input class="progress bv-inline-progress" id="timeTrack" ref="timeTrack" type="range" value="0" aria-label="播放进度">

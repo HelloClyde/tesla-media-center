@@ -55,7 +55,7 @@ export class RangeSource {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
         const response = await fetch(this.urls[index], {
-          mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer',
+          mode: 'cors', credentials: this.urls[index].startsWith('/api/bilibili/media-range/') ? 'same-origin' : 'omit', referrerPolicy: 'no-referrer',
           headers: { Range: `bytes=${start}-${end}` }, signal: controller.signal,
         });
         const contentRange = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');

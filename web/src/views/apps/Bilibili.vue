@@ -626,13 +626,13 @@ onUnmounted(() => {
             <div class="bili-section-copy">
               <p class="bili-section-kicker">Playback</p>
               <h3>播放与缓存</h3>
-              <p class="bili-auth-meta">默认直连播放；下方服务器缓存仅用于兼容播放。</p>
+              <p class="bili-auth-meta">默认转接源流，前端合流解码；下方缓存仅用于旧版播放器。</p>
             </div>
             <div class="bili-auth-panel bili-settings-panel" v-loading="state.biliSettingsLoading">
             <div class="bili-settings-head">
               <div>
                 <div class="bili-auth-title">B站设置</div>
-                <div class="bili-auth-meta">管理兼容播放缓存、取流清晰度和弹幕展示。</div>
+                <div class="bili-auth-meta">管理旧版缓存、取流清晰度和弹幕展示。</div>
               </div>
               <div class="bili-usage-pill">{{ biliCacheUsagePercent }}%</div>
             </div>

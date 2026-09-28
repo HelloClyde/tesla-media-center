@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, reactive, onUnmounted, computed } from 'vue';
+import { ref, onMounted, reactive, onBeforeUnmount, computed } from 'vue';
 import { get } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
 import { Headset } from '@element-plus/icons-vue';
@@ -126,12 +126,8 @@ onMounted(() => {
     });
 })
 
-onUnmounted(() => {
-    // if (videoPlayer.value != null) {
-    //     console.log(videoPlayer);
-    //     videoPlayer.value.destroy();
-    // }
-    videoPlayer.stop();
+onBeforeUnmount(() => {
+    videoPlayer?.destroy();
 })
 
 </script>
