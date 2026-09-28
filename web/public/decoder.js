@@ -4,8 +4,9 @@ self.Module = {
     }
 };
 
-self.importScripts("common.js");
-self.importScripts("libffmpeg.js");
+var assetVersion = self.location ? self.location.search : '';
+self.importScripts("common.js" + assetVersion);
+self.importScripts("libffmpeg.js" + assetVersion);
 
 function Decoder() {
     this.logger             = new Logger("Decoder");

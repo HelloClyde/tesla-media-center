@@ -102,7 +102,9 @@ def static_web(name):
             response = send_file(f'{fpath}{preferred_suffix}', mimetype=mimetype or 'application/octet-stream')
             response.headers['Content-Encoding'] = 'br' if preferred_suffix == '.br' else 'gzip'
             response.headers['Vary'] = 'Accept-Encoding'
-            response.headers['Cache-Control'] = 'public, max-age=86400'
+            # The HTML chooses the hashed app bundle and versioned player workers.
+            # Revalidate it so a deployment cannot keep selecting an older player.
+            response.headers['Cache-Control'] = 'no-cache' if name == 'index.html' else 'public, max-age=86400'
             return response
 
         return send_from_directory('./web/dist', name)

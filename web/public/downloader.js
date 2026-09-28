@@ -1,4 +1,4 @@
-self.importScripts("common.js");
+self.importScripts("common.js" + (self.location ? self.location.search : ''));
 
 function Downloader() {
     this.logger = new Logger("Downloader");

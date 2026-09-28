@@ -13,6 +13,9 @@ const playerStatePausing        = 2;
 const maxBufferTimeLength       = 1.0;
 const downloadSpeedByteRateCoef = 2.0;
 const defaultChunkSize = 65536 * 8;
+// The build stamps the entry script; use the same version for its workers.
+const playerAssetVersion = typeof document !== 'undefined' && document.currentScript
+    ? new URL(document.currentScript.src).search : '';
 
 String.prototype.startWith = function(str) {
     var reg = new RegExp("^" + str);
@@ -107,7 +110,7 @@ Player.prototype.resetWorkers = function () {
 
 Player.prototype.initDownloadWorker = function () {
     var self = this;
-    this.downloadWorker = new Worker("/downloader.js");
+    this.downloadWorker = new Worker("/downloader.js" + playerAssetVersion);
     var worker = this.downloadWorker;
     this.downloadWorker.onmessage = function (evt) {
         if (self.destroyed || self.downloadWorker !== worker) return;
@@ -134,7 +137,7 @@ Player.prototype.initDownloadWorker = function () {
 
 Player.prototype.initDecodeWorker = function () {
     var self = this;
-    this.decodeWorker = new Worker("/decoder.js");
+    this.decodeWorker = new Worker("/decoder.js" + playerAssetVersion);
     var worker = this.decodeWorker;
     this.decodeWorker.onerror = function () {
         if (self.destroyed || self.decodeWorker !== worker) return;
@@ -545,7 +548,7 @@ Player.prototype.consumeBrowserSource = async function (source) {
         var loadedUntil = source.startMs / 1000;
         for await (const chunk of source.chunks) {
             while (active() && (!self.downloadSwitch || (self.decoderState === decoderStateReady &&
-                loadedUntil > source.startMs / 1000 + (self.pcmPlayer ? self.pcmPlayer.getTimestamp() : 0) + 12) ||
+                loadedUntil > source.startMs / 1000 + (self.pcmPlayer ? self.pcmPlayer.getTimestamp() + self.beginTimeOffset : 0) + 12) ||
                 (self.decoderState !== decoderStateReady && self.streamReceivedLen >= 4 * 1024 * 1024))) {
                 await new Promise(resolve => setTimeout(resolve, 25));
             }
@@ -1030,7 +1033,8 @@ Player.prototype.displayAudioFrame = function (frame) {
 
     if (this.isStream && this.firstAudioFrame) {
         this.firstAudioFrame = false;
-        this.beginTimeOffset = frame.s;
+        this.beginTimeOffset = frame.s - (this.browserSource
+            ? Math.max(this.pcmPlayer.startTime, this.pcmPlayer.getTimestamp()) : 0);
         this.logger.logInfo(
             "stream sync first audio frame.s=" + frame.s +
             " streamBaseOffset=" + this.streamBaseOffset +
@@ -1065,7 +1069,7 @@ Player.prototype.onVideoFrame = function (frame) {
     this.bufferFrame(frame);
 };
 
-Player.prototype.displayVideoFrame = function (frame) {
+Player.prototype.displayVideoFrame = function (frame, deferRender) {
     if (this.playerState != playerStatePlaying) {
         return false;
     }
@@ -1104,8 +1108,7 @@ Player.prototype.displayVideoFrame = function (frame) {
     }
 
     if (audioTimestamp <= 0 || delay <= 0) {
-        var data = new Uint8Array(frame.d);
-        this.renderVideoFrame(data);
+        if (!deferRender) this.renderVideoFrame(new Uint8Array(frame.d));
         return true;
     }
     return false;
@@ -1158,32 +1161,38 @@ Player.prototype.displayLoop = function() {
         return;
     }
 
-    // requestAnimationFrame may be 60fps, if stream fps too large,
-    // we need to render more frames in one loop, otherwise display
-    // fps won't catch up with source fps, leads to memory increasing,
-    // set to 2 now.
-    for (i = 0; i < 2; ++i) {
+    // Audio packets also occupied the old two-frame quota. At 30 Hz, 48 kHz
+    // AAC + 30 fps video needs ~77 packets/s, exceeding that quota of 60.
+    // Drain due packets and render only the newest due video frame per refresh.
+    var pendingVideo = null;
+    var frameBudget = this.browserSource ? 128 : 2;
+    for (var i = 0; i < frameBudget; ++i) {
         var frame = this.frameBuffer[0];
+        var consumed = false;
         // console.log('frame', frame);
         switch (frame.t) {
             case kAudioFrame:
                 if (this.displayAudioFrame(frame)) {
                     this.frameBuffer.shift();
+                    consumed = true;
                 }
                 break;
             case kVideoFrame:
-                if (this.displayVideoFrame(frame)) {
+                if (this.displayVideoFrame(frame, !!this.browserSource)) {
                     this.frameBuffer.shift();
+                    consumed = true;
+                    if (this.browserSource) pendingVideo = frame;
                 }
                 break;
             default:
                 return;
         }
 
-        if (this.frameBuffer.length == 0) {
+        if (!consumed || this.frameBuffer.length == 0) {
             break;
         }
     }
+    if (pendingVideo) this.renderVideoFrame(new Uint8Array(pendingVideo.d));
 
     if (this.getBufferTimerLength() < maxBufferTimeLength / 2) {
         if (!this.decoding) {

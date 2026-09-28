@@ -1,4 +1,6 @@
 import { fileURLToPath, URL } from 'node:url'
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -15,6 +17,18 @@ import type { ICompressionOptions } from "rollup-plugin-compression";
 export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
+    {
+      name: 'version-legacy-player',
+      transformIndexHtml(html) {
+        const hash = createHash('sha256');
+        for (const file of ['common.js', 'pcm-player.js', 'webgl.js', 'player.js', 'decoder.js', 'downloader.js', 'libffmpeg.js']) {
+          hash.update(readFileSync(new URL(`./public/${file}`, import.meta.url)));
+        }
+        const version = hash.digest('hex').slice(0, 16);
+        return html.replace(/src="\/(common|pcm-player|webgl|player)\.js"/g,
+          (_match, name) => `src="/${name}.js?v=${version}"`);
+      },
+    },
     // compresssionBuild(option)
   ],
   define:{

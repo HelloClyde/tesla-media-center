@@ -254,10 +254,21 @@ async function loadTrack(track: DirectTrack, kind: 'video' | 'audio', signal: Ab
 }
 
 async function* trackSamples(track: Awaited<ReturnType<typeof loadTrack>>, index: number, signal: AbortSignal) {
+  // One segment of bounded lookahead per track hides network latency while
+  // current samples are consumed. Settle errors immediately to avoid an
+  // unhandled rejection when playback is paused or cancelled.
+  const fetchSegment = (i: number) => {
+    const segment = track.segments[i];
+    return track.source.read(segment.start, segment.end).then(
+      data => ({ data, error: undefined }), error => ({ data: undefined, error }));
+  };
+  let pending = fetchSegment(index);
   for (let i = index; i < track.segments.length; i++) {
     signal.throwIfAborted();
-    const segment = track.segments[i];
-    const data = await track.source.read(segment.start, segment.end);
+    const { data, error } = await pending;
+    signal.throwIfAborted();
+    if (!data) throw error;
+    if (i + 1 < track.segments.length) pending = fetchSegment(i + 1);
     const samples = extractSamples(track.init, data, track.id);
     for (const sample of samples) { signal.throwIfAborted(); yield sample; }
   }
