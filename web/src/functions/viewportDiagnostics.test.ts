@@ -24,3 +24,24 @@ describe('viewport diagnostics', () => {
     stop(); expect(clear).toHaveBeenCalled(); vi.useRealTimers();
   });
 });
+
+
+it('records non-bubbling player events beside viewport changes and removes listeners', () => {
+  document.body.innerHTML = '<audio data-qqmusic-player src="https://example.invalid/private-token"></audio><audio id="other"></audio>';
+  const stop = startLayoutDiagnostics();
+  setLayoutRecording(true);
+  const audio = document.querySelector('audio')!;
+  audio.dispatchEvent(new Event('emptied'));
+  expect(layoutSamples.value[0].reason).toBe('audio：emptied');
+  expect(layoutSamples.value[0].media).toContain('src=有');
+  expect(JSON.stringify(layoutSamples.value)).not.toContain('private-token');
+  vi.stubGlobal('innerHeight', innerHeight - 30);
+  window.dispatchEvent(new Event('resize'));
+  expect(layoutSamples.value[0].change).toContain('布局视口 resize');
+  const count = layoutSamples.value.length;
+  document.querySelector('#other')!.dispatchEvent(new Event('pause'));
+  expect(layoutSamples.value).toHaveLength(count);
+  stop();
+  audio.dispatchEvent(new Event('playing'));
+  expect(layoutSamples.value).toHaveLength(count);
+});

@@ -493,18 +493,11 @@ async function play(song: Song, fromList = false) {
   const prepared = !fromList ? nextTrackPreload.take(preloadKey(song)) : undefined;
   releasePlaybackPreload = prepared?.release;
   clearNextPreload();
-  if (current.value?.mid !== song.mid) restoredPosition = 0;
   const generation = ++playGeneration;
-  sources = [];
-  sourceIndex = 0;
   if (fromList) { stopRadio(); queue.value = [...visibleSongs.value]; }
-  // Retain the old resource until its replacement is ready. An empty media
-  // resource can make car browser chrome disappear and resize the viewport.
-  audio.value?.pause();
-  current.value = song;
-  elapsed.value = 0;
-  duration.value = 0;
-  loadingTrack.value = true;
+  // Keep the current resource playing while resolving its replacement.
+  // Commit track metadata together with the source, without an explicit pause.
+  captureLayout('开始获取下一首（保持原播放状态）', true);
   error.value = '';
   try {
     const cached = await prepared?.result;
@@ -512,8 +505,14 @@ async function play(song: Song, fromList = false) {
     const result = cached || await api(`play?mid=${encodeURIComponent(song.mid)}&quality=${quality.value}`);
     if (disposed || generation !== playGeneration || !audio.value) return;
     if (result.quality && result.quality !== quality.value) ElMessage.info(`此歌曲已自动降级为${qualityOptions.find(option => option.value === result.quality)?.label || result.quality}`);
-    sources = (result.urls?.length ? result.urls : [result.url]).filter((url: unknown): url is string => typeof url === 'string' && !!url);
-    if (!sources.length) throw new Error('此歌曲暂无可播放音源');
+    const nextSources = (result.urls?.length ? result.urls : [result.url]).filter((url: unknown): url is string => typeof url === 'string' && !!url);
+    if (!nextSources.length) throw new Error('此歌曲暂无可播放音源');
+    if (current.value?.mid !== song.mid) restoredPosition = 0;
+    sources = nextSources;
+    sourceIndex = 0;
+    current.value = song;
+    elapsed.value = 0;
+    duration.value = 0;
     loadedSongMid = song.mid;
     captureLayout('音源直接替换（保留 audio 节点）', true);
     audio.value.src = sources[0];
@@ -521,7 +520,7 @@ async function play(song: Song, fromList = false) {
     await audio.value.play();
     if (radioActive.value && generation === playGeneration && queue.value.length - queue.value.findIndex(s => s.mid === song.mid) <= 2) void refillRadio();
   } catch (e) {
-    if (generation === playGeneration && !disposed && sourceIndex === 0) error.value = message(e);
+    if (generation === playGeneration && !disposed) error.value = message(e);
   } finally {
     prepared?.release();
     if (releasePlaybackPreload === prepared?.release) releasePlaybackPreload = undefined;

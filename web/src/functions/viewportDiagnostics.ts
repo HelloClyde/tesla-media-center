@@ -2,7 +2,7 @@ import { ref } from 'vue';
 export const layoutRecording = ref((() => { try { return localStorage.getItem('tmc:layout-recording') === '1'; } catch { return false; } })());
 export interface LayoutSample {
   time: string; reason: string; viewport: string; visual: string; scroll: string;
-  player: string; footer: string; shell: string; page: string; change: string;
+  player: string; footer: string; shell: string; page: string; change: string; media: string;
 }
 export const layoutSamples = ref<LayoutSample[]>([]);
 let stop: (() => void) | undefined;
@@ -11,6 +11,7 @@ const round = (n: number) => Math.round(n * 10) / 10;
 export function captureLayout(reason = '布局变化', force = false) {
   if (!layoutRecording.value) return;
   const vv = window.visualViewport;
+  const audio = document.querySelector<HTMLAudioElement>('[data-qqmusic-player]');
   const panel = document.querySelector('.listening')?.getBoundingClientRect();
   const footer = document.querySelector('.listening > footer')?.getBoundingClientRect();
   const shell = document.querySelector('.app-shell')?.getBoundingClientRect();
@@ -29,7 +30,7 @@ export function captureLayout(reason = '布局变化', force = false) {
     if (values.slice(11).some((v, i) => v !== last![i + 11])) changes.push('应用外框/当前页面变化');
   }
   last = values;
-  layoutSamples.value = [{ time: new Date().toLocaleTimeString(), reason,
+  layoutSamples.value = [{ time: new Date().toLocaleTimeString() + '.' + String(Date.now() % 1000).padStart(3, '0'), reason,
     viewport: `${values[0]} × ${values[1]}`,
     visual: vv ? `${values[2]} × ${values[3]} / top ${values[4]}` : '不支持',
     scroll: `${values[5]} / ${values[6]}`,
@@ -37,12 +38,18 @@ export function captureLayout(reason = '布局变化', force = false) {
     footer: footer ? `top ${values[9]} / h ${values[10]}` : '未打开',
     shell: shell ? `top ${values[11]} / h ${values[12]}` : '未打开',
     page: page ? `top ${values[13]} / h ${values[14]}` : '未打开',
+    media: audio ? `paused=${audio.paused} / ended=${audio.ended} / ready=${audio.readyState} / network=${audio.networkState} / src=${audio.getAttribute('src') ? '有' : '无'}` : '无主音频节点',
     change: changes.join('；') || '尺寸未变',
   }, ...layoutSamples.value].slice(0, 80);
 }
 export function clearLayoutSamples() { layoutSamples.value = []; last = undefined; captureLayout('开始记录', true); }
 export function startLayoutDiagnostics() {
   stop?.();
+  const events = ['pause', 'play', 'playing', 'ended', 'emptied', 'abort', 'loadstart', 'loadedmetadata', 'waiting', 'stalled', 'error'];
+  const media = (event: Event) => {
+    if (event.target instanceof HTMLAudioElement && event.target.matches('[data-qqmusic-player]')) captureLayout('audio：' + event.type, true);
+  };
+  events.forEach(event => document.addEventListener(event, media, true));
   const resize = () => captureLayout('resize');
   const scroll = () => captureLayout('scroll');
   window.addEventListener('resize', resize);
@@ -51,6 +58,7 @@ export function startLayoutDiagnostics() {
   window.visualViewport?.addEventListener('scroll', scroll);
   const timer = setInterval(() => { if (!document.hidden) captureLayout(); }, 150);
   stop = () => {
+    events.forEach(event => document.removeEventListener(event, media, true));
     clearInterval(timer); window.removeEventListener('resize', resize); window.removeEventListener('scroll', scroll, true);
     window.visualViewport?.removeEventListener('resize', resize); window.visualViewport?.removeEventListener('scroll', scroll);
   };
