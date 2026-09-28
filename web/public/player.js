@@ -700,7 +700,7 @@ Player.prototype.onGetFileInfo = function (info) {
         };
         this.decodeWorker.postMessage(req);
     } else {
-        this.reportPlayError(-1, info.st);
+        this.reportPlayError(-1, info.st, info.message || '读取视频信息失败（HTTP ' + info.st + '）');
     }
 };
 
@@ -856,7 +856,7 @@ Player.prototype.onInitDecoder = function (objData) {
             this.downloadOneChunk();
         }
     } else {
-        this.reportPlayError(objData.e);
+        this.reportPlayError(objData.e, 0, 'WASM 解码器初始化失败（错误码 ' + objData.e + '）');
     }
 };
 
@@ -887,7 +887,7 @@ Player.prototype.onOpenDecoder = function (objData) {
             this.logger.logInfo("Open decoder failed in stream mode, retry with waitHeaderLength " + this.waitHeaderLength + ".");
             return;
         }
-        this.reportPlayError(objData.e);
+        this.reportPlayError(objData.e, 0, 'WASM 打开视频失败（错误码 ' + objData.e + '）');
     }
 };
 

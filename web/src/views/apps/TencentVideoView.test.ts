@@ -52,6 +52,17 @@ it('does not start a late source response after unmount', async () => {
   resolve({ ok: true, json: async () => ({ status: 'ok', data: {} }) });
   await flushPromises(); expect(signal.aborted).toBe(true);
 });
+it('shows the failing video and retries with only the byte relay', async () => {
+  await submit();
+  const failedPlayer = player;
+  failedPlayer.play.mock.calls[0][2]({ error: -1, status: 502, message: '读取视频信息失败，服务端转接：HTTP 502' });
+  await flushPromises();
+  expect(view!.get('[role="alert"]').text()).toContain('HTTP 502');
+  expect(view!.get('[role="alert"]').text()).toContain('q326831cny0');
+  expect(failedPlayer.destroy).toHaveBeenCalledOnce();
+  await view!.findAll('button').find(b => b.text() === '仅用转接重试')!.trigger('click'); await flushPromises();
+  expect(player.play.mock.calls[0][6]).toEqual(['/api/tencent-video/media/token']);
+});
 it('shows source restrictions without creating a player', async () => {
   fetchMock.mockImplementation(async (url: string) => url.includes('/home?') ? response({ items: [] }) : { ok: false, json: async () => ({ message: '加密视频暂不支持' }) });
   await submit(); expect(view!.get('[role="alert"]').text()).toContain('加密视频暂不支持');

@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch, Mock
 from flask import Flask
 with patch('os.mkfifo', create=True):
-    from ffvideo.tencent_video import video_id, parse_source, add_routes
+    from ffvideo.tencent_video import video_id, parse_source, add_routes, allowed_media
 
 
 def data():
@@ -14,6 +14,42 @@ def data():
 
 
 class TencentTest(unittest.TestCase):
+    def test_http_dispatch_is_relay_only(self):
+        import json
+        value = data()
+        value['vl']['vi'][0]['ul']['ui'] = [
+            {'url': 'http://1.62.64.164/'},
+            {'url': 'http://video.dispatch.tc.qq.com/'},
+        ]
+        source = 'http://video.dispatch.tc.qq.com/test.mp4?vkey=key'
+        self.assertEqual(parse_source(value, 'q326831cny0')['urls'], [source])
+        app = Flask(__name__); app.secret_key = 'test'; add_routes(app)
+        client = app.test_client()
+        with client.session_transaction() as session: session['last_visit'] = 1
+        metadata = Mock(content=('QZOutputJson=' + json.dumps(value) + ';').encode())
+        manager = Mock(); manager.__enter__ = Mock(return_value=metadata); manager.__exit__ = Mock(return_value=False)
+        with patch('ffvideo.tencent_video.requests.get', return_value=manager):
+            result = client.post('/api/tencent-video/source', json={'url': 'q326831cny0'}).json['data']
+        self.assertEqual(result['urls'], [])
+        remote = Mock(status_code=206, headers={'Content-Length': '1', 'Content-Range': 'bytes 0-0/100'})
+        remote.iter_content.return_value = [b'a']
+        with patch('ffvideo.tencent_video.requests.get', return_value=remote) as get:
+            response = client.get(result['url'], headers={'Range': 'bytes=0-0'})
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.data, b'a')
+            self.assertEqual(get.call_args.args[0], source)
+            self.assertFalse(get.call_args.kwargs['allow_redirects'])
+            self.assertNotIn('verify', get.call_args.kwargs)
+            response.close()
+
+    def test_http_allowlist(self):
+        for url in ('http://127.0.0.1/', 'http://omex.tc.qq.com/',
+                    'http://video.dispatch.tc.qq.com.evil.test/',
+                    'http://video.dispatch.tc.qq.com:8080/',
+                    'http://user@video.dispatch.tc.qq.com/',
+                    'http://video.dispatch.tc.qq.com:invalid/'):
+            self.assertFalse(allowed_media(url), url)
+
     def test_link_formats_and_untrusted_hosts(self):
         for value in ('q326831cny0', 'https://v.qq.com/x/page/q326831cny0.html',
                       'https://v.qq.com/x/cover/series/q326831cny0.html',

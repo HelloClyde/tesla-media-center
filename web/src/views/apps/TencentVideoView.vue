@@ -85,7 +85,7 @@ function choose(item: CatalogItem) {
   if (item.vid) { void open(item.vid); }
 }
 
-async function open(value = input.value) {
+async function open(value = input.value, relayOnly = false) {
   if (disposed || !value.trim()) return;
   stop(); error.value = ''; busy.value = true;
   const request = generation;
@@ -103,6 +103,7 @@ async function open(value = input.value) {
     if (!response.ok || result.status !== 'ok') throw new Error(result.status === 'need_login'
       ? '登录已过期，请重新登录媒体中心' : result.message || '获取视频失败');
     current.value = result.data;
+    input.value = current.value!.pageUrl;
     await nextTick();
     if (!active()) return;
     canvas.value?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
@@ -113,12 +114,12 @@ async function open(value = input.value) {
     player.setTimeCallback((time: number) => { if (time > 0) clearTimeout(watchdog); });
     watchdog = setTimeout(() => {
       if (active()) { error.value = '视频加载超时，请重试或换一个公开视频'; stop(); }
-    }, 30000);
+    }, Math.max(60000, (current.value!.urls?.length || 0) * 8000 + 45000));
     const status = player.play(current.value!.url, canvas.value, (event: any) => {
       if (!active() || !event.error || event.error === 1) return;
-      error.value = event.message || '播放失败：源地址可能过期或编码不受支持，请重试';
+      error.value = `${event.message || `播放失败（错误码 ${event.error}，HTTP ${event.status || 0}）`} · VID: ${current.value!.vid}`;
       stop();
-    }, 512 * 1024, false, undefined, [...(current.value!.urls || []), current.value!.url]);
+    }, 512 * 1024, false, undefined, [...(relayOnly ? [] : current.value!.urls || []), current.value!.url]);
     if (status?.e) throw new Error(status.m || '播放器启动失败');
     playing.value = true;
     const { vid, title, pageUrl } = current.value!;
@@ -153,7 +154,7 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
       <div class="link-row"><input id="tencent-link" v-model="input" placeholder="https://v.qq.com/x/page/…" autocomplete="off" /><button :disabled="busy || !input.trim()" type="submit">{{ busy ? '正在打开…' : '打开视频' }}</button></div>
     </form></details>
     <div v-if="busy" class="source-progress" role="status">正在打开视频…<button @click="stop">取消</button></div>
-    <div v-if="error" class="play-error" role="alert"><span>{{ error }}</span><button v-if="current" @click="open(current.pageUrl)">重试</button></div>
+    <div v-if="error" class="play-error" role="alert"><span>{{ error }}</span><div v-if="current" class="retry-actions"><button @click="open(current.pageUrl)">重试</button><button @click="open(current.pageUrl, true)">仅用转接重试</button></div></div>
     <section v-if="current" class="video-panel">
       <div class="video-heading"><h2>{{ current.title }}</h2><button @click="close">关闭播放器</button></div>
       <div class="picture"><canvas ref="canvas" aria-label="腾讯视频播放画面" width="1100" height="623"></canvas><div ref="loading" class="loading" style="display: none">正在缓冲…</div></div>
@@ -199,6 +200,7 @@ button{border:1px solid var(--color-border);border-radius:10px;background:var(--
 
 <style scoped>
 .tencent-view{padding:22px 28px 32px}
+.retry-actions{display:flex;gap:8px;flex-wrap:wrap;flex-shrink:0}.play-error{flex-wrap:wrap}.play-error>span{overflow-wrap:anywhere;flex:1;min-width:180px}
 .topbar{justify-content:space-between;gap:32px;margin-bottom:8px}
 .brand{display:flex;align-items:center;gap:12px;flex-shrink:0}.brand-icon{width:48px;height:48px;border-radius:12px}.brand h1{font-size:23px;letter-spacing:.5px;margin-bottom:3px}.brand p{font-size:12px}
 .search-form{width:min(560px,56%)}.search-form .link-row{gap:6px;padding:5px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:30px}.search-form input{border:0;background:transparent;padding:8px 14px;min-height:44px}.search-form button{border-radius:24px;padding:10px 24px;background:#087d51;min-width:84px}.search-form button:disabled{opacity:.65}

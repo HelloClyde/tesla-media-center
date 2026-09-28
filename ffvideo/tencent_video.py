@@ -30,8 +30,17 @@ def video_id(value):
 
 def allowed_media(url):
     parsed = urlsplit(url)
-    return (parsed.scheme == 'https' and parsed.port in (None, 443) and not parsed.username
-            and (parsed.hostname or '').endswith('.tc.qq.com'))
+    try:
+        if parsed.username is not None or parsed.password is not None:
+            return False
+        # The official dispatch endpoint also supplies HTTP-only MP4 sources.
+        # Preserve these for server forwarding; upgrading breaks its certificate.
+        if parsed.scheme == 'http':
+            return parsed.hostname == 'video.dispatch.tc.qq.com' and parsed.port in (None, 80)
+        return (parsed.scheme == 'https' and parsed.port in (None, 443)
+                and (parsed.hostname or '').endswith('.tc.qq.com'))
+    except ValueError:
+        return False
 
 
 def parse_source(data, vid):
@@ -45,7 +54,7 @@ def parse_source(data, vid):
         raise ValueError('当前源不是可支持的完整 MP4，请尝试其他公开视频')
     urls = []
     for entry in item.get('ul', {}).get('ui', []):
-        base = entry.get('url', '').replace('http://', 'https://', 1)
+        base = entry.get('url', '')
         if entry.get('hls'):
             continue
         url = base + item['fn'] + '?' + urlencode({'vkey': item['fvkey']})
@@ -115,6 +124,8 @@ def add_routes(app):
                 raise ValueError('腾讯视频播放接口返回格式已变化')
             result = parse_source(json.loads(match.group(1)), vid)
             result['url'] = '/api/tencent-video/media/' + signer().dumps(result['urls'])
+            # HTTPS pages cannot fetch HTTP sources directly (mixed content).
+            result['urls'] = [url for url in result['urls'] if urlsplit(url).scheme == 'https']
             response = json_ok(result)
             response.headers['Cache-Control'] = 'private, no-store'
             return response

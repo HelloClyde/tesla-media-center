@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
 import { useRouter } from 'vue-router';
 import { ArrowRight, Lock, View, Hide } from '@element-plus/icons-vue';
@@ -9,6 +9,14 @@ const password = ref('');
 const visible = ref(false);
 const busy = ref(false);
 const error = ref('');
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
+onMounted(async () => {
+  try {
+    const response = await axios.get('/api/config', { timeout: 10000 });
+    if (!disposed && !busy.value && response.data.status === 'ok') await router.replace('/apps/home');
+  } catch { /* The login form remains usable if the session check fails. */ }
+});
 async function onSubmit() {
   if (busy.value) return;
   if (!password.value) { error.value = '请输入访问密码'; return; }
@@ -16,10 +24,17 @@ async function onSubmit() {
   error.value = '';
   try {
     const response = await axios.post('/api/login', { password: password.value }, { timeout: 15000 });
-    if (response.data.status !== 'ok') { error.value = '密码不正确，请重新输入'; return; }
+    if (disposed) return;
+    if (response.data.status !== 'ok') { error.value = '服务器未接受登录，请确认当前站点的访问密码'; return; }
     await router.replace('/apps/home');
-  } catch { error.value = '暂时无法连接服务，请稍后重试'; }
-  finally { busy.value = false; }
+  } catch (cause) {
+    if (disposed) return;
+    const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;
+    error.value = status === 401
+      ? '服务器未接受登录（401），请确认当前站点的访问密码'
+      : status ? `登录服务返回 HTTP ${status}，请稍后重试` : '暂时无法连接服务，请稍后重试';
+  }
+  finally { if (!disposed) busy.value = false; }
 }
 </script>
 

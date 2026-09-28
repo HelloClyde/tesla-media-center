@@ -12,12 +12,13 @@ Downloader.prototype.appendBuffer = function (buffer1, buffer2) {
     return tmp.buffer;
 };
 
-Downloader.prototype.reportFileSize = function (sz, st) {
+Downloader.prototype.reportFileSize = function (sz, st, message) {
     var objData = {
         t: kGetFileInfoRsp,
         i: {
             sz: sz,
-            st: st
+            st: st,
+            message: message
         }
     };
 
@@ -44,7 +45,9 @@ Downloader.prototype.readRange = async function (start, end) {
     var lastError;
     for (var index = this.sourceIndex; index < this.sources.length; index++) {
         var controller = new AbortController();
-        var timer = setTimeout(() => controller.abort(), 8000);
+        // A relay may first connect to the CDN, then stream through the server.
+        // Its timeout must exceed the upstream connect/read budget (5s + 20s).
+        var timer = setTimeout(() => controller.abort(), this.sources[index].startsWith('/') ? 35000 : 8000);
         try {
             var response = await fetch(this.sources[index], {
                 headers: { Range: 'bytes=' + start + '-' + end },
@@ -54,9 +57,10 @@ Downloader.prototype.readRange = async function (start, end) {
             var range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
             var total = range && Number(range[3]);
             var actualEnd = Math.min(end, total - 1);
-            if (response.status !== 206 || !range || !Number.isSafeInteger(total) || total <= start ||
+            if (response.status !== 206) throw new Error('HTTP ' + response.status);
+            if (!range || !Number.isSafeInteger(total) || total <= start ||
                 Number(range[1]) !== start || Number(range[2]) !== actualEnd ||
-                (this.sourceSize && this.sourceSize !== total)) throw new Error('Invalid byte range');
+                (this.sourceSize && this.sourceSize !== total)) throw new Error('分段响应头无效或不可读取');
             var expected = actualEnd - start + 1;
             var data = new Uint8Array(expected);
             var reader = response.body.getReader();
@@ -73,7 +77,9 @@ Downloader.prototype.readRange = async function (start, end) {
             this.sourceSize = total;
             return { data: data.buffer, end: actualEnd, total: total };
         } catch (error) {
-            lastError = error;
+            var route = this.sources[index].startsWith('/') ? '服务端转接' : 'CDN 直连';
+            var reason = controller.signal.aborted ? '请求超时' : error instanceof TypeError ? '网络或跨域请求失败' : error.message;
+            lastError = new Error(route + '：' + reason);
         } finally {
             clearTimeout(timer);
             controller.abort();
@@ -85,7 +91,7 @@ Downloader.prototype.readRange = async function (start, end) {
 Downloader.prototype.getFileInfoByHttp = function (url) {
     if (this.sources) {
         this.readRange(0, 0).then(result => this.reportFileSize(result.total, 200),
-            () => this.reportFileSize(0, 502));
+            error => this.reportFileSize(0, 502, '读取视频信息失败，' + error.message));
         return;
     }
     this.logger.logInfo("Getting file size " + url + ".");
@@ -116,14 +122,14 @@ Downloader.prototype.getFileInfoByHttp = function (url) {
     xhr.send();
 };
 
-Downloader.prototype.reportDownloadError = function (seq) {
-    self.postMessage({ t: kFileData, q: seq, error: '视频直连及转接均失败，请重试' });
+Downloader.prototype.reportDownloadError = function (seq, error) {
+    self.postMessage({ t: kFileData, q: seq, error: '视频分段下载失败，' + error.message });
 };
 
 Downloader.prototype.downloadFileByHttp = function (url, start, end, seq) {
     if (this.sources) {
         this.readRange(start, end).then(result => this.reportData(start, result.end, seq, result.data),
-            () => this.reportDownloadError(seq));
+            error => this.reportDownloadError(seq, error));
         return;
     }
     //this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");

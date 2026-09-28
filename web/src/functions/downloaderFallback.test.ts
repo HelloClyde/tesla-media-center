@@ -7,7 +7,7 @@ function setup() {
   const fetch = vi.fn();
   const self = { importScripts() {}, postMessage: vi.fn() };
   const context = vm.createContext({ self, fetch, AbortController, setTimeout, clearTimeout,
-    Logger: class {}, kFileData: 2 });
+    Logger: class {}, kFileData: 2, kGetFileInfoRsp: 3 });
   vm.runInContext(readFileSync(new URL('../../public/downloader.js', import.meta.url), 'utf8'), context);
   const downloader = (self as any).downloader;
   Object.assign(downloader, { sources: ['https://cdn.test/video', '/api/relay'], sourceIndex: 0 });
@@ -47,6 +47,13 @@ it('reports final range failure with its sequence instead of hanging', async () 
   d.downloadFileByHttp('unused', 0, 3, 7);
   await vi.waitFor(() => expect(self.postMessage).toHaveBeenCalledWith({ t: 2, q: 7, error: expect.any(String) }));
 });
+it('preserves HTTP status and the failed relay stage when file probing fails', async () => {
+  const { downloader: d, fetch, self } = setup();
+  fetch.mockImplementation(async () => new Response('', { status: 403 }));
+  d.getFileInfoByHttp('unused');
+  await vi.waitFor(() => expect(self.postMessage).toHaveBeenCalledWith({ t: 3,
+    i: { sz: 0, st: 502, message: '读取视频信息失败，服务端转接：HTTP 403' } }));
+});
 it('aborts a stalled CDN request before retrying the relay', async () => {
   vi.useFakeTimers();
   try {
@@ -59,5 +66,21 @@ it('aborts a stalled CDN request before retrying the relay', async () => {
     expect((await pending).total).toBe(100);
     expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
     expect(fetch.mock.calls[1][0]).toBe('/api/relay');
+  } finally { vi.useRealTimers(); }
+});
+it('allows a slow relay to finish after the shorter direct-CDN timeout', async () => {
+  vi.useFakeTimers();
+  try {
+    const { downloader: d, fetch } = setup();
+    d.sources = ['/api/relay'];
+    fetch.mockImplementation((_url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new Error('timeout')));
+      setTimeout(() => resolve(range(0, 3)), 12000);
+    }));
+    const pending = d.readRange(0, 3);
+    await vi.advanceTimersByTimeAsync(9000);
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await pending).data.byteLength).toBe(4);
   } finally { vi.useRealTimers(); }
 });
