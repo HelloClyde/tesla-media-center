@@ -59,13 +59,14 @@ function followLocation() {
     heading.value = bearingBetween(pointAt(current.value, progress.value), ahead);
   }
   applyOrientation();
-  if (map) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
+  if (map && (location.value || hasOrigin.value)) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
-const origin = ref<Point>([116.3975, 39.9087]), destination = ref<Point>([116.41, 39.916]);
-const originName = ref('北京示例起点'), destinationName = ref('北京示例终点');
+const origin = ref<Point>([0, 0]), destination = ref<Point>([0, 0]);
+const hasOrigin = ref(false), hasDestination = ref(false);
+const originName = ref('等待车辆定位'), destinationName = ref('请选择目的地');
 const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following = ref(true), muted = ref(false);
 const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
 const current = computed(() => routes.value[selected.value]);
@@ -85,10 +86,11 @@ function speak(text: string) {
 }
 function endpoints() {
   if (!map) return;
+  if ((hasOrigin.value || hasDestination.value) && !appMap) appMap = attachAppMap(map, message => { mapStatus.value = message; });
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
-  startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
-  endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
+  if (hasOrigin.value) startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
+  if (hasDestination.value) endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
 }
 function draw(fit = true) {
   if (!map) return;
@@ -110,8 +112,8 @@ function clearRoute() { overviewActive.value = false; overviewGeneration++; stop
 function setPoint(point: Point, name: string) {
   cancelSearch();
   clearRoute();
-  if (picking.value === 'origin') { origin.value = point; originName.value = name; picking.value = 'destination'; }
-  else { destination.value = point; destinationName.value = name; }
+  if (picking.value === 'origin') { hasOrigin.value = true; origin.value = point; originName.value = name; picking.value = 'destination'; }
+  else { hasDestination.value = true; destination.value = point; destinationName.value = name; }
   tips.value = []; query.value = ''; endpoints();
 }
 let searchGeneration = 0, searchController: AbortController | undefined;
@@ -151,7 +153,7 @@ async function search() {
 }
 
 async function plan(replan = false) {
-  if (busy.value) return;
+  if (busy.value || !hasOrigin.value || !hasDestination.value) return;
   if (!replan) stop();
   const id = ++generation;
   controller?.abort(); controller = new AbortController();
@@ -225,7 +227,9 @@ function startDemo() {
 function locate(navigate = false) {
   if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
   if (!window.isSecureContext) { error.value = '当前位置页面不是安全连接，请通过 HTTPS 访问后再定位'; status.value = '定位需要安全连接'; return; }
-  stop(); const id = locationGeneration; error.value = ''; status.value = '正在获取当前位置…';
+  if (!navigate) clearRoute(); else stop();
+  following.value = true;
+  const id = locationGeneration; error.value = ''; status.value = '正在获取当前位置…';
   let received = false;
   // Permission inspection is advisory; do not delay the user-initiated position request.
   void navigator.permissions?.query({ name: 'geolocation' }).then(permission => {
@@ -236,22 +240,24 @@ function locate(navigate = false) {
   }).catch(() => { /* Some car browsers do not support permission inspection. */ });
   locationTimeout = setTimeout(() => {
     if (disposed || id !== locationGeneration || received) return;
-    stop(); status.value = '尚未取得当前位置';
-    error.value = '浏览器长时间未返回位置；已授权也可能暂时没有定位信号，请稍后重试或在地图上选择起点';
+    status.value = '等待车机返回位置，将继续获取';
+    error.value = '定位尚未返回，仍在等待；可打开设备诊断核对，或在地图上选择起点';
   }, 25000);
   if (navigate) { overviewActive.value = false; overviewGeneration++; mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined; heading.value = undefined; applyOrientation(); map.setZoom(17); }
   const receive = (position: GeoLocation) => {
     if (disposed || id !== locationGeneration) return;
     if (position.source !== 'gps') return;
-    if (!Number.isFinite(position.timestamp) || position.timestamp <= 0 || Date.now() - position.timestamp > 15000 || position.timestamp > Date.now() + 5000) { status.value = '收到的位置已过期，等待更新的位置'; return; }
+    const fresh = Number.isFinite(position.timestamp) && position.timestamp > 0 && Date.now() - position.timestamp <= 15000 && position.timestamp <= Date.now() + 5000;
+    if (navigate && !fresh) { status.value = '位置时间戳异常或已过期，等待实时位置后导航'; return; }
+    const first = !received;
     received = true; error.value = "";
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
     const point = wgs84togcj02(position.longitude, position.latitude) as Point;
     lastFix = Date.now();
-    if (!navigate) { clearRoute(); origin.value = point; originName.value = '当前位置'; endpoints(); map.panTo(latLng(point)); status.value = '已定位，请选择目的地'; }
+    if (!navigate) { hasOrigin.value = true; origin.value = point; originName.value = fresh ? '当前位置' : '最近返回的位置（非实时）'; endpoints(); if (first) map.setView(latLng(point), 16); status.value = fresh ? '已定位，请选择目的地' : '已显示最近位置，位置时间戳异常或已过期，等待实时更新'; }
     updatePosition(point, position.accuracy, position.heading, position.speed);
-    if (!navigate) geoLocation.removeListener('amap-navigation');
+
   };
   const failed = (failure: GeolocationPositionError) => {
     if (disposed || id !== locationGeneration) return;
@@ -275,9 +281,9 @@ function locate(navigate = false) {
 }
 onMounted(() => {
   if (!mapElement.value) return;
-  map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView(latLng(origin.value), 16);
+  map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
   map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
-  appMap = attachAppMap(map, message => { mapStatus.value = message; });
+
   map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
   map.on('dragstart', () => { following.value = false; overviewActive.value = false; overviewGeneration++; });
   resizeObserver = new ResizeObserver(() => {
@@ -286,7 +292,7 @@ onMounted(() => {
   });
   resizeObserver.observe(mapElement.value);
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
-  mapReady.value = true; endpoints();
+  mapReady.value = true; endpoints(); locate(false);
 });
 onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
@@ -329,7 +335,7 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
       <p v-if="mapStatus" class="map-notice">{{ mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="appMap?.retry()">重试</button></p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <template v-if="mode === 'idle'">
-        <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
+        <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
         <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong>{{ formatDistance(route.distance) }}</strong><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
