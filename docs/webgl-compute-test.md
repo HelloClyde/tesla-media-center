@@ -13,3 +13,40 @@
 接口依据：[WebGL 2 规范](https://registry.khronos.org/webgl/specs/latest/2.0/)、[浮点渲染扩展](https://registry.khronos.org/webgl/extensions/EXT_color_buffer_float/)。
 
 本机 Edge / RTX 4090 已验证计算正确性、32 MiB 分配、手动停止和切换 Tab 清理；不能替代车机实测。
+
+## 2026-09-28 特斯拉车机实测
+
+来源：用户提供的两张 Debug 页面实车照片，人工转录；不是本机桌面浏览器成绩。车辆具体硬件型号、浏览器版本及测试时后台负载未记录，不据渲染器名称推断完整硬件规格。
+
+| 能力 | 照片显示值 |
+| --- | --- |
+| GPU / 渲染器 | `ANGLE (AMD, AMD Radeon Vega 1 Graphics (radeonsi raven ACO), OpenGL 4.6)` |
+| WebGL 版本 | `WebGL 2.0 (OpenGL ES 3.0 Chromium)` |
+| 浮点渲染 | 支持 |
+| highp 精度 | 23 位 |
+| 最大纹理边长 | 16384 |
+| 纹理单元 | 32 |
+| GPU 独立计时 | 支持，测试中返回有效读数 |
+| WebGPU | 接口存在，尚未验证适配器、计算或模型推理 |
+
+FP32 矩阵乘法：选择最大 256 阶，预热后 5 次中位数；耗时为端到端耗时，GPU 吞吐使用独立计时。
+
+| 矩阵 | 耗时 | 有效 GFLOP/s | GPU GFLOP/s | 最大抽样误差 |
+| --- | ---: | ---: | ---: | ---: |
+| 64 × 64 | 4.70 ms | 0.112 | 22.756 | 0.0e+0 |
+| 128 × 128 | 4.90 ms | 0.856 | 42.418 | 0.0e+0 |
+| 256 × 256 | 9.10 ms | 3.687 | 37.732 | 0.0e+0 |
+
+纹理分配：选择上限 **32 MiB**，已校验 **32 MiB，完成**。只证明此次分配及抽样读写成功，不代表显存总量、最大可分配内存或模型内存预算。未提供 512 阶矩阵或更大分配上限的实测。
+
+### TTS 可行性判断与待验证项
+
+- 已具备基础浮点计算能力，可以开展端侧中文 TTS 验证；尚不能确认实时合成或实际音质。
+- 数十 GFLOP/s 是这个矩阵内核的实测吞吐，不是 GPU 理论峰值，也不能直接换算 TTS 速度。
+- 可优先试 sherpa-onnx 的中文 Matcha WASM 示例。WASM 主要使用 CPU，本次 GPU 测试没有测量它的推理性能。官方模型页列出的声学模型约 72 MB、声码器约 51 MB；这些是文件大小，运行时还需要中间张量等额外内存。
+- GPU 方案先验证 WebGPU adapter/device 和真实算子执行，再决定是否接入；接口存在不等于模型可运行。
+- 用“前方二百米右转，进入长安街”测试首次加载、首声延迟、合成耗时、音频时长及 RTF（合成耗时 / 音频时长，小于 1 表示快于实时）。同时检查音乐播放和地图显示是否受影响。
+- 模型合成后通过音频播放，不依赖车机此前报 `synthesis-failed` 的系统语音合成引擎。常用导航短句可提前合成并缓存。
+- **当前仅保存测试记录；尚未接入或运行真实 TTS 模型。**
+
+参考：[中文 Matcha 模型与 WASM 示例](https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese/matcha-icefall-zh-baker.html)、[ONNX Runtime Web 后端说明](https://onnxruntime.ai/docs/tutorials/web/)。

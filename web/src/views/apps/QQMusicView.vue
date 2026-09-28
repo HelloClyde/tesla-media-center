@@ -290,6 +290,7 @@ function restoreSession() {
   } catch {}
 }
 function loadedMetadata() {
+  if (loadedSongMid !== current.value?.mid) return;
   if (audio.value && restoredPosition && Number.isFinite(audio.value.duration)) { audio.value.currentTime = Math.min(restoredPosition, audio.value.duration); restoredPosition = 0; }
   updateTime();
 }
@@ -304,6 +305,7 @@ watch([playing, loadingTrack, advancing], () => {
 });
 let sources: string[] = [];
 let sourceIndex = 0;
+let loadedSongMid = '';
 const nextTrackPreload = new NextTrackPreload();
 let releasePlaybackPreload: (() => void) | undefined;
 let reservedNext: { from: string; song: Song; key: string } | undefined;
@@ -322,7 +324,7 @@ function preloadNext() {
   const key = preloadKey(song);
   const selectedQuality = quality.value;
   reservedNext = { from: current.value.mid, song, key };
-  nextTrackPreload.prepare(key, () => api(`play?mid=${encodeURIComponent(song.mid)}&quality=${selectedQuality}`, undefined, true), eqEnabled.value);
+  nextTrackPreload.prepare(key, () => api(`play?mid=${encodeURIComponent(song.mid)}&quality=${selectedQuality}`, undefined, true));
 }
 
 async function api(path: string, data?: object, background = false) {
@@ -496,9 +498,9 @@ async function play(song: Song, fromList = false) {
   sources = [];
   sourceIndex = 0;
   if (fromList) { stopRadio(); queue.value = [...visibleSongs.value]; }
+  // Retain the old resource until its replacement is ready. An empty media
+  // resource can make car browser chrome disappear and resize the viewport.
   audio.value?.pause();
-  audio.value?.removeAttribute('src');
-  audio.value?.load();
   current.value = song;
   elapsed.value = 0;
   duration.value = 0;
@@ -510,7 +512,10 @@ async function play(song: Song, fromList = false) {
     const result = cached || await api(`play?mid=${encodeURIComponent(song.mid)}&quality=${quality.value}`);
     if (disposed || generation !== playGeneration || !audio.value) return;
     if (result.quality && result.quality !== quality.value) ElMessage.info(`此歌曲已自动降级为${qualityOptions.find(option => option.value === result.quality)?.label || result.quality}`);
-    sources = result.urls || [result.url];
+    sources = (result.urls?.length ? result.urls : [result.url]).filter((url: unknown): url is string => typeof url === 'string' && !!url);
+    if (!sources.length) throw new Error('此歌曲暂无可播放音源');
+    loadedSongMid = song.mid;
+    captureLayout('音源直接替换（保留 audio 节点）', true);
     audio.value.src = sources[0];
     if (eqContext?.state === 'suspended') await eqContext.resume();
     await audio.value.play();
@@ -524,6 +529,7 @@ async function play(song: Song, fromList = false) {
   }
 }
 function mediaError() {
+  if (loadedSongMid !== current.value?.mid || !audio.value?.error) return;
   if (eqEnabled.value && !eqBusy.value) { ElMessage.info('此音源不支持浏览器音效处理，已切回原声'); void setEq(false, true); return; }
   if (disposed || !audio.value?.getAttribute('src')) return;
   if (sourceIndex + 1 < sources.length) {
@@ -564,11 +570,12 @@ async function step(delta: number, ended = false) {
 async function toggle() {
   if (!current.value || loadingTrack.value) return;
   if (playing.value) audio.value?.pause();
-  else if (!audio.value?.getAttribute('src') || audio.value.error) await play(current.value);
+  else if (loadedSongMid !== current.value.mid || !audio.value?.getAttribute('src') || audio.value.error) await play(current.value);
   else try { if (eqContext?.state === 'suspended') await eqContext.resume(); await audio.value.play(); } catch { error.value = '播放被浏览器暂停，请再次点击播放'; }
 }
 function time(value: number) { return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`; }
 function updateTime() {
+  if (loadedSongMid !== current.value?.mid) return;
   elapsed.value = audio.value?.currentTime || 0;
   const value = audio.value?.duration || 0;
   duration.value = Number.isFinite(value) ? value : 0;
