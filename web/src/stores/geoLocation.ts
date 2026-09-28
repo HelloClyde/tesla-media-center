@@ -21,13 +21,13 @@ export const useGeoLocationStore=defineStore('geoLocation',()=>{
     if(mode==='mock') { const pos=mockPosList[mockPosList.length-1];if(pos)publish({...pos,source:'mock'});return; }
     if(requesting||!navigator.geolocation)return;
     requesting=true;const id=++generation;
-    const watchdog=setTimeout(()=>{if(id===generation){requesting=false;}},30000);
+    const watchdog=setTimeout(()=>{if(id===generation){requesting=false;}},12000);
     const finish=()=>{clearTimeout(watchdog);if(id===generation)requesting=false;};
     try { navigator.geolocation.getCurrentPosition(pos=>{
       if(id<accepted)return;accepted=id;finish();
       const c=pos.coords;
       publish({accuracy:c.accuracy,altitude:c.altitude,altitudeAccuracy:c.altitudeAccuracy,heading:c.heading,latitude:c.latitude,longitude:c.longitude,speed:c.speed,timestamp:pos.timestamp,source:'gps'});
-    },error=>{if(id!==generation)return;finish();errors.forEach(callback=>callback(error));}); }catch {finish();}
+    },error=>{if(id!==generation)return;finish();errors.forEach(callback=>callback(error));}, { maximumAge: 0, timeout: 10000 }); }catch {finish();}
   }
   function init(){if(initialized)return;initialized=true;refresh();setInterval(refresh,1000);}
   return {positionList,init,refresh,getCurPosition:()=>positionList.value[0],

@@ -96,8 +96,8 @@ let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined,
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
-let simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnType<typeof setInterval> | undefined;
-let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, lastFix = 0, offCount = 0, lastReplan = 0, spoken = '';
+let simulation: ReturnType<typeof setInterval> | undefined;
+let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '';
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string) {
   if (muted.value) return;
@@ -273,8 +273,7 @@ function stop() {
   locationTimeout = undefined;
   geoLocation.removeListener('amap-navigation');
   if (simulation) clearInterval(simulation);
-  if (staleTimer) clearInterval(staleTimer);
-  simulation = undefined; staleTimer = undefined; mode.value = 'idle';
+  simulation = undefined; mode.value = 'idle';
   stopLocalSpeech();
 }
 function startDemo() {
@@ -310,20 +309,15 @@ function locate(navigate = false) {
   const receive = (position: GeoLocation) => {
     if (disposed || id !== locationGeneration) return;
     if (position.source !== 'gps') return;
-    const fresh = Number.isFinite(position.timestamp) && position.timestamp > 0 && Date.now() - position.timestamp <= 15000 && position.timestamp <= Date.now() + 5000;
-    const accepted = navigate ? liveGate.accept(position, Date.now()) : undefined;
-    if (accepted && !accepted.accepted) {
-      if (accepted.reason === 'invalid') status.value = '位置时间戳异常或已过期，等待实时位置后导航';
-      return;
-    }
+    const accepted = liveGate.accept(position);
+    if (!accepted.accepted) return;
     const first = !received;
     received = true; error.value = "";
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
     const point = browserNavigationPoint(position.longitude, position.latitude);
-    lastFix = position.timestamp;
     liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
-    if (!navigate) { hasOrigin.value = true; origin.value = point; originName.value = fresh ? '当前位置' : '最近返回的位置（非实时）'; endpoints(); if (first) map.setView(latLng(point), 16); status.value = fresh ? '已定位，请选择目的地' : '已显示最近位置，位置时间戳异常或已过期，等待实时更新'; }
+    if (!navigate) { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first) map.setView(latLng(point), 16); status.value = '已定位，请选择目的地'; }
     updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
 
   };
@@ -337,17 +331,22 @@ function locate(navigate = false) {
   };
   if (navigate) {
 
-    lastFix = Date.now();
-    staleTimer = setInterval(() => { if (Date.now() - lastFix > 15000) { liveSpeed.value = null; status.value = '车机定位中断，导航提示已暂停'; stopLocalSpeech(); } }, 3000);
-    // Subscribe to the vehicle's fused H5 stream; keep the proven one-shot polling fallback.
-    try {
-      positionWatch = navigator.geolocation.watchPosition(position => receive({
-        ...position.coords, latitude: position.coords.latitude, longitude: position.coords.longitude,
-        accuracy: position.coords.accuracy, altitude: position.coords.altitude,
-        altitudeAccuracy: position.coords.altitudeAccuracy, speed: position.coords.speed,
-        heading: position.coords.heading, timestamp: position.timestamp, source: 'gps',
-      }), failed);
-    } catch { /* A car browser may only implement getCurrentPosition. */ }
+    const startWatch = () => {
+      if (disposed || id !== locationGeneration) return;
+      if (positionWatch !== undefined) navigator.geolocation.clearWatch(positionWatch);
+      positionWatch = undefined;
+      // Keep single-position polling as a fallback when the watch stops reporting.
+      try {
+        positionWatch = navigator.geolocation.watchPosition(position => receive({
+          ...position.coords, latitude: position.coords.latitude, longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy, altitude: position.coords.altitude,
+          altitudeAccuracy: position.coords.altitudeAccuracy, speed: position.coords.speed,
+          heading: position.coords.heading, timestamp: position.timestamp, source: 'gps',
+        }), failed, { maximumAge: 0, timeout: 10000 });
+      } catch { /* One-shot polling remains active. */ }
+    };
+    startWatch();
+
   }
   geoLocation.addListener('amap-navigation', receive);
   geoLocation.addErrorListener('amap-navigation', failed);
