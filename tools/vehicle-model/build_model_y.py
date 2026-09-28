@@ -200,6 +200,8 @@ scene.render.resolution_y = 950
 scene.render.resolution_percentage = 100
 scene.render.film_transparent = True
 bpy.ops.file.pack_all()
+import runpy
+runpy.run_path(str(ROOT / 'tools/vehicle-model/add_plates.py'))['add_plates']()
 bpy.ops.wm.save_as_mainfile(filepath=str(OUT / 'model_y_2022.blend'))
 bpy.ops.object.select_all(action='DESELECT')
 root.select_set(True)

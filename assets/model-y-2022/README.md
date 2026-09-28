@@ -27,6 +27,20 @@ are approximate, not a guarantee of a particular 2022 market/trim configuration.
 - `Door_FL`, `Door_FR`, `Door_RL`, `Door_RR`: independent door hinge groups.
 - `Wheel_FL`, `Wheel_FR`, `Wheel_RL`, `Wheel_RR`: independent axle groups.
 - `Body_Static`: remaining chassis, interior and fixed trim.
+- `LicensePlate_Front_*` / `LicensePlate_Rear_*`: Blender-authored rounded mounts
+  and separate UV-mapped plate faces. Runtime text is drawn onto one shared canvas
+  texture; the faces carry `extras.partType=licensePlate`.
+
+The Tesla status view's **车辆外观** control changes the named body paint material
+and both license plates live. It supports custom colors, up to 10 plate characters,
+four plate backgrounds and restoring defaults. Preferences stay in this browser's
+local storage (`tmc.tesla.appearance.v1`); they are not sent to the vehicle or synced
+between devices. Glass, tires and trim retain their original materials.
+
+To update only the plates in an existing editable model, run Blender in background
+with `--python tools/vehicle-model/add_plates.py`, then run the optimizer below.
+The full rebuild also invokes this plate builder. Existing studio PNGs precede the
+plate addition; the `.blend` and runtime GLB contain the updated geometry.
 
 L/R are the vehicle's left/right viewed in the direction of travel.
 Blender: X across car, Z up, front points toward -Y.

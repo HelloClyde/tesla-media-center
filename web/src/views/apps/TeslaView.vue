@@ -10,6 +10,21 @@ import getAMap from '@/functions/amapConfig';
 import { createTeslaMapGround } from './teslaMapGround';
 import { vehicleMapPoint } from './teslaMapCoordinates';
 import { createVehicleRoadMesh } from './teslaRoad';
+import { APPEARANCE_KEY, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
+
+function savedAppearance() {
+  try { return normalizeAppearance(JSON.parse(localStorage.getItem(APPEARANCE_KEY) || 'null')); }
+  catch { return { ...defaultAppearance }; }
+}
+const appearance = reactive(savedAppearance());
+const appearanceOpen = ref(false);
+const appearanceSaveError = ref(false);
+let vehicleAppearance: ReturnType<typeof createVehicleAppearance> | undefined;
+watch(appearance, () => {
+  vehicleAppearance?.update(appearance);
+  try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(normalizeAppearance(appearance))); appearanceSaveError.value=false; }
+  catch { appearanceSaveError.value=true; }
+});
 
 const pageRef = ref<HTMLElement | null>(null);
 const vehicleVisualRef = ref<HTMLElement | null>(null);
@@ -1143,7 +1158,7 @@ function initVehicleViewer() {
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
-  loader.load('/models/2022_tesla_model_y.glb', (gltf: { scene: THREE.Group }) => {
+  loader.load('/models/2022_tesla_model_y.glb?v=plates-1', (gltf: { scene: THREE.Group }) => {
     const model = gltf.scene;
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
@@ -1164,6 +1179,9 @@ function initVehicleViewer() {
     });
 
     vehicleModelRoot = model;
+    vehicleAppearance?.dispose();
+    vehicleAppearance = createVehicleAppearance(model);
+    vehicleAppearance.update(appearance);
     vehicleDoorNodes = [];
     model.traverse(child => {
       if (child.userData.partType === 'door' && /^Door_(FL|FR|RL|RR)$/.test(child.name)) vehicleDoorNodes.push(child);
@@ -1422,6 +1440,7 @@ function resetVehicleView() {
 }
 
 function disposeVehicleViewer() {
+  vehicleAppearance?.dispose(); vehicleAppearance = undefined;
   vehicleMapGround?.dispose(); vehicleMapGround = undefined;
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
@@ -1712,6 +1731,20 @@ watch(currentShiftState, () => {
                 </div>
                 <div ref="vehicleVisualRef" class="vehicle-visual-stage"></div>
                 <div class="vehicle-map-controls">
+                  <el-popover v-model:visible="appearanceOpen" trigger="click" placement="top-end" :width="300">
+                    <template #reference><button aria-label="自定义车辆外观">车辆外观</button></template>
+                    <div class="vehicle-appearance-editor">
+                      <strong>车辆外观</strong>
+                      <label>车衣颜色 <input v-model="appearance.color" type="color" aria-label="车衣颜色" /></label>
+                      <div class="vehicle-paint-swatches">
+                        <button v-for="item in [['珍珠白','#eaf0f3'],['曜石黑','#202328'],['冷光银','#9ea7af'],['深海蓝','#163b70'],['烈焰红','#a51c30'],['松石绿','#467f78']]" :key="item[1]" :title="item[0]" :aria-label="item[0]" :aria-pressed="appearance.color===item[1]" :style="{background:item[1]}" @click="appearance.color=item[1]"></button>
+                      </div>
+                      <label>牌照文字 <el-input v-model="appearance.plate" aria-label="牌照文字" maxlength="10" placeholder="例如：沪AD12345" @change="appearance.plate=normalizeAppearance(appearance).plate" /></label>
+                      <label>牌照样式 <el-select v-model="appearance.plateStyle" aria-label="牌照样式"><el-option label="新能源绿牌" value="green"/><el-option label="蓝牌" value="blue"/><el-option label="黑牌" value="black"/><el-option label="白牌" value="white"/></el-select></label>
+                      <small>{{ appearanceSaveError ? '浏览器未能保存设置，刷新后可能丢失' : '实时预览，自动保存在当前浏览器' }}</small>
+                      <el-button @click="Object.assign(appearance, defaultAppearance)">恢复默认</el-button>
+                    </div>
+                  </el-popover>
                   <span class="vehicle-map-caption" role="status">{{ mixedMap ? mixedMapStatus : '示意路面' }}</span>
                   <button v-if="mixedMap && vehiclePosition && (!mixedMapReady || mixedMapStatus.includes('不完整') || mixedMapStatus.includes('缺失'))" @click="vehicleMapGround?.retry()">重试地图</button>
                   <button :aria-pressed="mixedMap" @click="mixedMap = !mixedMap">{{ mixedMap ? '切回车辆展示' : '3D 地图混合' }}</button>
@@ -2559,10 +2592,26 @@ watch(currentShiftState, () => {
   .tesla-page--visual .vehicle-overlay-card { flex-direction: row; align-items: baseline; justify-content: flex-end; gap: 8px; }
   .tesla-page--visual .vehicle-overlay-card strong { font-size: 13px; }
 }
+.vehicle-appearance-editor{display:flex;flex-direction:column;gap:14px}
+.vehicle-appearance-editor label{display:flex;align-items:center;justify-content:space-between;gap:14px;white-space:nowrap}
+.vehicle-appearance-editor input[type=color]{width:58px;height:32px;border:0;background:none;cursor:pointer}
+.vehicle-appearance-editor small{color:var(--color-text-soft);font-size:12px}
+.vehicle-paint-swatches{display:flex;gap:10px}
+.vehicle-paint-swatches button{width:30px;height:30px;border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 0 1px #cbd4da;cursor:pointer}
+.vehicle-paint-swatches button[aria-pressed=true]{box-shadow:0 0 0 2px #329cff}
+
 </style>
 
 <style scoped>
 .vehicle-map-controls{position:absolute;right:18px;bottom:16px;display:flex;align-items:flex-end;gap:8px;z-index:3;flex-wrap:wrap;justify-content:flex-end;max-width:60%}
 .vehicle-map-controls button{border:1px solid #cfdfe3;border-radius:22px;background:#ffffffeb;backdrop-filter:blur(16px);padding:9px 14px;color:#365763;font:inherit;font-size:12px;cursor:pointer}
 .vehicle-map-caption{flex-basis:100%;text-align:right;font-size:11px;color:#3f5c68;text-shadow:0 1px 3px white}
+.vehicle-appearance-editor{display:flex;flex-direction:column;gap:14px}
+.vehicle-appearance-editor label{display:flex;align-items:center;justify-content:space-between;gap:14px;white-space:nowrap}
+.vehicle-appearance-editor input[type=color]{width:58px;height:32px;border:0;background:none;cursor:pointer}
+.vehicle-appearance-editor small{color:var(--color-text-soft);font-size:12px}
+.vehicle-paint-swatches{display:flex;gap:10px}
+.vehicle-paint-swatches button{width:30px;height:30px;border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 0 1px #cbd4da;cursor:pointer}
+.vehicle-paint-swatches button[aria-pressed=true]{box-shadow:0 0 0 2px #329cff}
+
 </style>
