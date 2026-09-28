@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { navigationCoordinateMode, setNavigationCoordinateMode } from '@/functions/navigationCoordinates';
 import MapCacheSettings from '@/components/MapCacheSettings.vue';
 import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
@@ -164,6 +165,15 @@ onUnmounted(() => {
                         <el-input v-model="state.mapConfig.securityCode" type="password" show-password placeholder="安全密钥 securityJsCode（按 Key 要求填写）" aria-label="高德安全密钥" />
                         <el-button type="primary" round @click="saveMapConfig">保存 Key</el-button>
                     </div>
+                </article>
+
+                <article class="settings-card">
+                    <div class="card-head"><h2>导航定位坐标</h2></div>
+                    <el-select :model-value="navigationCoordinateMode" aria-label="导航定位坐标转换" @update:model-value="setNavigationCoordinateMode($event)">
+                        <el-option label="不转换（默认）" value="direct" />
+                        <el-option label="WGS-84 → GCJ-02" value="wgs84" />
+                    </el-select>
+                    <p class="console-hint">默认直接使用浏览器返回的经纬度。若浏览器提供 WGS-84 坐标，可选择转换为高德坐标。仅影响导航的浏览器定位，不影响搜索结果或特斯拉车辆数据。选择自动保存在当前浏览器，返回导航后重新定位生效。</p>
                 </article>
 
                 <article class="settings-card">

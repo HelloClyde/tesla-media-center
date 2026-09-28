@@ -9,22 +9,47 @@ window.addEventListener('message', function (event) {
   const request = event.data;
   const reply = (data) => parent.postMessage({ type: 'tmc-search-result', ...data }, location.origin);
   if (request.securityCode) window._AMapSecurityConfig = { securityJsCode: request.securityCode };
-  window.tmcSearchReady = function () {
-    try {
-      const service = new AMap.PlaceSearch({ city: '全国', pageSize: 20, pageIndex: 1, extensions: 'base' });
-      service.search(request.keywords, function (status, result) {
-        if (status === 'no_data') return reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: [] } });
+  window.tmcSearchReady = async function () {
+    const query = (nearby) => new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (error, pois = []) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (error) reject(error); else resolve(pois);
+      };
+      const timer = setTimeout(() => finish(new Error('高德地点搜索超时')), 8000);
+      const callback = (status, result) => {
+        if (status === 'no_data') return finish(null);
         if (status !== 'complete') {
           const info = typeof result === 'string' ? result : result?.info || 'UNKNOWN_ERROR';
-          return reply({ status: 'error', message: '高德地点搜索失败：' + info });
+          return finish(new Error('高德地点搜索失败：' + info));
         }
-        if (!Array.isArray(result?.poiList?.pois)) return reply({ status: 'error', message: '高德搜索结果格式异常' });
-        reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: result.poiList.pois.map(p => ({
-          id: p.id, name: p.name, address: [p.pname, p.cityname, p.adname, typeof p.address === 'string' ? p.address : ''].filter(Boolean).join(' '),
-          location: p.location ? [p.location.getLng(), p.location.getLat()] : null
-        })) } });
+        if (!Array.isArray(result?.poiList?.pois)) return finish(new Error('高德搜索结果格式异常'));
+        finish(null, result.poiList.pois);
+      };
+      try {
+        const service = new AMap.PlaceSearch({ city: '全国', citylimit: false, pageSize: 20, pageIndex: 1, extensions: 'base' });
+        if (nearby) service.searchNearBy(request.keywords, request.center, 30000, callback);
+        else service.search(request.keywords, callback);
+      } catch (error) { finish(error); }
+    });
+    try {
+      const hasCenter = Array.isArray(request.center) && request.center.length === 2 && request.center.every(Number.isFinite)
+        && Math.abs(request.center[0]) <= 180 && Math.abs(request.center[1]) <= 85;
+      // Keep national matches available even when a similarly named place exists nearby.
+      const results = await Promise.allSettled(hasCenter ? [query(true), query(false)] : [query(false)]);
+      const successful = results.filter(result => result.status === 'fulfilled');
+      if (!successful.length) throw results[0].reason;
+      const ids = new Set();
+      const pois = successful.flatMap(result => result.value).filter(p => {
+        if (!p.id || !p.location || ids.has(p.id)) return false;
+        ids.add(p.id); return true;
       });
-    } catch (_) { reply({ status: 'error', message: '高德搜索服务初始化失败' }); }
+      reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: pois.map(p => ({
+        id: p.id, name: p.name, address: [p.pname, p.cityname, p.adname, typeof p.address === 'string' ? p.address : ''].filter(Boolean).join(' '),
+        location: [p.location.getLng(), p.location.getLat()]
+      })) } });
+    } catch (error) { reply({ status: 'error', message: error?.message || '高德搜索服务初始化失败' }); }
   };
   const script = document.createElement('script');
   script.src = 'https://webapi.amap.com/maps?v=1.4.15&plugin=AMap.PlaceSearch&callback=tmcSearchReady&key=' + encodeURIComponent(request.key);

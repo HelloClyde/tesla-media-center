@@ -1,5 +1,6 @@
 import L from 'leaflet';
 import axios from 'axios';
+import { createMapRenderQueue } from './mapRenderQueue';
 import { viewportTiles } from './amapViewport';
 import { layoutPlaceLabels, type PlaceLabel } from './amapPlaceLabels';
 
@@ -24,8 +25,16 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     return viewportTiles(map.getZoom(), b.getWest(), b.getNorth(), b.getEast(), b.getSouth());
   }
 
+  const renderQueue = createMapRenderQueue(() => report('地图绘制失败，请重试'));
+  let moving = false;
   function draw(tiles: number[][]) {
-    roads.clearLayers(); labels.clearLayers(); surfaces.clearLayers();
+    if (!disposed && !moving) renderQueue.start(drawSteps(tiles));
+  }
+  function* drawSteps(tiles: number[][]): Generator<void> {
+    // Removing many Leaflet layers also costs time; spread cleanup across turns.
+    for (const group of [roads, labels, surfaces]) {
+      for (const layer of group.getLayers()) { group.removeLayer(layer); yield; }
+    }
     const used = new Set<string>(), occupied = new Set<string>();
     if (appearance.places) {
       const size = map.getSize();
@@ -38,6 +47,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         L.marker([label.point[1], label.point[0]], { pane: 'appPlaceLabels', interactive: false,
           icon: L.divIcon({ className: `app-place-label app-place-${label.kind}`, html: element,
             iconSize: [label.width, 24], iconAnchor: [label.width / 2, label.kind === 'city' ? 32 : 12] }) }).addTo(labels);
+        yield;
       }
     }
     for (const tile of tiles) {
@@ -51,6 +61,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
           pane: 'appSurfaces', renderer: surfaceRenderer, interactive: false,
           stroke: false, fillColor: paint.color, fillOpacity: paint.opacity, fillRule: 'evenodd', smoothFactor: .3,
         }).addTo(surfaces);
+        yield;
       }
       if (appearance.transit) for (const label of cached?.transit || []) {
         const zoom = Math.floor(map.getZoom());
@@ -64,6 +75,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const element = document.createElement('span'); element.textContent = label.name;
         L.marker(ll, { pane: 'appRoadLabels', interactive: false,
           icon: L.divIcon({ className: 'app-transit-label', html: element, iconSize: [100, 20], iconAnchor: [50, 10] }) }).addTo(labels);
+        yield;
       }
       if (!cached?.collection) continue;
       const zoom = Math.floor(map.getZoom());
@@ -71,8 +83,11 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const style = feature.properties.style;
         return zoom >= (style & 31) && zoom <= ((style >> 5) & 31);
       }) };
-      if (appearance.roads) L.geoJSON(collection, { pane: 'appRoads', interactive: false,
-        style: { renderer, color: appearance.theme === 'night' ? '#6f9399' : '#ffffff', weight: 3, opacity: .9 } }).addTo(roads);
+      if (appearance.roads) for (const feature of collection.features) {
+        L.geoJSON(feature, { pane: 'appRoads', interactive: false,
+          style: { renderer, color: appearance.theme === 'night' ? '#6f9399' : '#ffffff', weight: 3, opacity: .9 } }).addTo(roads);
+        yield;
+      }
       if (!appearance.labels) continue;
       for (const feature of collection.features) {
         const name = feature.properties.name as string;
@@ -88,14 +103,16 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const element = document.createElement('span'); element.textContent = name;
         L.marker(ll, { pane: 'appRoadLabels', interactive: false,
           icon: L.divIcon({ className: 'app-road-label', html: element, iconSize: [120, 18], iconAnchor: [60, 9] }) }).addTo(labels);
+        yield;
       }
     }
   }
   async function load() {
+    if (disposed || moving) return;
     const id = ++generation;
     request?.abort(); request = new AbortController();
     const tiles = visible();
-    if (!tiles.length) { roads.clearLayers(); labels.clearLayers(); surfaces.clearLayers(); report('路线总览 · 放大后显示道路详情'); return; }
+    if (!tiles.length) { draw([]); report('路线总览 · 放大后显示道路详情'); return; }
     const missing = tiles.filter(t => !cache.has(t.join('/')) || Date.now() - cache.get(t.join('/'))!.time > 600000);
     draw(tiles);
     if (!missing.length) { report(''); return; }
@@ -132,15 +149,22 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     report(failed ? '部分图层加载失败，可重试补齐' : '');
   }
 
+  function suspend() {
+    moving = true;
+    generation++; request?.abort(); renderQueue.cancel();
+    if (timer) clearTimeout(timer);
+  }
   function schedule() {
-    generation++; request?.abort();
+    moving = false;
+    generation++; request?.abort(); renderQueue.cancel();
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void load(), 220);
   }
-  map.on('moveend rotate', schedule);
+  map.on('movestart zoomstart', suspend);
+  map.on('moveend zoomend rotate', schedule);
   void load();
   return { setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => void load(), dispose() {
-    disposed = true; generation++; request?.abort(); if (timer) clearTimeout(timer);
-    map.off('moveend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear();
+    disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
+    map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear();
   } };
 }

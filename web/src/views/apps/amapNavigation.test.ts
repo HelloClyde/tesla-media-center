@@ -4,6 +4,11 @@ const route: AppRoute = { id: 0, path: [[116, 39], [116, 39.001], [116.001, 39.0
   { start: 0, end: 1, road: '甲路' }, { start: 1, end: 2, road: '乙路' },
 ], breaks: [], distance: 198, labels: [] };
 describe('navigation geometry', () => {
+  it('reacquires a real position behind stale progress after signal recovery', () => {
+    const result = matchPosition(route, [116, 39.0001], 180, true);
+    expect(result.distance).toBeLessThan(.01);
+    expect(result.progress).toBeCloseTo(11.1, 0);
+  });
   it('matches real coordinates to traveled distance', () => {
     const match = matchPosition(route, [116, 39.0005]);
     expect(match.distance).toBeLessThan(.01);

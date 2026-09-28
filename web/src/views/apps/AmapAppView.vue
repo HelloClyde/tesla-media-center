@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, watch, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
+import { navigationVoicePhrase } from './amapVoicePhrases';
+import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
+import { createLivePositionGate } from './amapLivePosition';
 import AmapNavigation3D from './AmapNavigation3D.vue';
-import { prepareLocalSpeech, speakLocal, stopLocalSpeech, localSpeechState } from '@/functions/localSpeech';
+import { prepareLocalSpeech, preloadLocalSpeech, cancelLocalSpeechPreload, speakLocal, stopLocalSpeech, localSpeechState } from '@/functions/localSpeech';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 const geoLocation = useGeoLocationStore();
 import { useRouter } from 'vue-router';
@@ -13,6 +16,8 @@ import type { Place } from './amapSearch';
 import { searchWebPlaces } from './amapWebSearch';
 import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
 const mapStatus = ref('');
+const liveSpeed = ref<number | null>(null);
+let positionWatch: number | undefined;
 const use3D = ref(false), map3DStatus = ref('');
 const map3D = ref<InstanceType<typeof AmapNavigation3D>>();
 const mapCenter = ref<Point>([0, 0]), mapZoom = ref(17);
@@ -28,7 +33,7 @@ const mapAppearance = ref<AppMapAppearance>({ theme: 'day', surfaces: true, road
 watch(mapAppearance, value => appMap?.setAppearance(value), { deep: true });
 let appMap: ReturnType<typeof attachAppMap> | undefined;
 import 'leaflet/dist/leaflet.css';
-import { wgs84togcj02 } from 'coordtransform';
+import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 const router = useRouter();
 const mapElement = ref<HTMLElement>();
@@ -97,6 +102,15 @@ function speak(text: string) {
 }
 function prepareVoice() { if (!muted.value) void prepareLocalSpeech().catch(e => { localSpeechState.error=String(e); }); }
 
+watch([current, () => next.value?.key, mode, muted], () => {
+  cancelLocalSpeechPreload();
+  if (muted.value || !next.value || mode.value === 'idle') return;
+  const turn = next.value;
+  void preloadLocalSpeech([
+    navigationVoicePhrase(turn, false), navigationVoicePhrase(turn, true), '已到达目的地附近',
+  ]).catch(() => { /* Playback reports engine errors; navigation remains usable. */ });
+});
+
 function endpoints() {
   if (!map) return;
   if ((hasOrigin.value || hasDestination.value) && !appMap) appMap = attachAppMap(map, message => { mapStatus.value = message; });
@@ -153,7 +167,7 @@ async function search() {
   const id = searchGeneration;
   searchController = new AbortController(); searching.value = true;
   try {
-    const places = await searchWebPlaces(keywords, searchController.signal);
+    const places = await searchWebPlaces(keywords, searchController.signal, location.value || (hasOrigin.value ? origin.value : undefined));
     if (disposed || id !== searchGeneration) return;
     tips.value = places;
     if (!tips.value.length) searchMessage.value = '没有找到地点，试试加上城市名称';
@@ -187,7 +201,7 @@ async function plan(replan = false) {
     else { routes.value = []; draw(false); }
   } finally { if (id === generation) busy.value = false; }
 }
-function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null) {
+function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null, recovered = false) {
   const direction = movementHeading(headingAnchor, point, accuracy, gpsHeading, speed);
   if (direction !== undefined) { heading.value = smoothHeading(heading.value, direction); headingAnchor = point; }
   else if (!headingAnchor && accuracy <= 60) headingAnchor = point;
@@ -199,7 +213,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (following.value && mode.value !== 'idle') map.panTo(latLng(point), { animate: false });
   if (!current.value || mode.value === 'idle') return;
   if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
-  const match = matchPosition(current.value, point, progress.value);
+  const match = matchPosition(current.value, point, progress.value, recovered);
   if (match.distance > Math.max(40, accuracy * 1.5)) {
     offCount++;
     status.value = '已偏离路线';
@@ -208,20 +222,24 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     }
     return;
   }
-  offCount = 0; progress.value = Math.max(progress.value, match.progress);
-  status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置' : '实时导航中';
+  offCount = 0; progress.value = recovered ? match.progress : Math.max(progress.value, match.progress);
+  if (recovered) spoken = '';
+  status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置' : '实时导航中 · 车机定位';
   if (remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
     stop(); arrived.value = true; status.value = '已到达目的地附近'; speak('已到达目的地附近'); return;
   }
   const turn = next.value;
   if (turn && turn.distance < 250) {
     const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
-    if (key !== spoken) { spoken = key; speak(`${formatDistance(turn.distance)}后${turn.text}，进入${turn.road}`); }
+    if (key !== spoken) { spoken = key; speak(navigationVoicePhrase(turn, turn.distance < 40)); }
   }
 }
 function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
 function stop() {
+  cancelLocalSpeechPreload();
   locationGeneration++;
+  if (positionWatch !== undefined) navigator.geolocation?.clearWatch(positionWatch);
+  positionWatch = undefined; liveSpeed.value = null;
   if (locationTimeout) clearTimeout(locationTimeout);
   locationTimeout = undefined;
   geoLocation.removeListener('amap-navigation');
@@ -246,6 +264,7 @@ function locate(navigate = false) {
   following.value = true;
   const id = locationGeneration; error.value = ''; status.value = '正在获取当前位置…';
   let received = false;
+  const liveGate = createLivePositionGate();
   // Permission inspection is advisory; do not delay the user-initiated position request.
   void navigator.permissions?.query({ name: 'geolocation' }).then(permission => {
     if (disposed || id !== locationGeneration || received) return;
@@ -263,15 +282,20 @@ function locate(navigate = false) {
     if (disposed || id !== locationGeneration) return;
     if (position.source !== 'gps') return;
     const fresh = Number.isFinite(position.timestamp) && position.timestamp > 0 && Date.now() - position.timestamp <= 15000 && position.timestamp <= Date.now() + 5000;
-    if (navigate && !fresh) { status.value = '位置时间戳异常或已过期，等待实时位置后导航'; return; }
+    const accepted = navigate ? liveGate.accept(position, Date.now()) : undefined;
+    if (accepted && !accepted.accepted) {
+      if (accepted.reason === 'invalid') status.value = '位置时间戳异常或已过期，等待实时位置后导航';
+      return;
+    }
     const first = !received;
     received = true; error.value = "";
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
-    const point = wgs84togcj02(position.longitude, position.latitude) as Point;
-    lastFix = Date.now();
+    const point = browserNavigationPoint(position.longitude, position.latitude);
+    lastFix = position.timestamp;
+    liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
     if (!navigate) { hasOrigin.value = true; origin.value = point; originName.value = fresh ? '当前位置' : '最近返回的位置（非实时）'; endpoints(); if (first) map.setView(latLng(point), 16); status.value = fresh ? '已定位，请选择目的地' : '已显示最近位置，位置时间戳异常或已过期，等待实时更新'; }
-    updatePosition(point, position.accuracy, position.heading, position.speed);
+    updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
 
   };
   const failed = (failure: GeolocationPositionError) => {
@@ -285,7 +309,16 @@ function locate(navigate = false) {
   if (navigate) {
 
     lastFix = Date.now();
-    staleTimer = setInterval(() => { if (Date.now() - lastFix > 15000) status.value = '定位信号中断，导航提示已暂停'; }, 3000);
+    staleTimer = setInterval(() => { if (Date.now() - lastFix > 15000) { liveSpeed.value = null; status.value = '车机定位中断，导航提示已暂停'; stopLocalSpeech(); } }, 3000);
+    // Subscribe to the vehicle's fused H5 stream; keep the proven one-shot polling fallback.
+    try {
+      positionWatch = navigator.geolocation.watchPosition(position => receive({
+        ...position.coords, latitude: position.coords.latitude, longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy, altitude: position.coords.altitude,
+        altitudeAccuracy: position.coords.altitudeAccuracy, speed: position.coords.speed,
+        heading: position.coords.heading, timestamp: position.timestamp, source: 'gps',
+      }), failed);
+    } catch { /* A car browser may only implement getCurrentPosition. */ }
   }
   geoLocation.addListener('amap-navigation', receive);
   geoLocation.addErrorListener('amap-navigation', failed);
@@ -294,14 +327,21 @@ function locate(navigate = false) {
   geoLocation.init();
   geoLocation.refresh();
 }
+function pauseMapFollowing() {
+  following.value = false; overviewActive.value = false; overviewGeneration++;
+}
+function beginMapTouch(event: TouchEvent) {
+  if (event.touches.length === 2) pauseMapFollowing();
+}
 onMounted(() => {
   if (!mapElement.value) return;
-  map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
+  mapElement.value.addEventListener('touchstart', beginMapTouch, { passive: true, capture: true });
+  map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: true, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
   map.on('move zoom', () => { const center=map.getCenter(); mapCenter.value=[center.lng,center.lat]; mapZoom.value=map.getZoom(); });
   map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
 
   map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
-  map.on('dragstart', () => { following.value = false; overviewActive.value = false; overviewGeneration++; });
+  map.on('dragstart', pauseMapFollowing);
   resizeObserver = new ResizeObserver(() => {
     map.invalidateSize({ pan: false });
     if (overviewActive.value) void overview();
@@ -310,7 +350,7 @@ onMounted(() => {
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
   mapReady.value = true; endpoints(); locate(false);
 });
-onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+onBeforeUnmount(() => { mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
@@ -326,7 +366,7 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
       <p v-if="searchMessage" class="search-message" role="status">{{ searchMessage }}</p>
       <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
     </header>
-    <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><span class="turn-arrow">{{ next.arrow }}</span><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
+    <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
     <div class="map-controls">
       <button class="dimension-mode" :class="{ active: use3D }" :disabled="!hasOrigin && !hasDestination" :aria-label="use3D ? '切换为 2D 地图' : '切换为 3D 地图'" :aria-pressed="use3D" @click="toggle3D">{{ use3D ? '3D' : '2D' }}</button>
       <button v-if="!show3D" title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
@@ -358,13 +398,13 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="stop(); controller?.abort(); generation++; busy = false; status = '导航已结束'; draw()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}</small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-else class="footer-line"><button @click="stop(); controller?.abort(); generation++; busy = false; status = '导航已结束'; draw()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
     </footer>
   </section>
 </template>
 
 <style scoped>
-.layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:9px}.brand>span{display:grid;place-items:center;background:#10ac82;color:white;border-radius:10px;width:29px;height:29px;font-size:25px}.brand small{color:#80918d;letter-spacing:2px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{font-size:58px;line-height:1}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
+.layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:9px}.brand>span{display:grid;place-items:center;background:#10ac82;color:white;border-radius:10px;width:29px;height:29px;font-size:25px}.brand small{color:#80918d;letter-spacing:2px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{width:56px;height:64px;flex-shrink:0;display:block}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{pointer-events:none;position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
 </style>
 <style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
 

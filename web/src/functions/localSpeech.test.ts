@@ -39,3 +39,23 @@ it('reports initialization errors and permits a new worker retry',async()=>{
   workers[0].emit({type:'error',message:'missing'});await check;
   const next=m.loadLocalSpeech();workers[1].emit({type:'ready'});await next;expect(m.localSpeechState.ready).toBe(true);m.releaseLocalSpeech();
 });
+
+it('pre-synthesizes silently and plays cached audio without waiting for another warmup',async()=>{
+  const m=await import('./localSpeech');const warm=m.preloadLocalSpeech(['前方右转','请右转']);await tick();
+  workers[0].emit({type:'ready'});await tick();
+  const first=workers[0].messages[0];expect(first.text).toBe('前方右转');expect(starts).toBe(0);
+  workers[0].emit({type:'audio',id:first.id,samples:new Float32Array([.1,.2]),sampleRate:22050,ms:5});await tick();
+  expect(workers[0].messages[1].text).toBe('请右转');
+  await m.speakLocal('前方右转');expect(starts).toBe(1);expect(m.localSpeechState.cacheHit).toBe(true);
+  m.cancelLocalSpeechPreload();
+  workers[0].emit({type:'audio',id:workers[0].messages[1].id,samples:new Float32Array([.1]),sampleRate:22050,ms:5});
+  await warm;m.releaseLocalSpeech();
+});
+it('shares an in-flight phrase with playback and cancels obsolete remaining warmups',async()=>{
+  const m=await import('./localSpeech');const warm=m.preloadLocalSpeech(['前方左转','请左转']);await tick();
+  workers[0].emit({type:'ready'});await tick();
+  const playback=m.speakLocal('前方左转');await tick();
+  expect(workers[0].messages).toHaveLength(1);m.cancelLocalSpeechPreload();
+  workers[0].emit({type:'audio',id:workers[0].messages[0].id,samples:new Float32Array([.1]),sampleRate:22050,ms:5});
+  await Promise.all([warm,playback]);expect(starts).toBe(1);expect(workers[0].messages).toHaveLength(1);m.releaseLocalSpeech();
+});

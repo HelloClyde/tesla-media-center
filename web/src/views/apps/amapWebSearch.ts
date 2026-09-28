@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { parseSearchPlaces, type Place } from './amapSearch';
 
-export async function searchWebPlaces(keywords: string, signal: AbortSignal): Promise<Place[]> {
+export async function searchWebPlaces(keywords: string, signal: AbortSignal, center?: [number, number]): Promise<Place[]> {
   const config = await axios.get('/api/config', { signal, timeout: 10000 });
   if (config.data?.status !== 'ok') throw new Error('读取地图配置失败，请确认 TMC 已登录');
   const key = config.data.data?.amap_key?.trim();
@@ -26,6 +26,7 @@ export async function searchWebPlaces(keywords: string, signal: AbortSignal): Pr
       if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
       if (event.data?.type === 'tmc-search-ready') {
         frame.contentWindow?.postMessage({ type: 'tmc-search', key, keywords,
+          center: center?.length === 2 && center.every(Number.isFinite) && Math.abs(center[0]) <= 180 && Math.abs(center[1]) <= 85 ? center : undefined,
           securityCode: config.data.data?.amap_security_js_code || '' }, window.location.origin);
       } else if (event.data?.type === 'tmc-search-result') {
         try { finish(undefined, parseSearchPlaces(event.data)); }

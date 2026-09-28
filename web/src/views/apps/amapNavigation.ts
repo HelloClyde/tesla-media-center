@@ -10,20 +10,20 @@ export function cumulative(route: AppRoute) {
   for (let i = 1; i < route.path.length; i++) values.push(values[i - 1] + (breaks.has(i) ? 0 : meters(route.path[i - 1], route.path[i])));
   return values;
 }
-export function matchPosition(route: AppRoute, position: Point, previous = 0) {
+export function matchPosition(route: AppRoute, position: Point, previous = 0, reacquire = false) {
   const lengths = cumulative(route), breaks = new Set(route.breaks);
   let best = { distance: Infinity, progress: 0, index: 0, point: route.path[0] };
   const scale = Math.cos(position[1] * Math.PI / 180);
   for (let i = 0; i < route.path.length - 1; i++) {
-    if (breaks.has(i + 1) || lengths[i + 1] < previous - 50) continue;
+    if (breaks.has(i + 1) || (!reacquire && lengths[i + 1] < previous - 50)) continue;
     const a = route.path[i], b = route.path[i + 1];
     const dx = (b[0] - a[0]) * scale, dy = b[1] - a[1];
     const t = Math.max(0, Math.min(1, (((position[0] - a[0]) * scale * dx) + (position[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
     const point: Point = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     const distance = meters(point, position), progress = lengths[i] + (lengths[i + 1] - lengths[i]) * t;
     // Nearby overlapping roads favour the current section instead of jumping ahead.
-    const score = distance + Math.max(0, progress - previous - 150) * .03;
-    const bestScore = best.distance + Math.max(0, best.progress - previous - 150) * .03;
+    const score = distance + (reacquire ? 0 : Math.max(0, progress - previous - 150) * .03);
+    const bestScore = best.distance + (reacquire ? 0 : Math.max(0, best.progress - previous - 150) * .03);
     if (score < bestScore) best = { distance, progress, index: i, point };
   }
   return best;

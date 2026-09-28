@@ -9,8 +9,45 @@ let sequence=0, request=0;
 let tail:Promise<unknown>=Promise.resolve();
 const pending=new Map<number,{resolve:(a:Audio)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
 const cache=new Map<string,Audio>();
-let cacheBytes=0;
+let cacheBytes=0, preloadSequence=0, engineGeneration=0;
+const synthesizing=new Map<string,Promise<Audio>>();
+const phrase=(text:string)=>text.trim().slice(0,300);
+function synthesize(value:string):Promise<Audio> {
+  const cached=cache.get(value);if(cached)return Promise.resolve(cached);
+  const existing=synthesizing.get(value);if(existing)return existing;
+  const engine=engineGeneration;
+  const task=tail.catch(()=>{}).then(async()=>{
+    if(engine!==engineGeneration)throw new Error('语音任务已取消');
+    await loadLocalSpeech();
+    if(engine!==engineGeneration)throw new Error('语音任务已取消');
+    const audio=await new Promise<Audio>((resolve,reject)=>{
+      const id=++request;
+      const timer=setTimeout(()=>fail('语音合成超时，此设备可能不适合运行当前模型'),60000);
+      pending.set(id,{resolve,reject,timer});worker!.postMessage({type:'speak',id,text:value});
+    });
+    if(audio.samples.byteLength<8*1024*1024){
+      cache.set(value,audio);cacheBytes+=audio.samples.byteLength;
+      while(cacheBytes>8*1024*1024||cache.size>24){const key=cache.keys().next().value!;cacheBytes-=cache.get(key)!.samples.byteLength;cache.delete(key);}
+    }
+    return audio;
+  });
+  synthesizing.set(value,task);tail=task;
+  const clean=()=>{if(synthesizing.get(value)===task)synthesizing.delete(value);};
+  void task.then(clean,clean);
+  return task;
+}
+export function cancelLocalSpeechPreload(){preloadSequence++;}
+/** Synthesize silently; never creates or resumes an audio output context. */
+export async function preloadLocalSpeech(texts:string[]) {
+  const token=++preloadSequence;
+  await loadLocalSpeech();
+  for(const value of [...new Set(texts.map(phrase).filter(Boolean))].slice(0,6)){
+    if(token!==preloadSequence)return;
+    await synthesize(value);
+  }
+}
 function fail(message:string) {
+  engineGeneration++;
   const error=new Error(message);
   clearTimeout(loadTimer);rejectLoad?.(error);rejectLoad=undefined;
   pending.forEach(p=>{clearTimeout(p.timer);p.reject(error);});pending.clear();
@@ -60,21 +97,10 @@ export async function speakLocal(text:string, maxDelayMs=Infinity) {
   localSpeechState.error='';
   try {
     await prepareLocalSpeech();
-    const task=tail.catch(()=>{}).then(async()=>{
-      if(token!==sequence||Date.now()-started>maxDelayMs)return;
-      let audio=cache.get(value);localSpeechState.cacheHit=!!audio;
-      if(!audio){
-        localSpeechState.status='正在本地合成语音…';
-        audio=await new Promise<Audio>((resolve,reject)=>{
-          const id=++request;
-          const timer=setTimeout(()=>fail('语音合成超时，此设备可能不适合运行当前模型'),60000);
-          pending.set(id,{resolve,reject,timer});worker!.postMessage({type:'speak',id,text:value});
-        });
-        if(audio.samples.byteLength<8*1024*1024){
-          cache.set(value,audio);cacheBytes+=audio.samples.byteLength;
-          while(cacheBytes>8*1024*1024||cache.size>24){const key=cache.keys().next().value!;cacheBytes-=cache.get(key)!.samples.byteLength;cache.delete(key);}
-        }
-      }
+    if(token!==sequence||Date.now()-started>maxDelayMs)return;
+    localSpeechState.cacheHit=cache.has(value);
+    if(!localSpeechState.cacheHit)localSpeechState.status='正在本地合成语音…';
+    const audio=await synthesize(value);
       localSpeechState.synthesisMs=audio.ms;localSpeechState.audioSeconds=audio.samples.length/audio.sampleRate;
       if(token!==sequence)return;
       if(Date.now()-started>maxDelayMs){localSpeechState.status='语音已过时，跳过本次播报';return;}
@@ -84,11 +110,9 @@ export async function speakLocal(text:string, maxDelayMs=Infinity) {
       localSpeechState.speaking=true;localSpeechState.status='正在播放端侧合成语音';
       const current=source;current.onended=()=>{current.disconnect();if(source===current){source=undefined;localSpeechState.speaking=false;localSpeechState.status='播报完成';}};
       current.start();
-    });
-    tail=task;await task;
   }catch(e){if(token===sequence){localSpeechState.error=e instanceof Error?e.message:String(e);localSpeechState.status=localSpeechState.error;}throw e;}
 }
 export function releaseLocalSpeech() {
-  stopLocalSpeech();fail('语音引擎已释放');localSpeechState.error='';
+  cancelLocalSpeechPreload();stopLocalSpeech();fail('语音引擎已释放');synthesizing.clear();localSpeechState.error='';
   void context?.close();context=undefined;cache.clear();cacheBytes=0;
 }
