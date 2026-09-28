@@ -10,7 +10,7 @@ import getAMap from '@/functions/amapConfig';
 import { createTeslaMapGround } from './teslaMapGround';
 import { vehicleMapPoint } from './teslaMapCoordinates';
 import { createVehicleRoadMesh } from './teslaRoad';
-import { APPEARANCE_KEY, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
+import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
 function savedAppearance() {
   try { return normalizeAppearance(JSON.parse(localStorage.getItem(APPEARANCE_KEY) || 'null')); }
@@ -1739,6 +1739,7 @@ watch(currentShiftState, () => {
                       <div class="vehicle-paint-swatches">
                         <button v-for="item in [['珍珠白','#eaf0f3'],['曜石黑','#202328'],['冷光银','#9ea7af'],['深海蓝','#163b70'],['烈焰红','#a51c30'],['松石绿','#467f78']]" :key="item[1]" :title="item[0]" :aria-label="item[0]" :aria-pressed="appearance.color===item[1]" :style="{background:item[1]}" @click="appearance.color=item[1]"></button>
                       </div>
+                      <label>车衣材质 <el-select v-model="appearance.finish" aria-label="车衣材质"><el-option v-for="finish in paintFinishes" :key="finish.value" :label="finish.label" :value="finish.value" /></el-select></label>
                       <label>牌照文字 <el-input v-model="appearance.plate" aria-label="牌照文字" maxlength="10" placeholder="例如：沪AD12345" @change="appearance.plate=normalizeAppearance(appearance).plate" /></label>
                       <label>牌照样式 <el-select v-model="appearance.plateStyle" aria-label="牌照样式"><el-option label="新能源绿牌" value="green"/><el-option label="蓝牌" value="blue"/><el-option label="黑牌" value="black"/><el-option label="白牌" value="white"/></el-select></label>
                       <small>{{ appearanceSaveError ? '浏览器未能保存设置，刷新后可能丢失' : '实时预览，自动保存在当前浏览器' }}</small>

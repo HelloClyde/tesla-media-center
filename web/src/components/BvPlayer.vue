@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ScrollingTitle from './ScrollingTitle.vue';
 import { ref, onMounted, reactive, onBeforeUnmount, computed } from 'vue';
 import { get, post } from '@/functions/requests'
 import { ElMessage } from 'element-plus';
@@ -606,7 +607,7 @@ onBeforeUnmount(disposePlayback);
                 <div class="player-actions bv-toolbar-actions">
                     <el-button icon="Back" class="btn" size="large" aria-label="返回视频列表" @click="closePlayer" circle />
                 </div>
-                <span class="bv-inline-title" :title="state.title || ''">{{ state.title }}</span>
+                <ScrollingTitle class="bv-inline-title" :text="state.title || ''" />
                 <input class="progress bv-inline-progress" id="timeTrack" ref="timeTrack" type="range" value="0" aria-label="播放进度">
                 <div class="player-controls bv-toolbar-status">
                     <label id="timeLabel" ref="timeLabel">00:00:00/00:00:00</label>

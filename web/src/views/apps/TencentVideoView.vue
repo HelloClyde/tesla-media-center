@@ -1,20 +1,31 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import { useAudioChannel } from '@/functions/useAudioChannel';
 import TencentAccount from '@/components/TencentAccount.vue';
 
 interface Video { vid: string; title: string; duration: number; pageUrl: string; url: string; urls?: string[] }
 interface Recent { vid: string; title: string; pageUrl: string }
-interface CatalogItem { id: string; vid: string; title: string; cover: string; subtitle: string; kind: string; episodes: CatalogItem[] }
+interface CatalogItem { tags?: string[]; cid?: string; id: string; vid: string; title: string; cover: string; subtitle: string; kind: string; episodes: CatalogItem[] }
+const route = useRoute(), router = useRouter();
+const playbackPage = computed(() => !!(route.query.video || route.query.series));
+const pageRoot = ref<HTMLElement | null>(null);
+let catalogScroll = 0;
+let enteredFromCatalog = false;
+function scrollContainer() { return pageRoot.value?.closest('.main-view') as HTMLElement | null; }
 const query = ref(''), activeQuery = ref('');
 const catalogMode = ref<'home' | 'search'>('home');
-const items = ref<CatalogItem[]>([]), selectedSeries = ref<CatalogItem | null>(null);
+const items = ref<CatalogItem[]>([]);
+const playingSeries = ref<CatalogItem | null>(null);
+const activeEpisode = computed(() => current.value?.vid || String(route.query.video || ''));
 const featured = computed(() => catalogMode.value === 'home' && items.value.length >= 3 ? items.value.slice(0, 3) : []);
 const gridItems = computed(() => featured.value.length ? items.value.slice(3) : items.value);
 const catalogBusy = ref(false), catalogError = ref('');
 const nextCursor = ref<string | null>(null), nextPage = ref<number | null>(null);
 let catalogController: AbortController | null = null;
-let catalogGeneration = 0;
+let catalogGeneration = 0, seriesGeneration = 0;
+let seriesController: AbortController | undefined;
+const seriesLoading = ref(''), seriesError = ref('');
 let failedAppend = false;
 const input = ref('');
 const busy = ref(false), error = ref(''), playing = ref(false);
@@ -45,14 +56,45 @@ function stop() {
   playing.value = false; busy.value = false;
   channelAudio.value?.pause();
 }
-function close() { stop(); current.value = null; error.value = ''; }
+function close() {
+  stop(); current.value = null; error.value = '';
+  if (enteredFromCatalog) { enteredFromCatalog = false; router.back(); }
+  else { const query = { ...route.query }; delete query.video; delete query.series; delete query.seriesTitle; void router.replace({ query }); }
+}
+async function open(value = input.value, relayOnly = false) {
+  if (!value.trim()) return;
+  startAudioChannel();
+  if (playbackPage.value) return loadVideo(value, relayOnly);
+  playingSeries.value = null;
+  catalogScroll = scrollContainer()?.scrollTop || 0;
+  enteredFromCatalog = true;
+  await router.push({ query: { ...route.query, video: value } });
+}
+watch(() => [route.query.video, route.query.series], async ([value, series]) => {
+  if (typeof value === 'string' && value) {
+    current.value = null;
+    void loadVideo(value);
+    await nextTick(); scrollContainer()?.scrollTo?.({ top: 0 });
+  } else {
+    stop(); current.value = null; error.value = '';
+    if (series) {
+      if (!playingSeries.value || playingSeries.value.id !== series) {
+        playingSeries.value = { id: String(series), cid: String(series).replace(/^series:/, ''), title: String(route.query.seriesTitle || ''), vid: '', cover: '', subtitle: '', kind: '选集', episodes: [] };
+      }
+      void loadSeries(playingSeries.value);
+    } else {
+      ++seriesGeneration; seriesController?.abort(); seriesLoading.value = ''; seriesError.value = ''; playingSeries.value = null;
+    }
+    await nextTick(); scrollContainer()?.scrollTo?.({ top: series ? 0 : catalogScroll });
+  }
+});
 
 async function loadCatalog(append = false) {
   catalogController?.abort();
   const ticket = ++catalogGeneration;
   catalogController = new AbortController();
   catalogBusy.value = true; catalogError.value = ''; failedAppend = append;
-  if (!append) { items.value = []; nextCursor.value = null; nextPage.value = null; selectedSeries.value = null; }
+  if (!append) { items.value = []; nextCursor.value = null; nextPage.value = null; }
   const params = new URLSearchParams();
   if (catalogMode.value === 'search') {
     params.set('q', activeQuery.value); params.set('page', String(append ? nextPage.value ?? 0 : 0));
@@ -80,12 +122,43 @@ function search() {
   catalogMode.value = 'search'; activeQuery.value = query.value.trim(); void loadCatalog();
 }
 function home() { catalogMode.value = 'home'; activeQuery.value = ''; void loadCatalog(); }
-function choose(item: CatalogItem) {
-  if (item.episodes.length) { selectedSeries.value = item; return; }
-  if (item.vid) { void open(item.vid); }
+function episodeTitle(episode: CatalogItem, index: number) {
+  const title = episode.title?.trim();
+  if (!title) return `第 ${index + 1} 集`;
+  return /^\d+$/.test(title) ? `第 ${title} 集` : title;
+}
+async function chooseEpisode(episode: CatalogItem) {
+  if (!episode.vid || (episode.vid === activeEpisode.value && playing.value)) return;
+  startAudioChannel();
+  if (route.query.video === episode.vid) { await loadVideo(episode.vid); return; }
+  stop();
+  await router.replace({ query: { ...route.query, video: episode.vid } });
+}
+async function choose(item: CatalogItem) {
+  if (!item.cid && !item.episodes.length) { if (item.vid) void open(item.vid); return; }
+  playingSeries.value = item;
+  catalogScroll = scrollContainer()?.scrollTop || 0;
+  enteredFromCatalog = true;
+  await router.push({ query: { ...route.query, series: item.id, seriesTitle: item.title } });
+}
+async function loadSeries(item: CatalogItem) {
+  const ticket = ++seriesGeneration;
+  seriesController?.abort(); seriesLoading.value = ''; seriesError.value = '';
+  if (item.episodes.length) return;
+  seriesController = new AbortController(); seriesLoading.value = item.title;
+  try {
+    const response = await fetch('/api/tencent-video/search?' + new URLSearchParams({ q: item.title, page: '0' }), { signal: seriesController.signal, credentials: 'same-origin' });
+    const result = await response.json();
+    if (disposed || ticket !== seriesGeneration) return;
+    if (!response.ok || result.status !== 'ok') throw Error(result.message || '选集加载失败，请重试');
+    const series = (result.data.items as CatalogItem[]).find(candidate => candidate.id === item.id && candidate.episodes.length);
+    if (!series) throw Error('暂未取得《' + item.title + '》的正式选集，可能尚未上线，请稍后重试');
+    item.episodes = series.episodes; playingSeries.value = { ...item, episodes: series.episodes };
+  } catch (cause: any) { if (!disposed && ticket === seriesGeneration) seriesError.value = cause.message || '选集加载失败'; }
+  finally { if (ticket === seriesGeneration) seriesLoading.value = ''; }
 }
 
-async function open(value = input.value, relayOnly = false) {
+async function loadVideo(value = input.value, relayOnly = false) {
   if (disposed || !value.trim()) return;
   stop(); error.value = ''; busy.value = true;
   const request = generation;
@@ -106,7 +179,6 @@ async function open(value = input.value, relayOnly = false) {
     input.value = current.value!.pageUrl;
     await nextTick();
     if (!active()) return;
-    canvas.value?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
     player = new Player();
     player.setLoadingDiv(loading.value);
     player.setTrack(track.value, label.value);
@@ -135,12 +207,20 @@ function toggle() {
   else if (player.getState() === 2) { player.resume(); playing.value = true; }
   else if (current.value) { void open(current.value.pageUrl); }
 }
-onMounted(() => { void loadCatalog(); });
-onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?.abort(); stop(); });
+onMounted(() => {
+  void loadCatalog();
+  if (route.query.series) {
+    playingSeries.value = { id: String(route.query.series), title: String(route.query.seriesTitle || ''), vid: '', cover: '', subtitle: '', kind: '选集', episodes: [] };
+    void loadSeries(playingSeries.value);
+  }
+  if (route.query.video) void loadVideo(String(route.query.video));
+});
+onBeforeUnmount(() => { disposed = true; ++seriesGeneration; seriesController?.abort(); ++catalogGeneration; catalogController?.abort(); stop(); });
 </script>
 
 <template>
-  <main class="tencent-view">
+  <main ref="pageRoot" class="tencent-view" :class="{ 'playback-page': playbackPage }">
+    <template v-if="!playbackPage">
     <header class="topbar">
       <div class="brand"><img class="brand-icon" src="/icon/TENCENT_VIDEO_LOGO.png" alt=""/><div><h1>腾讯视频</h1><p>好内容，随心看</p></div></div>
       <form class="search-form" @submit.prevent="search">
@@ -153,25 +233,14 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
       <label for="tencent-link">视频链接或 VID</label>
       <div class="link-row"><input id="tencent-link" v-model="input" placeholder="https://v.qq.com/x/page/…" autocomplete="off" /><button :disabled="busy || !input.trim()" type="submit">{{ busy ? '正在打开…' : '打开视频' }}</button></div>
     </form></details>
-    <div v-if="busy" class="source-progress" role="status">正在打开视频…<button @click="stop">取消</button></div>
-    <div v-if="error" class="play-error" role="alert"><span>{{ error }}</span><div v-if="current" class="retry-actions"><button @click="open(current.pageUrl)">重试</button><button @click="open(current.pageUrl, true)">仅用转接重试</button></div></div>
-    <section v-if="current" class="video-panel">
-      <div class="video-heading"><h2>{{ current.title }}</h2><button @click="close">关闭播放器</button></div>
-      <div class="picture"><canvas ref="canvas" aria-label="腾讯视频播放画面" width="1100" height="623"></canvas><div ref="loading" class="loading" style="display: none">正在缓冲…</div></div>
-      <div class="controls"><button @click="toggle" :disabled="!player">{{ playing ? '暂停' : '播放' }}</button><input ref="track" type="range" min="0" value="0" aria-label="播放进度"/><span ref="label">00:00:00/00:00:00</span><button @click="restoreAudioChannel">恢复声音</button><button @click="player?.fullscreen()">全屏</button></div>
-    </section>
     <nav class="catalog-tabs" aria-label="视频浏览"><button :aria-pressed="catalogMode === 'home'" @click="home">首页推荐</button><span v-if="catalogMode === 'search'">“{{ activeQuery }}”的搜索结果</span><span v-else class="catalog-caption">发现值得一看的故事</span><button v-if="catalogMode === 'home'" class="refresh" :disabled="catalogBusy" @click="home">刷新推荐</button></nav>
-    <section v-if="selectedSeries" class="episode-panel">
-      <div class="video-heading"><h2>{{ selectedSeries.title }} · 选集</h2><button @click="selectedSeries = null">收起选集</button></div>
-      <div class="episode-list"><button v-for="episode in selectedSeries.episodes" :key="episode.id" @click="choose(episode)">{{ episode.title }}<small v-if="episode.subtitle">{{ episode.subtitle }}</small></button></div>
-    </section>
     <div v-if="catalogError" class="play-error" role="alert"><span>{{ catalogError }}</span><button @click="loadCatalog(failedAppend)">重试加载</button></div>
     <div v-if="catalogBusy && !items.length" class="catalog-loading" role="status">正在加载视频…</div>
     <section v-if="featured.length" class="featured-grid" aria-label="焦点推荐">
       <button v-for="(item, index) in featured" :key="item.id" class="catalog-card feature-card" @click="choose(item)">
         <img v-if="item.cover" :src="item.cover" alt="" :loading="index === 0 ? 'eager' : 'lazy'" referrerpolicy="no-referrer"/>
         <span class="feature-shade"></span><span class="feature-kind">{{ item.kind }}</span>
-        <span class="feature-copy"><span v-if="index === 0" class="feature-eyebrow">首页精选</span><strong>{{ item.title }}</strong><small v-if="item.subtitle">{{ item.subtitle }}</small><span v-if="index === 0" class="feature-action">{{ item.episodes.length ? '查看选集' : '▶ 点击观看' }}</span></span>
+        <span class="feature-copy"><span v-if="index === 0" class="feature-eyebrow">首页精选</span><strong>{{ item.title }}</strong><small v-if="item.subtitle">{{ item.subtitle }}</small><span v-if="index === 0" class="feature-action">{{ (item.cid || item.episodes.length) ? '查看选集' : '▶ 点击观看' }}</span></span>
       </button>
     </section>
     <h2 v-if="featured.length && gridItems.length" class="section-title">更多推荐<span>总有新的精彩</span></h2>
@@ -185,11 +254,37 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
     <div v-if="nextCursor !== null || nextPage !== null" class="load-more"><button :disabled="catalogBusy" @click="loadCatalog(true)">{{ catalogBusy ? '正在加载…' : '加载更多' }}</button></div>
     <section v-if="recent.length" class="recent"><h2>最近打开</h2><div class="recent-grid"><button v-for="item in recent" :key="item.vid" @click="input = item.pageUrl; open(item.pageUrl)"><span class="recent-play" aria-hidden="true">▶</span><span>{{ item.title }}</span></button></div></section>
     <p class="support-note">推荐和搜索来自腾讯视频。播放支持公开、未加密的 MP4 源；会员或加密内容可能无法播放。</p>
+    </template>
+    <section v-else class="playback-content" aria-label="腾讯视频播放页">
+      <header class="playback-header"><button aria-label="返回视频列表" @click="close">‹ 返回</button><h1>{{ current?.title || playingSeries?.title || '视频播放' }}</h1></header>
+    <div v-if="busy" class="source-progress" role="status">正在打开视频…<button @click="close">取消</button></div>
+    <div v-if="error" class="play-error" role="alert"><span>{{ error }}</span><div v-if="current" class="retry-actions"><button @click="open(current.pageUrl)">重试</button><button @click="open(current.pageUrl, true)">仅用转接重试</button></div></div>
+    <section v-if="current" class="video-panel">
+      <div class="video-heading"><h2>{{ current.title }}</h2></div>
+      <div class="picture"><canvas ref="canvas" aria-label="腾讯视频播放画面" width="1100" height="623"></canvas><div ref="loading" class="loading" style="display: none">正在缓冲…</div></div>
+      <div class="controls"><button @click="toggle" :disabled="!player">{{ playing ? '暂停' : '播放' }}</button><input ref="track" type="range" min="0" value="0" aria-label="播放进度"/><span ref="label">00:00:00/00:00:00</span><button @click="restoreAudioChannel">恢复声音</button><button @click="player?.fullscreen()">全屏</button></div>
+    </section>
+      <div v-if="!current" class="picture player-placeholder" aria-label="腾讯视频播放画面">{{ busy ? '正在打开视频…' : '请选择下方集数开始播放' }}</div>
+      <p v-if="seriesLoading" role="status">正在加载《{{ seriesLoading }}》的选集…</p>
+      <div v-if="seriesError" class="play-error" role="alert"><span>{{ seriesError }}</span><button @click="playingSeries && loadSeries(playingSeries)">重试选集</button></div>
+      <section v-if="playingSeries?.episodes.length" class="episode-panel playback-episodes" aria-label="播放页选集">
+        <div class="video-heading"><h2>{{ playingSeries.title }} · 选集</h2><span>{{ playingSeries.episodes.length }} 集可选</span></div>
+        <div class="episode-list"><button v-for="(episode, index) in playingSeries.episodes" :key="episode.id" :aria-pressed="activeEpisode === episode.vid" @click="chooseEpisode(episode)">
+          <span>{{ episodeTitle(episode, index) }}</span>
+          <span v-if="episode.tags?.length" class="episode-tags"><span v-for="tag in episode.tags" :key="tag" class="episode-tag" :class="{ premium: /VIP/i.test(tag) }">{{ tag }}</span></span>
+          <small v-if="activeEpisode === episode.vid">当前播放</small>
+        </button></div>
+      </section>
+    </section>
     <audio ref="channelAudio" hidden></audio>
   </main>
 </template>
 
 <style scoped>
+.episode-tags{display:flex;justify-content:center;gap:4px;margin-top:6px;flex-wrap:wrap}.episode-tag{font-size:11px;line-height:18px;padding:0 6px;border-radius:4px;background:#e7edf4;color:#52647b}.episode-tag.premium{background:#ffdf89;color:#663d00}
+.player-placeholder{display:grid;place-items:center;color:#c6cbd0;margin-bottom:20px}
+.playback-header{display:flex;gap:16px;align-items:center;margin-bottom:16px}.playback-header h1{font-size:20px;margin:0}.playback-header button{flex-shrink:0}.playback-page{max-width:1400px}.playback-page .video-panel{padding:0;border:0;background:transparent}.playback-page .video-panel>.video-heading{display:none}.playback-episodes .episode-list button[aria-pressed=true]{border-color:#168bc4;background:#168bc414;color:#168bc4}.playback-episodes .video-heading span{font-size:13px;color:var(--color-text-secondary)}
+
 .link-entry{margin:-6px 0 20px;color:var(--color-text-secondary,#85919e)}.link-entry summary{cursor:pointer;padding:10px 0}.link-entry .link-form{margin-top:8px}.catalog-tabs{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:24px 0 16px}.catalog-tabs button[aria-pressed=true]{color:#168bc4;background:#168bc414;border-color:#168bc455}.catalog-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:20px;margin-bottom:24px}.catalog-card{padding:0!important;overflow:hidden;text-align:left;align-self:start;border:0!important;background:transparent!important}.cover{aspect-ratio:16/9;background:var(--color-border);position:relative;border-radius:12px;overflow:hidden}.cover img{width:100%;height:100%;object-fit:cover}.cover-placeholder{display:grid;height:100%;place-items:center;color:#169dd5;font-size:28px}.card-kind{position:absolute;bottom:8px;right:8px;color:#fff;background:#000a;border-radius:5px;padding:3px 7px;font-size:12px}.catalog-card strong{font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:15px;line-height:1.5;margin-top:10px}.catalog-card small{display:block;color:var(--color-text-secondary,#85919e);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:5px}.catalog-loading,.load-more{text-align:center;padding:24px}.episode-panel{border:1px solid var(--color-border);background:var(--color-surface);padding:20px;border-radius:18px;margin-bottom:20px}.episode-list{display:flex;flex-wrap:wrap;gap:10px;max-height:280px;overflow:auto}.episode-list small{display:block}.source-progress{display:flex;align-items:center;gap:16px;margin:16px 0}@media(max-width:650px){.catalog-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.catalog-card strong{font-size:14px}}
 .tencent-view{max-width:1200px;margin:auto;padding:28px;color:var(--color-text)}
 header{display:flex;align-items:center;gap:16px;margin-bottom:28px}.app-emblem{display:grid;place-items:center;width:58px;height:58px;border-radius:18px;background:linear-gradient(135deg,#2cbfac,#3da9e8 55%,#f5b13e);color:white;font-size:28px}

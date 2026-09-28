@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_SIDEBAR_APPS, placeSidebarApp } from '@/functions/sidebarPins';
 import { Grid } from '@element-plus/icons-vue';
 import { applications } from '@/apps';
 import { computed, reactive, ref, watch, onMounted, onBeforeUnmount } from 'vue';
@@ -20,7 +21,7 @@ console.info('amap ua:', navigator.userAgent);
 const router = useRouter();
 const launcherOpen = ref(false);
 const PIN_KEY='tmc:sidebar-pins:v1';
-const pinnedRoutes=ref<string[]>((()=>{try{const value=JSON.parse(localStorage.getItem(PIN_KEY)||'null');if(Array.isArray(value))return [...new Set(value.filter(r=>applications.some(a=>a.route===r)))];}catch{}return applications.map(a=>a.route);})());
+const pinnedRoutes=ref<string[]>((()=>{try{const value=JSON.parse(localStorage.getItem(PIN_KEY)||'null');if(Array.isArray(value))return [...new Set(value.filter(r=>applications.some(a=>a.route===r)))].slice(0,MAX_SIDEBAR_APPS);}catch{}return applications.map(a=>a.route).slice(0,MAX_SIDEBAR_APPS);})());
 const pinnedApps=computed(()=>pinnedRoutes.value.flatMap(r=>applications.find(a=>a.route===r)||[]));
 const sidebar=ref<HTMLElement>();
 const dragging=ref<{route:string;x:number;y:number;active:boolean;fromSidebar?:boolean;over:boolean;before:string|null}>();
@@ -28,7 +29,7 @@ const dragApp=computed(()=>applications.find(a=>a.route===dragging.value?.route)
 const pinMessage=ref('');
 let dragOrigin=[0,0], dragPointer=-1, suppressClickUntil=0;
 function persistPins(){try{localStorage.setItem(PIN_KEY,JSON.stringify(pinnedRoutes.value));pinMessage.value='侧栏已保存';}catch{pinMessage.value='已更新侧栏，但浏览器无法保存设置';}}
-function togglePin(route:string){if(pinnedRoutes.value.includes(route))pinnedRoutes.value=pinnedRoutes.value.filter(r=>r!==route);else pinnedRoutes.value.push(route);persistPins();}
+function togglePin(route:string){if(pinnedRoutes.value.includes(route))pinnedRoutes.value=pinnedRoutes.value.filter(r=>r!==route);else pinnedRoutes.value=placeSidebarApp(pinnedRoutes.value,route);persistPins();}
 let sidebarHold:ReturnType<typeof setTimeout>|undefined;
 let holdOrigin=[0,0];
 function clearSidebarHold(){if(sidebarHold)clearTimeout(sidebarHold);sidebarHold=undefined;}
@@ -54,7 +55,7 @@ function moveAppDrag(event:PointerEvent){
   if(d.over){
     for(const element of sidebar.value!.querySelectorAll<HTMLElement>('[data-pin-route]')){
       if(element.dataset.pinRoute===d.route)continue;
-      const box=element.getBoundingClientRect();if(d.y<box.top+box.height/2){d.before=element.dataset.pinRoute!;break;}
+      const box=element.getBoundingClientRect();const replacing=!pinnedRoutes.value.includes(d.route)&&pinnedRoutes.value.length>=MAX_SIDEBAR_APPS;if(d.y<(replacing?box.bottom:box.top+box.height/2)){d.before=element.dataset.pinRoute!;break;}
     }
     if(rect&&d.y>rect.bottom-45)(sidebar.value!.querySelector('.menu-bottom') as HTMLElement).scrollTop+=12;
     if(rect&&d.y<rect.top+45)(sidebar.value!.querySelector('.menu-bottom') as HTMLElement).scrollTop-=12;
@@ -65,8 +66,7 @@ function endAppDrag(event:PointerEvent){
   clearSidebarHold();
   const d=dragging.value;if(!d||event.pointerId!==dragPointer)return;
   if(d.active){suppressClickUntil=performance.now()+400;if(event.type==='pointerup'&&d.over){
-    const routes=pinnedRoutes.value.filter(r=>r!==d.route),index=d.before?routes.indexOf(d.before):-1;
-    routes.splice(index<0?routes.length:index,0,d.route);pinnedRoutes.value=routes;persistPins();
+    pinnedRoutes.value=placeSidebarApp(pinnedRoutes.value,d.route,d.before);persistPins();
   }else if(event.type==='pointerup'&&d.fromSidebar){pinnedRoutes.value=pinnedRoutes.value.filter(r=>r!==d.route);persistPins();}}
   dragging.value=undefined;dragPointer=-1;
 }
@@ -117,7 +117,7 @@ function routeTo(name: string){
         </div>
         <div class="menu-bottom">
           <button type="button" class="menu-item" v-for="item of pinnedApps" :data-pin-route="item.route" @pointerdown="pressSidebar(item.route,$event)" @contextmenu.prevent :key="item.route" :class="{ 'pin-insert-before': dragging?.over && dragging.before === item.route, 'menu-item-active': item.route === router.currentRoute.value.path, 'menu-item-qqmusic': item.route === '/apps/qqmusic' }" :aria-label="item.label" :title="item.label" :aria-current="item.route === router.currentRoute.value.path ? 'page' : undefined" @click="routeTo(item.route)">
-            <el-icon v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili', 'menu-icon-qqmusic': item.route === '/apps/qqmusic', 'menu-icon-brand': ['/apps/amap', '/apps/gam4980', '/apps/tencent-video', '/apps/bilibili', '/apps/tesla'].includes(item.route) }">
+            <el-icon v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili', 'menu-icon-qqmusic': item.route === '/apps/qqmusic', 'menu-icon-brand': ['/apps/amap', '/apps/gam4980', '/apps/tencent-video', '/apps/bilibili', '/apps/tesla', '/apps/gba'].includes(item.route) }">
               <img :src="item.icon" class="icon-svg" alt="" />
             </el-icon>
             <el-icon v-else>
@@ -125,7 +125,7 @@ function routeTo(name: string){
             </el-icon>
           </button>
         </div>
-        <div v-if="dragging?.active" class="pin-drop-label">{{ dragging.over ? '松开固定' : '拖到这里' }}</div>
+        <div v-if="dragging?.active" class="pin-drop-label">{{ dragging.over ? (!pinnedRoutes.includes(dragging.route) && pinnedRoutes.length >= MAX_SIDEBAR_APPS ? '松开替换' : '松开固定') : '拖到这里' }}</div>
         <BackgroundAppDock />
       </div>
       <div class="main-view">
@@ -325,14 +325,14 @@ nav {
 <style>
 .app-launcher-panel{position:absolute;z-index:22;left:var(--menu-width);top:0;bottom:0;width:min(620px,calc(100% - var(--menu-width)));border-radius:0 24px 24px 0;border:1px solid var(--color-border);border-left:0;background:var(--color-surface);background:color-mix(in srgb,var(--color-surface) 88%,transparent);backdrop-filter:blur(28px) saturate(130%);-webkit-backdrop-filter:blur(28px) saturate(130%);box-shadow:18px 0 44px -20px rgba(0,0,0,.25);overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--color-border-hover) transparent}
 .app-launcher-panel .app-launcher{height:auto;min-height:100%;padding:24px;background:none;overflow:visible}
-.app-launcher-panel .app-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-.app-launcher-panel .app-card{padding:14px;box-shadow:none;background:var(--color-surface);border-radius:18px}
+.app-launcher-panel .app-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.app-launcher-panel .app-card{padding:12px 8px;box-shadow:none;background:var(--color-surface);border-radius:18px}
 .app-launcher-panel .app-search{width:200px}
 .launcher-slide-enter-active,.launcher-slide-leave-active{transition:transform .2s ease,opacity .2s ease}
 .launcher-slide-enter-from,.launcher-slide-leave-to{transform:translateX(-18px);opacity:0}
 .launcher-idle{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:24px}
 .launcher-idle img{width:72px;opacity:.45}
 .launcher-idle button{padding:12px 20px;border:1px solid var(--color-border);border-radius:14px;background:var(--color-surface);color:var(--color-text);cursor:pointer}
-@media(max-width:620px){.app-launcher-panel .app-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.app-launcher-panel .app-launcher{padding:20px 16px}.app-launcher-panel .launcher-header{margin-bottom:18px}.app-launcher-panel .app-search{width:100%}}
+@media(max-width:620px){.app-launcher-panel .app-grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.app-launcher-panel .app-launcher{padding:20px 16px}.app-launcher-panel .launcher-header{margin-bottom:18px}.app-launcher-panel .app-search{width:100%}}
 @media(prefers-reduced-motion:reduce){.launcher-slide-enter-active,.launcher-slide-leave-active{transition:none}}
 </style>

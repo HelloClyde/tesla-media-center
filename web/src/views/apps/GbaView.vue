@@ -35,7 +35,6 @@ async function uploadGames(event: Event) {
     } catch (e) { failures.push(file.name + '：' + (e as Error).message); }
   }
   if (!uploadDisposed) {
-    state.libraryTab = 'local';
     try { await loadRomList(''); } catch { failures.push('刷新列表失败，请稍后重试'); }
     uploadStatus.value = [count ? `已上传 ${count} 个游戏` : '', ...failures].filter(Boolean).join('；');
     uploading.value = false;
@@ -50,16 +49,13 @@ const state = reactive({
   viewMode: 'library',
   rootPath: '',
   currentPath: '',
-  libraryTab: 'remote',
   loadingList: false,
-  loadingRemote: false,
   loadingRom: false,
   emulatorReady: false,
   emulatorError: '',
   statusText: '选择一个 GBA ROM 开始游玩',
   debugText: '',
   localItems: [] as any[],
-  remoteItems: [] as any[],
   activeRomPath: '',
   activeRomName: '',
   activeRomUrl: '',
@@ -268,7 +264,7 @@ function getStateKey() {
 }
 
 function getCurrentRomItem() {
-  const allItems = [...state.localItems, ...state.remoteItems];
+  const allItems = state.localItems;
   return allItems.find((item: any) => item.path === state.activeRomPath) || null;
 }
 
@@ -583,19 +579,6 @@ async function readResponseWithProgress(response: Response, expectedTotal = 0) {
   return merged.buffer;
 }
 
-async function readResponseFully(response: Response, expectedTotal = 0) {
-  const buffer = await response.arrayBuffer();
-  const total = expectedTotal || buffer.byteLength;
-  state.downloadLoadedBytes = buffer.byteLength;
-  state.downloadTotalBytes = total;
-  state.downloadPercent = total ? 100 : 0;
-  logGbaLaunch('download:completed', {
-    responseTotal: total,
-    byteLength: buffer.byteLength,
-    mode: 'arrayBuffer',
-  });
-  return buffer;
-}
 
 async function downloadRangeChunk(url: string, start: number, end: number, attempt = 1): Promise<ArrayBuffer> {
   try {
@@ -621,16 +604,15 @@ async function downloadRangeChunk(url: string, start: number, end: number, attem
   }
 }
 
-async function downloadRomBuffer(url: string, romName: string, itemType = 'local') {
+async function downloadRomBuffer(url: string, romName: string) {
   state.downloadPercent = 0;
   state.downloadLoadedBytes = 0;
   state.downloadTotalBytes = 0;
   state.statusText = `正在下载《${romName}》...`;
-  const preferSingleRequest = itemType === 'remote';
   let total = 0;
   let acceptRanges = false;
-  logGbaLaunch('download:start', { url, romName, itemType });
-  if (!preferSingleRequest) {
+  logGbaLaunch('download:start', { url, romName });
+  {
     try {
       const headResponse = await fetchWithTimeout(url, {
         method: 'HEAD',
@@ -695,9 +677,6 @@ async function downloadRomBuffer(url: string, romName: string, itemType = 'local
     fileSize: response.headers.get('X-File-Size'),
     transferEncoding: response.headers.get('Transfer-Encoding'),
   });
-  if (preferSingleRequest) {
-    return readResponseFully(response, responseTotal);
-  }
   const buffer = await readResponseWithProgress(response, responseTotal);
   logGbaLaunch('download:completed', {
     responseTotal,
@@ -718,42 +697,7 @@ function loadRomList(path = state.currentPath) {
   });
 }
 
-function loadRemoteCatalog() {
-  state.loadingRemote = true;
-  return fetch('/catalogs/gba-js-org.json', { credentials: 'same-origin' })
-    .then(async (response) => {
-      if (!response.ok) {
-        throw new Error('读取在线 GBA 游戏库失败');
-      }
-      return response.json();
-    })
-    .then((data) => {
-      const items = Array.isArray(data?.items) ? data.items : [];
-      state.remoteItems = items.map((item: any) => ({
-        ...item,
-        type: 'remote',
-        path: `remote:${item.id}`,
-      }));
-    })
-    .catch((error: any) => {
-      state.remoteItems = [];
-      ElMessage.error(error?.message || '读取在线 GBA 游戏库失败');
-    })
-    .finally(() => {
-      state.loadingRemote = false;
-    });
-}
-
-function refreshLibrary() {
-  return Promise.all([loadRomList(), loadRemoteCatalog()]);
-}
-
-function formatRemoteRomTitle(item: any) {
-  if (item?.zhName) {
-    return `${item.zhName}（${item.name}）`;
-  }
-  return item?.name || '';
-}
+function refreshLibrary() { return loadRomList(); }
 
 function goToPath(path: string) {
   loadRomList(path);
@@ -786,7 +730,7 @@ function resetEmulator() {
   if (!state.activeRomPath) {
     return;
   }
-  const allItems = [...state.localItems, ...state.remoteItems];
+  const allItems = state.localItems;
   loadRom(allItems.find((item: any) => item.path === state.activeRomPath) || {
     path: state.activeRomPath,
     url: state.activeRomUrl,
@@ -820,7 +764,7 @@ function loadRom(item: any) {
       hasBios: !!window.biosBin,
       hasCore: !!window.GameBoyAdvance,
     });
-    const romBuffer = await downloadRomBuffer(item.url, item.name, item.type);
+    const romBuffer = await downloadRomBuffer(item.url, item.name);
     if (!lifetime.current(token) || gbaInstance !== gba) return;
     state.statusText = `正在载入《${item.name}》...`;
     if (!(romBuffer instanceof ArrayBuffer) || romBuffer.byteLength <= 0) {
@@ -1223,7 +1167,6 @@ onMounted(() => {
   ensureEmulator().catch(() => {});
   ensureSilentAudioPlayback();
   loadRomList();
-  loadRemoteCatalog();
   window.addEventListener('gamepadconnected', handleGamepadConnected);
   window.addEventListener('gamepaddisconnected', handleGamepadDisconnected);
   startGamepadPolling();
@@ -1254,29 +1197,18 @@ onBeforeUnmount(() => {
         <div class="library-topbar">
           <div>
             <h2>游戏库</h2>
-            <p>本地 {{ romFiles.length }} 个 ROM、{{ folderItems.length }} 个文件夹；在线补充 {{ state.remoteItems.length }} 个 ROM</p>
+            <p>本地 {{ romFiles.length }} 个 ROM、{{ folderItems.length }} 个文件夹</p>
           </div>
           <div class="library-actions">
             <el-button :loading="uploading" @click="uploadPicker?.click()">上传游戏</el-button>
             <input ref="uploadPicker" hidden type="file" accept=".gba" multiple @change="uploadGames" />
             <el-button v-if="state.activeRomName" @click="enterPlayMode">继续 {{ state.activeRomName }}</el-button>
-            <el-button circle :icon="RefreshRight" :loading="state.loadingList || state.loadingRemote" @click="refreshLibrary()" />
+            <el-button circle :icon="RefreshRight" :loading="state.loadingList" @click="refreshLibrary()" />
           </div>
         </div>
 
         <p v-if="uploadStatus" role="status">{{ uploadStatus }}</p>
-        <div class="library-tabs">
-          <button class="library-tab" :class="{ active: state.libraryTab === 'remote' }" @click="state.libraryTab = 'remote'">
-            在线 ROM
-            <span>{{ state.remoteItems.length }}</span>
-          </button>
-          <button class="library-tab" :class="{ active: state.libraryTab === 'local' }" @click="state.libraryTab = 'local'">
-            本地 ROM
-            <span>{{ romFiles.length }}</span>
-          </button>
-        </div>
-
-        <div v-if="state.libraryTab === 'local'" class="breadcrumbs">
+        <div class="breadcrumbs">
           <button
             v-for="item in breadcrumbs"
             :key="item.path || 'root'"
@@ -1288,12 +1220,12 @@ onBeforeUnmount(() => {
           </button>
         </div>
 
-        <div v-if="state.libraryTab === 'local'" class="library-section-title">
+        <div class="library-section-title">
           <strong>本地 ROM</strong>
           <span>{{ state.rootPath || './roms/gba' }}</span>
         </div>
 
-        <div v-if="state.libraryTab === 'local'" class="rom-grid">
+        <div class="rom-grid">
           <button
             v-for="item in state.localItems"
             :key="item.path"
@@ -1321,33 +1253,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="state.libraryTab === 'remote'" class="library-section-title remote">
-          <strong>在线 ROM</strong>
-          <span>来自 gba.js.org 的公开示例库</span>
-        </div>
-
-        <div v-if="state.libraryTab === 'remote'" class="rom-grid remote-grid">
-          <button
-            v-for="item in state.remoteItems"
-            :key="item.path"
-            class="rom-card remote-card"
-            :class="{ active: item.path === state.activeRomPath }"
-            @click="loadRom(item)"
-          >
-            <div class="rom-card-icon">
-              <el-icon><CaretRight /></el-icon>
-            </div>
-            <div class="rom-card-body">
-              <strong>{{ formatRemoteRomTitle(item) }}</strong>
-              <span>{{ item.provider }}</span>
-            </div>
-          </button>
-
-          <div v-if="!state.loadingRemote && state.remoteItems.length === 0" class="empty-card">
-            <strong>在线 GBA 游戏库暂时不可用</strong>
-            <span>稍后再刷新页面试试。</span>
-          </div>
-        </div>
       </section>
     </template>
 

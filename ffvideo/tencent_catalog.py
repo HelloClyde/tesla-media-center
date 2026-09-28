@@ -1,5 +1,6 @@
 """Normalize the public Tencent web catalog without forwarding tracking payloads."""
 import html
+import json
 import re
 from urllib.parse import urlsplit
 
@@ -45,11 +46,16 @@ def home_cards(payload):
         params = node.get('params') or {}
         direct = vid(params.get('vid'))
         preview = vid(params.get('cut_vid')) or vid(params.get('window_vid'))
-        identifier = direct or preview
+        cid = str(params.get('cid') or '')
+        series_id = 'series:' + cid if re.fullmatch(r'[A-Za-z0-9]{15}', cid) else ''
+        identifier = series_id or direct or preview
         if identifier and params.get('title') and identifier not in seen:
             seen.add(identifier)
-            items.append(card(identifier, params['title'], params.get('image_url') or params.get('pic_hz'),
-                              params.get('sub_title') or params.get('subtitle'), '视频' if direct else '预告 / 片段'))
+            item = card('' if series_id else identifier, params['title'], params.get('image_url') or params.get('pic_hz'),
+                        params.get('sub_title') or params.get('subtitle'), '选集' if series_id else '视频' if direct else '预告 / 片段')
+            if series_id:
+                item.update(id=series_id, cid=cid)
+            items.append(item)
         for name, group in (node.get('children_list') or {}).items():
             if 'ad' not in name.split('_'):
                 for child in group.get('cards') or []:
@@ -58,6 +64,27 @@ def home_cards(payload):
     for node in payload.get('CardList') or []:
         walk(node)
     return items
+
+
+def episode_tags(episode):
+    # Use Tencent's display labels: payStatus alone does not determine the badge.
+    labels = episode.get('markLabel') or {}
+    if isinstance(labels, str):
+        try:
+            labels = json.loads(labels)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(labels, dict):
+        return []
+    tags = []
+    for label in labels.values():
+        info = label.get('info') if isinstance(label, dict) else None
+        if not isinstance(info, dict):
+            continue
+        value = text(info.get('text'))[:24]
+        if value and not value.isdigit() and value not in tags:
+            tags.append(value)
+    return tags[:4]
 
 
 def search_cards(payload):
@@ -83,7 +110,9 @@ def search_cards(payload):
                         ep_id = vid(episode.get('id'))
                         if ep_id and ep_id not in episode_ids:
                             episode_ids.add(ep_id)
-                            episodes.append(card(ep_id, episode.get('title'), episode.get('imgUrl'), episode.get('payStatus')))
+                            episode_card = card(ep_id, episode.get('title'), episode.get('imgUrl'))
+                            episode_card['tags'] = episode_tags(episode)
+                            episodes.append(episode_card)
                 key = str(doc.get('id') or '')
                 if episodes and key not in seen:
                     seen.add(key)

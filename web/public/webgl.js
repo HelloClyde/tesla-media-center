@@ -149,18 +149,49 @@ WebGLPlayer.prototype.renderFrame = function (videoFrame, width, height, uOffset
 };
 
 WebGLPlayer.prototype.fullscreen = function () {
-	  var canvas = this.canvas;
-    if (canvas.RequestFullScreen) {
-        canvas.RequestFullScreen();
-    } else if (canvas.webkitRequestFullScreen) {
-        canvas.webkitRequestFullScreen();
-    } else if (canvas.mozRequestFullScreen) {
-        canvas.mozRequestFullScreen();
-    } else if (canvas.msRequestFullscreen) {
-        canvas.msRequestFullscreen();
-    } else {
-        alert("This browser doesn't supporter fullscreen");
+    // Fullscreen the picture container so touch controls remain above the canvas.
+    var canvas = this.canvas;
+    var target = canvas.parentElement;
+    if (!target || document.fullscreenElement || document.webkitFullscreenElement) return;
+    var request = target.requestFullscreen || target.webkitRequestFullscreen ||
+        target.webkitRequestFullScreen || target.mozRequestFullScreen || target.msRequestFullscreen;
+    if (!request) return;
+    var player = this;
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.setAttribute('aria-label', '退出全屏');
+    button.title = '退出全屏';
+    button.innerHTML = '<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M6 6L18 18M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>';
+    button.style.cssText = 'position:absolute;top:max(16px,env(safe-area-inset-top));right:max(16px,env(safe-area-inset-right));z-index:2147483647;width:52px;height:52px;min-width:52px;min-height:52px;padding:0;display:grid;place-items:center;border:1px solid #ffffff66;border-radius:50%;background:#000a;color:#fff;cursor:pointer;touch-action:manipulation;';
+    button.onclick = function (event) { event.preventDefault(); event.stopPropagation(); player.exitfullscreen(); };
+    var oldTargetStyle = target.getAttribute('style');
+    var oldCanvasStyle = canvas.getAttribute('style');
+    var active = false, cleaned = false;
+    var events = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+    function cleanup() {
+        if (cleaned) return;
+        cleaned = true;
+        button.remove();
+        if (active) {
+            if (oldTargetStyle === null) target.removeAttribute('style'); else target.setAttribute('style', oldTargetStyle);
+            if (oldCanvasStyle === null) canvas.removeAttribute('style'); else canvas.setAttribute('style', oldCanvasStyle);
+        }
+        events.forEach(function (name) { document.removeEventListener(name, changed); });
     }
+    function changed() {
+        var element = document.fullscreenElement || document.webkitFullscreenElement ||
+            document.mozFullScreenElement || document.msFullscreenElement;
+        if (element !== target) { cleanup(); return; }
+        active = true;
+        target.style.cssText += ';position:relative;width:100vw;height:100vh;max-width:none;max-height:none;background:#000;overflow:hidden;';
+        canvas.style.cssText += ';display:block;width:100%;height:100%;object-fit:contain;';
+    }
+    target.appendChild(button);
+    events.forEach(function (name) { document.addEventListener(name, changed); });
+    try {
+        var pending = request.call(target);
+        if (pending && pending.catch) pending.catch(cleanup);
+    } catch (_) { cleanup(); }
 };
 
 WebGLPlayer.prototype.exitfullscreen = function (){
