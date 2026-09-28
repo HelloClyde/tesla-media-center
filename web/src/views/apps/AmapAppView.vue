@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, watch, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
+import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
+const viewActive = ref(true);
 import { navigationVoicePhrase } from './amapVoicePhrases';
 import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
 import { createLivePositionGate } from './amapLivePosition';
@@ -42,7 +44,7 @@ const overviewActive = ref(false), orientation = ref<'north' | 'heading'>('north
 const heading = ref<number>();
 let headingAnchor: Point | undefined, overviewGeneration = 0;
 function applyOrientation() {
-  if (!map) return;
+  if (!map || !viewActive.value) return;
   const bearing = orientation.value === 'heading' && !overviewActive.value ? -(heading.value || 0) : 0;
   if (Math.abs(((map.getBearing() - bearing + 540) % 360) - 180) > .5) map.setBearing(bearing);
   marker?.setRotation((heading.value || 0) * Math.PI / 180);
@@ -56,6 +58,7 @@ function cycleViewMode() {
   followLocation();
 }
 async function overview() {
+  if (!viewActive.value) return;
   overviewActive.value = true;
   following.value = false;
   applyOrientation();
@@ -111,8 +114,32 @@ watch([current, () => next.value?.key, mode, muted], () => {
   ]).catch(() => { /* Playback reports engine errors; navigation remains usable. */ });
 });
 
+function endNavigation() {
+  stop(); controller?.abort(); generation++; busy.value = false; status.value = '导航已结束'; draw();
+}
+watchEffect(() => {
+  if (mode.value === 'idle' || !current.value) { clearBackgroundNavigation(); return; }
+  publishBackgroundNavigation({ simulated: mode.value === 'demo', muted: muted.value,
+    arrow: next.value?.arrow || '↑', instruction: next.value ? `${formatDistance(next.value.distance)}后${next.value.text}` : '继续前行',
+    road: next.value?.road || '', remaining: formatDistance(remaining.value), status: status.value,
+  }, { stop: endNavigation, toggleVoice });
+});
+onDeactivated(() => {
+  viewActive.value = false; appMap?.setActive(false); cancelSearch();
+  if (mode.value === 'idle') stop();
+});
+onActivated(async () => {
+  viewActive.value = true;
+  await nextTick();
+  if (disposed || !map || !viewActive.value) return;
+  map.invalidateSize({ pan: false }); appMap?.setActive(true); endpoints(); draw(false);
+  if (location.value && marker) marker.setLatLng(latLng(location.value));
+  if (following.value && location.value) map.panTo(latLng(location.value), { animate: false });
+  applyOrientation();
+});
+
 function endpoints() {
-  if (!map) return;
+  if (!map || !viewActive.value) return;
   if ((hasOrigin.value || hasDestination.value) && !appMap) appMap = attachAppMap(map, message => { mapStatus.value = message; });
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
@@ -120,7 +147,7 @@ function endpoints() {
   if (hasDestination.value) endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
 }
 function draw(fit = true) {
-  if (!map) return;
+  if (!map || !viewActive.value) return;
   lines.forEach(line => line.remove()); lines = [];
   routes.value.forEach((route, index) => {
     const chunks = [0, ...route.breaks, route.path.length];
@@ -206,11 +233,13 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (direction !== undefined) { heading.value = smoothHeading(heading.value, direction); headingAnchor = point; }
   else if (!headingAnchor && accuracy <= 60) headingAnchor = point;
   location.value = point;
+  if (viewActive.value) {
   if (!marker) marker = L.marker(latLng(point), { icon: L.divIcon({ className: '', html: '<div class="amap-vehicle">▲</div>', iconSize: [36,36], iconAnchor: [18,18] }), rotateWithView: true, zIndexOffset: 1000 }).addTo(map);
   marker.setLatLng(latLng(point));
   if (following.value) applyOrientation();
   else marker.setRotation((heading.value || 0) * Math.PI / 180);
   if (following.value && mode.value !== 'idle') map.panTo(latLng(point), { animate: false });
+  }
   if (!current.value || mode.value === 'idle') return;
   if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
   const match = matchPosition(current.value, point, progress.value, recovered);
@@ -343,6 +372,7 @@ onMounted(() => {
   map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
   map.on('dragstart', pauseMapFollowing);
   resizeObserver = new ResizeObserver(() => {
+    if (!viewActive.value) return;
     map.invalidateSize({ pan: false });
     if (overviewActive.value) void overview();
   });
@@ -350,13 +380,13 @@ onMounted(() => {
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
   mapReady.value = true; endpoints(); locate(false);
 });
-onBeforeUnmount(() => { mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+onBeforeUnmount(() => { clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D" ref="map3D" :center="mapCenter" :position="location" :heading="heading || 0" :bearing="orientation === 'heading' ? heading || 0 : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="location" :heading="heading || 0" :bearing="orientation === 'heading' ? heading || 0 : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
@@ -398,7 +428,7 @@ onBeforeUnmount(() => { mapElement.value?.removeEventListener('touchstart', begi
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="stop(); controller?.abort(); generation++; busy = false; status = '导航已结束'; draw()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
     </footer>
   </section>
 </template>

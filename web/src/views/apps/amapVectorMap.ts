@@ -26,9 +26,9 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   }
 
   const renderQueue = createMapRenderQueue(() => report('地图绘制失败，请重试'));
-  let moving = false;
+  let moving = false, active = true;
   function draw(tiles: number[][]) {
-    if (!disposed && !moving) renderQueue.start(drawSteps(tiles));
+    if (!disposed && !moving && active) renderQueue.start(drawSteps(tiles));
   }
   function* drawSteps(tiles: number[][]): Generator<void> {
     // Removing many Leaflet layers also costs time; spread cleanup across turns.
@@ -108,7 +108,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     }
   }
   async function load() {
-    if (disposed || moving) return;
+    if (disposed || moving || !active) return;
     const id = ++generation;
     request?.abort(); request = new AbortController();
     const tiles = visible();
@@ -155,6 +155,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     if (timer) clearTimeout(timer);
   }
   function schedule() {
+    if (!active || disposed) return;
     moving = false;
     generation++; request?.abort(); renderQueue.cancel();
     if (timer) clearTimeout(timer);
@@ -163,7 +164,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   map.on('movestart zoomstart', suspend);
   map.on('moveend zoomend rotate', schedule);
   void load();
-  return { setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => void load(), dispose() {
+  return { setActive(value: boolean) { active = value; if (!value) suspend(); else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => void load(), dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear();
   } };

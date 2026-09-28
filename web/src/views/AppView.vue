@@ -5,6 +5,7 @@ import { computed, reactive, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import AppLauncher from './apps/HomeView.vue';
 import { RouterView,useRouter } from 'vue-router';
 import BackgroundAppDock from '@/components/BackgroundAppDock.vue';
+import BackgroundNavigation from '@/components/BackgroundNavigation.vue';
 import { startLayoutDiagnostics } from '@/functions/viewportDiagnostics';
 const stopLayoutDiagnostics = startLayoutDiagnostics();
 onBeforeUnmount(stopLayoutDiagnostics);
@@ -129,8 +130,9 @@ function routeTo(name: string){
       </div>
       <div class="main-view">
         <div v-if="router.currentRoute.value.path === '/apps/home'" class="launcher-idle"><img src="/tmc-mark.svg" alt="TMC" /><button @click="launcherOpen = true">打开应用列表</button></div>
-        <RouterView v-slot="{ Component }"><KeepAlive include="QQMusicView"><component :is="Component" v-if="router.currentRoute.value.path !== '/apps/home'" /></KeepAlive></RouterView>
+        <RouterView v-slot="{ Component }"><KeepAlive include="QQMusicView,AmapAppView"><component :is="Component" v-if="router.currentRoute.value.path !== '/apps/home'" /></KeepAlive></RouterView>
       </div>
+      <BackgroundNavigation />
       <div v-if="dragging?.active && dragApp" class="app-drag-ghost" :style="{left:dragging.x+16+'px',top:dragging.y+12+'px'}"><img v-if="typeof dragApp.icon==='string'" :src="dragApp.icon" alt=""/><component v-else :is="dragApp.icon"/><span>{{ dragApp.label }}<small v-if="dragging.fromSidebar && !dragging.over" class="unpin-hint">松开移出侧栏</small></span></div>
       <span class="pin-announcement" role="status" aria-live="polite">{{ pinMessage }}</span>
       <Transition name="launcher-slide">
