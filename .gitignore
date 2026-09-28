@@ -43,5 +43,7 @@ docker_build/amap-assets/
 
 # Blender incremental backups (editable source .blend is tracked)
 assets/model-y-2022/*.blend1
+web/public/tts/matcha-1.13.8/
+web/public/tts/matcha-1.13.8-q8-v1/
 
 /data/

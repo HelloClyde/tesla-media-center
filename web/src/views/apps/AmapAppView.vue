@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, watch, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
+import AmapNavigation3D from './AmapNavigation3D.vue';
+import { prepareLocalSpeech, speakLocal, stopLocalSpeech, localSpeechState } from '@/functions/localSpeech';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 const geoLocation = useGeoLocationStore();
 import { useRouter } from 'vue-router';
@@ -11,6 +13,16 @@ import type { Place } from './amapSearch';
 import { searchWebPlaces } from './amapWebSearch';
 import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
 const mapStatus = ref('');
+const use3D = ref(false), map3DStatus = ref('');
+const map3D = ref<InstanceType<typeof AmapNavigation3D>>();
+const mapCenter = ref<Point>([0, 0]), mapZoom = ref(17);
+const show3D = computed(() => use3D.value && !overviewActive.value && (hasOrigin.value || hasDestination.value));
+function toggle3D() {
+  use3D.value = !use3D.value;
+  if (use3D.value) { layerMenu.value = false; orientation.value = 'heading'; followLocation(); }
+}
+function fail3D() { use3D.value = false; error.value = '当前设备无法显示 3D 地图，已切换为 2D'; }
+
 const layerMenu = ref(false);
 const mapAppearance = ref<AppMapAppearance>({ theme: 'day', surfaces: true, roads: true, labels: true, transit: true, places: true });
 watch(mapAppearance, value => appMap?.setAppearance(value), { deep: true });
@@ -80,10 +92,11 @@ let simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnTy
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, lastFix = 0, offCount = 0, lastReplan = 0, spoken = '';
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string) {
-  if (muted.value || !('speechSynthesis' in window)) return;
-  window.speechSynthesis.cancel();
-  const speech = new SpeechSynthesisUtterance(text); speech.lang = 'zh-CN'; window.speechSynthesis.speak(speech);
+  if (muted.value) return;
+  void speakLocal(text, 15000).catch(() => {});
 }
+function prepareVoice() { if (!muted.value) void prepareLocalSpeech().catch(e => { localSpeechState.error=String(e); }); }
+
 function endpoints() {
   if (!map) return;
   if ((hasOrigin.value || hasDestination.value) && !appMap) appMap = attachAppMap(map, message => { mapStatus.value = message; });
@@ -206,7 +219,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     if (key !== spoken) { spoken = key; speak(`${formatDistance(turn.distance)}后${turn.text}，进入${turn.road}`); }
   }
 }
-function toggleVoice() { muted.value = !muted.value; if (muted.value && 'speechSynthesis' in window) window.speechSynthesis.cancel(); }
+function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
 function stop() {
   locationGeneration++;
   if (locationTimeout) clearTimeout(locationTimeout);
@@ -215,9 +228,10 @@ function stop() {
   if (simulation) clearInterval(simulation);
   if (staleTimer) clearInterval(staleTimer);
   simulation = undefined; staleTimer = undefined; mode.value = 'idle';
-  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+  stopLocalSpeech();
 }
 function startDemo() {
+  prepareVoice();
   if (!current.value) return;
   stop(); overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
   headingAnchor = current.value.path[0]; heading.value = bearingBetween(headingAnchor, pointAt(current.value, 25));
@@ -225,6 +239,7 @@ function startDemo() {
   simulation = setInterval(() => { if (current.value) updatePosition(pointAt(current.value, progress.value + 15)); }, 500);
 }
 function locate(navigate = false) {
+  if (navigate) prepareVoice();
   if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
   if (!window.isSecureContext) { error.value = '当前位置页面不是安全连接，请通过 HTTPS 访问后再定位'; status.value = '定位需要安全连接'; return; }
   if (!navigate) clearRoute(); else stop();
@@ -282,6 +297,7 @@ function locate(navigate = false) {
 onMounted(() => {
   if (!mapElement.value) return;
   map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
+  map.on('move zoom', () => { const center=map.getCenter(); mapCenter.value=[center.lng,center.lat]; mapZoom.value=map.getZoom(); });
   map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
 
   map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
@@ -300,7 +316,8 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <div v-if="!mapReady" class="map-loading">{{ error || '正在加载地图…' }}</div>
+    <AmapNavigation3D v-if="show3D" ref="map3D" :center="mapCenter" :position="location" :heading="heading || 0" :bearing="orientation === 'heading' ? heading || 0 : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
       <div class="search-line"><select v-model="picking" aria-label="选点类型"><option value="destination">终点</option><option value="origin">起点</option></select>
@@ -311,7 +328,8 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
     </header>
     <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><span class="turn-arrow">{{ next.arrow }}</span><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
     <div class="map-controls">
-      <button title="地图图层" aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
+      <button class="dimension-mode" :class="{ active: use3D }" :disabled="!hasOrigin && !hasDestination" :aria-label="use3D ? '切换为 2D 地图' : '切换为 3D 地图'" :aria-pressed="use3D" @click="toggle3D">{{ use3D ? '3D' : '2D' }}</button>
+      <button v-if="!show3D" title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
       <button class="view-mode" :class="{ active: overviewActive || following }" :disabled="!mapReady" :title="`${viewModeLabel} · 点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" :aria-label="`视角：${viewModeLabel}，点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" @click="cycleViewMode">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <template v-if="overviewActive"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><path d="m8 16 3-8 5 8"/><circle cx="11" cy="8" r="1"/></template>
@@ -332,11 +350,12 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
       <label><input type="checkbox" v-model="mapAppearance.transit" />公共交通标注</label>
     </div>
     <footer ref="footerPanel" class="navigation-footer glass">
-      <p v-if="mapStatus" class="map-notice">{{ mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="appMap?.retry()">重试</button></p>
+      <p v-if="show3D ? map3DStatus : mapStatus" class="map-notice">{{ show3D ? map3DStatus : mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="show3D ? map3D?.retry() : appMap?.retry()">重试</button></p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <template v-if="mode === 'idle'">
         <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
         <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong>{{ formatDistance(route.distance) }}</strong><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
+        <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
       <div v-else class="footer-line"><button @click="stop(); controller?.abort(); generation++; busy = false; status = '导航已结束'; draw()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}</small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
@@ -363,6 +382,7 @@ onBeforeUnmount(() => { disposed = true; generation++; cancelSearch(); controlle
 </style>
 
 <style scoped>
+.map-controls .dimension-mode{font-size:15px;font-weight:700}
 .map-controls .view-mode{display:grid;place-items:center}
 .map-controls .view-mode svg{width:24px;height:24px}
 .map-controls .active{background:#e4f8ef;border-color:#19b88b;color:#078161}

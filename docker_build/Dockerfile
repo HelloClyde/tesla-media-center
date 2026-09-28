@@ -4,6 +4,8 @@ WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+RUN test ! -e public/tts/matcha-1.13.8/sherpa-onnx-wasm-main-tts.data
+RUN test -s public/tts/matcha-1.13.8-q8-v1/sherpa-onnx-wasm-main-tts.data
 RUN npm run build
 
 FROM python:3.11-slim

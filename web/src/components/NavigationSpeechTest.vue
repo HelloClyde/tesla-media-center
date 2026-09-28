@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onBeforeUnmount, ref } from 'vue';
+import { localSpeechState, prepareLocalSpeech, speakLocal, stopLocalSpeech, releaseLocalSpeech } from '@/functions/localSpeech';
+const speechMode = ref('local');
 const supported = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
 const engine = supported ? window.speechSynthesis : undefined;
 const voices = ref<SpeechSynthesisVoice[]>([]), selected = ref('');
@@ -17,11 +19,12 @@ function refresh() {
   snapshot();
 }
 function stop() {
+  stopLocalSpeech();
   clearTimeout(watchdog);
   if (utterance) { utterance.onstart = null; utterance.onend = null; utterance.onerror = null; }
   utterance = undefined; engine?.cancel(); snapshot();
 }
-function play() {
+function playBrowser() {
   if (!engine || !text.value.trim()) return;
   stop();
   const current = new SpeechSynthesisUtterance(text.value.trim());
@@ -41,6 +44,15 @@ function play() {
   try { engine.speak(current); snapshot(); }
   catch (error) { clearTimeout(watchdog); status.value = `调用失败：${error instanceof Error ? error.message : String(error)}`; log(status.value); }
 }
+async function loadLocal() {
+  try { await prepareLocalSpeech(); log('端侧中文引擎已就绪'); }
+  catch(e) { localSpeechState.error=String(e); log(String(e)); }
+}
+function play() {
+  if(speechMode.value==='browser'){playBrowser();return;}
+  stop(); log('请求端侧中文合成');
+  void speakLocal(text.value).then(()=>log(`合成 ${localSpeechState.synthesisMs.toFixed(0)} ms · 音频 ${localSpeechState.audioSeconds.toFixed(2)} 秒`)).catch(e=>log(String(e)));
+}
 function cancel() { stop(); status.value = '已停止'; log('手动停止'); }
 onMounted(() => { refresh(); engine?.addEventListener('voiceschanged', refresh); poll = setInterval(snapshot, 500); });
 onBeforeUnmount(() => { stop(); clearInterval(poll); engine?.removeEventListener('voiceschanged', refresh); });
@@ -49,22 +61,24 @@ onBeforeUnmount(() => { stop(); clearInterval(poll); engine?.removeEventListener
 <template>
   <section class="speech-test">
     <h3>导航语音测试</h3>
-    <p>使用与导航相同的浏览器中文语音合成。请先停车，再点击测试。</p>
-    <div class="speech-meta">语音 API：{{ supported ? '支持' : '不支持' }} · 可用声音：{{ voices.length }} · 中文声音：{{ voices.filter(v => /^zh|cmn|yue/i.test(v.lang)).length }}</div>
+    <p>默认使用与导航相同的端侧中文引擎，不依赖浏览器 TTS。精简版首次约 47 MiB，后续优先使用本地缓存。请停车后测试。</p>
+    <label>语音引擎<select v-model="speechMode" @change="cancel"><option value="local">端侧中文 · Matcha（导航使用）</option><option value="browser">浏览器系统 TTS（对照测试）</option></select></label>
+    <div v-if="speechMode==='browser'" class="speech-meta">语音 API：{{ supported ? '支持' : '不支持' }} · 可用声音：{{ voices.length }} · 中文声音：{{ voices.filter(v => /^zh|cmn|yue/i.test(v.lang)).length }}</div>
     <label>测试文字<textarea v-model="text" rows="2" maxlength="300" /></label>
-    <label>播报声音<select v-model="selected" :disabled="!supported">
-      <option value="">默认中文（与导航相同）</option>
+    <label v-if="speechMode==='browser'">播报声音<select v-model="selected" :disabled="!supported">
+      <option value="">浏览器默认中文</option>
       <option v-for="voice in voices" :key="voice.voiceURI" :value="voice.voiceURI">{{ voice.name }} · {{ voice.lang }} · {{ voice.localService ? '本地' : '在线' }}</option>
     </select></label>
     <div class="speech-actions">
-      <el-button type="primary" :disabled="!supported || !text.trim()" @click="play">播放导航语音</el-button>
-      <el-button :disabled="!supported" @click="cancel">停止语音</el-button>
-      <el-button @click="refresh">刷新声音列表</el-button>
+      <el-button type="primary" :disabled="(speechMode==='browser' && !supported) || !text.trim()" @click="play">播放导航语音</el-button>
+      <el-button @click="cancel">停止语音</el-button>
+      <el-button v-if="speechMode==='browser'" @click="refresh">刷新声音列表</el-button><el-button v-else :loading="localSpeechState.loading" @click="loadLocal">加载端侧引擎</el-button><el-button v-if="speechMode==='local'" @click="releaseLocalSpeech">释放语音内存</el-button>
     </div>
-    <p role="status">{{ status }}</p>
-    <small>{{ state }}</small>
-    <p v-if="supported && !voices.length">声音列表为空；部分浏览器会延迟加载，也可能没有可用语音引擎。可以刷新后再试。</p>
-    <p>如果下方声道测试能发声，而这里无声，问题更可能在浏览器语音引擎。即使出现 start/end，也需要以实际听到声音为准。</p>
+    <p role="status">{{ speechMode==='local' ? localSpeechState.status : status }}</p>
+    <p v-if="speechMode==='local'">合成：{{ localSpeechState.synthesisMs.toFixed(0) }} ms · 音频：{{ localSpeechState.audioSeconds.toFixed(2) }} 秒 · RTF：{{ localSpeechState.audioSeconds ? (localSpeechState.synthesisMs / 1000 / localSpeechState.audioSeconds).toFixed(2) : '—' }} · {{ localSpeechState.cacheHit ? '命中短句缓存' : '新合成' }}</p>
+    <small v-if="speechMode==='browser'">{{ state }}</small>
+    <p v-if="speechMode==='browser' && supported && !voices.length">声音列表为空；部分浏览器会延迟加载，也可能没有可用语音引擎。可以刷新后再试。</p>
+    <p>端侧合成在独立 Worker 中运行，需要 WASM SIMD 和足够内存。播放状态仅代表音频已提交，请以车内实际听到声音为准。</p>
     <ol class="speech-logs"><li v-for="(entry, index) in logs" :key="index">{{ entry }}</li></ol>
   </section>
 </template>

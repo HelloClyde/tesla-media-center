@@ -47,6 +47,6 @@ FP32 矩阵乘法：选择最大 256 阶，预热后 5 次中位数；耗时为�
 - GPU 方案先验证 WebGPU adapter/device 和真实算子执行，再决定是否接入；接口存在不等于模型可运行。
 - 用“前方二百米右转，进入长安街”测试首次加载、首声延迟、合成耗时、音频时长及 RTF（合成耗时 / 音频时长，小于 1 表示快于实时）。同时检查音乐播放和地图显示是否受影响。
 - 模型合成后通过音频播放，不依赖车机此前报 `synthesis-failed` 的系统语音合成引擎。常用导航短句可提前合成并缓存。
-- **当前仅保存测试记录；尚未接入或运行真实 TTS 模型。**
+- 当时仅保存测试记录。2026-09-28 已接入真实中文 TTS，见 [端侧导航语音](local-navigation-tts.md)；本机已验证，车机仍需复测。
 
 参考：[中文 Matcha 模型与 WASM 示例](https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese/matcha-icefall-zh-baker.html)、[ONNX Runtime Web 后端说明](https://onnxruntime.ai/docs/tutorials/web/)。

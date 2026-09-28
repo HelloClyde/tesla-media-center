@@ -31,6 +31,11 @@ jobs:
       - name: Download and verify pinned Amap runtime
         run: python tools/amap-app/release_assets.py
 
+      - name: Download and verify browser Chinese TTS
+        run: |
+          python -m pip install -r tools/tts/requirements.txt
+          python tools/tts/prepare_assets.py
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 

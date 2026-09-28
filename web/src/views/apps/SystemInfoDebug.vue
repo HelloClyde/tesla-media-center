@@ -87,10 +87,6 @@ function refresh() {
     refreshMapConfig();
 }
 
-function h5TTS(text: string) {
-    const utterThis = new window.SpeechSynthesisUtterance(text);
-    window.speechSynthesis.speak(utterThis);
-}
 
 function logout() {
     get('/api/logout').then(() => {
@@ -190,8 +186,7 @@ onUnmounted(() => {
                 <article class="settings-card">
                     <div class="card-head"><h2>语音播报</h2></div>
                     <div class="button-column">
-                        <el-button type="default" round @click="h5TTS('你好，特斯拉！')">测试中文 TTS</el-button>
-                        <el-button type="default" round @click="h5TTS('hello tesla!')">测试英文 TTS</el-button>
+                        <el-button type="primary" round @click="activeTab = 'sound'">打开端侧语音测试</el-button>
                     </div>
                 </article>
                 <article class="settings-card">
