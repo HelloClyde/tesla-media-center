@@ -74,6 +74,7 @@ onBeforeUnmount(() => { stop(); clearInterval(poll); engine?.removeEventListener
       <el-button @click="cancel">停止语音</el-button>
       <el-button v-if="speechMode==='browser'" @click="refresh">刷新声音列表</el-button><el-button v-else :loading="localSpeechState.loading" @click="loadLocal">加载端侧引擎</el-button><el-button v-if="speechMode==='local'" @click="releaseLocalSpeech">释放语音内存</el-button>
     </div>
+    <p v-if="speechMode==='local' && localSpeechState.modelCacheStatus">{{ localSpeechState.modelCacheStatus }}</p>
     <p role="status">{{ speechMode==='local' ? localSpeechState.status : status }}</p>
     <p v-if="speechMode==='local'">合成：{{ localSpeechState.synthesisMs.toFixed(0) }} ms · 音频：{{ localSpeechState.audioSeconds.toFixed(2) }} 秒 · RTF：{{ localSpeechState.audioSeconds ? (localSpeechState.synthesisMs / 1000 / localSpeechState.audioSeconds).toFixed(2) : '—' }} · {{ localSpeechState.cacheHit ? '命中短句缓存' : '新合成' }}</p>
     <small v-if="speechMode==='browser'">{{ state }}</small>

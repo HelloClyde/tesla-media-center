@@ -65,3 +65,37 @@ it('retains active navigation, exposes floating controls and removes it on logou
   expect(stopped).toHaveBeenCalledTimes(1); expect(backgroundApps.amap).toBeUndefined(); expect(backgroundNavigation.active).toBe(false);
   wrapper.unmount();
 });
+
+it('keeps music and navigation in separate caches across sidebar switches', async () => {
+  const musicCreated = vi.fn(), mapCreated = vi.fn();
+  const Music = defineComponent({ name: 'QQMusicView', setup() {
+    musicCreated(); return () => h('div', { 'data-test': 'music-view' }, 'Music');
+  } });
+  const Map = defineComponent({ name: 'AmapAppView', setup() {
+    mapCreated(); return () => h('div', { 'data-test': 'map-view' }, 'Map');
+  } });
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/apps', component: AppView, children: [
+      { path: 'amap', name: 'amap-app', component: Map },
+      { path: 'qqmusic', name: 'qqmusic', component: Music },
+      { path: 'debug', component: { render: () => h('div', 'Debug') } },
+      { path: 'home', component: { render: () => h('div') } },
+    ] },
+  ] });
+  await router.push('/apps/amap'); await router.isReady();
+  const wrapper = mount({ template: '<router-view />' }, { global: { plugins: [router], stubs: { 'el-icon': true } } });
+  try {
+    for (const intermediate of ['/apps/debug', '/apps/home']) {
+      await router.push(intermediate); await flushPromises();
+      await wrapper.find('button[aria-label="QQ 音乐"]').trigger('click'); await flushPromises();
+      expect(router.currentRoute.value.path).toBe('/apps/qqmusic');
+      expect(wrapper.find('[data-test=music-view]').exists()).toBe(true);
+      expect(wrapper.find('[data-test=map-view]').exists()).toBe(false);
+      await router.push('/apps/amap'); await flushPromises();
+      expect(wrapper.find('[data-test=map-view]').exists()).toBe(true);
+      expect(wrapper.find('[data-test=music-view]').exists()).toBe(false);
+    }
+    expect(mapCreated).toHaveBeenCalledTimes(1);
+    expect(musicCreated).toHaveBeenCalledTimes(1);
+  } finally { wrapper.unmount(); }
+});

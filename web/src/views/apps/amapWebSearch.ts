@@ -12,6 +12,11 @@ export async function searchWebPlaces(keywords: string, signal: AbortSignal, cen
     frame.hidden = true;
     frame.title = '高德地点搜索服务';
     let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = (ms: number, message: string) => {
+      clearTimeout(timer);
+      timer = setTimeout(() => finish(new Error(message)), ms);
+    };
     const finish = (error?: Error, places: Place[] = []) => {
       if (settled) return;
       settled = true;
@@ -28,16 +33,19 @@ export async function searchWebPlaces(keywords: string, signal: AbortSignal, cen
         frame.contentWindow?.postMessage({ type: 'tmc-search', key, keywords,
           center: center?.length === 2 && center.every(Number.isFinite) && Math.abs(center[0]) <= 180 && Math.abs(center[1]) <= 85 ? center : undefined,
           securityCode: config.data.data?.amap_security_js_code || '' }, window.location.origin);
+      } else if (event.data?.type === 'tmc-search-stage') {
+        if (event.data.stage === 'sdk-loading') deadline(30000, '高德搜索 SDK 加载超时，请检查车机到高德服务的网络连接');
+        if (event.data.stage === 'query') deadline(12000, '高德地点查询超时，搜索服务未及时返回结果');
       } else if (event.data?.type === 'tmc-search-result') {
         try { finish(undefined, parseSearchPlaces(event.data)); }
         catch (error) { finish(error instanceof Error ? error : new Error('搜索结果解析失败')); }
       }
     };
-    const timer = window.setTimeout(() => finish(new Error('高德搜索超时，请稍后重试')), 20000);
+    deadline(15000, '搜索页面加载超时，请刷新 TMC 后重试');
     window.addEventListener('message', receive);
     signal.addEventListener('abort', abort, { once: true });
     frame.onerror = () => finish(new Error('搜索服务加载失败'));
-    frame.src = `${import.meta.env.BASE_URL}amap-search.html`;
+    frame.src = `${import.meta.env.BASE_URL}amap-search.html?v=4`;
     document.body.appendChild(frame);
   });
 }

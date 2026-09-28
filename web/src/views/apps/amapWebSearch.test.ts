@@ -49,3 +49,33 @@ describe('isolated legacy Web SDK search', () => {
     expect(frame()).toBeNull();
   });
 });
+
+
+it('gives SDK loading its own deadline and resets the timer when the query starts', async () => {
+  vi.useFakeTimers();
+  try {
+    configured();
+    const pending = searchWebPlaces('测试', new AbortController().signal);
+    const rejection = expect(pending).rejects.toThrow('地点查询超时');
+    await Promise.resolve(); await Promise.resolve();
+    reply({ type: 'tmc-search-stage', stage: 'sdk-loading' });
+    await vi.advanceTimersByTimeAsync(25000);
+    expect(frame()).not.toBeNull();
+    reply({ type: 'tmc-search-stage', stage: 'query' });
+    await vi.advanceTimersByTimeAsync(12000);
+    await rejection;
+    expect(frame()).toBeNull();
+  } finally { vi.useRealTimers(); }
+});
+it('reports SDK network timeout separately from search failure', async () => {
+  vi.useFakeTimers();
+  try {
+    configured();
+    const pending = searchWebPlaces('测试', new AbortController().signal);
+    const rejection = expect(pending).rejects.toThrow('SDK 加载超时');
+    await Promise.resolve(); await Promise.resolve();
+    reply({ type: 'tmc-search-stage', stage: 'sdk-loading' });
+    await vi.advanceTimersByTimeAsync(30000); await rejection;
+    expect(frame()).toBeNull();
+  } finally { vi.useRealTimers(); }
+});

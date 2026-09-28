@@ -30,11 +30,18 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   function draw(tiles: number[][]) {
     if (!disposed && !moving && active) renderQueue.start(drawSteps(tiles));
   }
+  const rendered = new Map<string, { data: unknown; style: string; layer: L.Layer; group: L.LayerGroup }>();
+  function retain(key: string, data: unknown, style: string, group: L.LayerGroup, create: () => L.Layer, wanted: Set<string>) {
+    wanted.add(key);
+    const old = rendered.get(key);
+    if (old && old.data === data && old.style === style) return;
+    const layer = create().addTo(group);
+    if (old) old.group.removeLayer(old.layer);
+    rendered.set(key, { data, style, layer, group });
+  }
   function* drawSteps(tiles: number[][]): Generator<void> {
-    // Removing many Leaflet layers also costs time; spread cleanup across turns.
-    for (const group of [roads, labels, surfaces]) {
-      for (const layer of group.getLayers()) { group.removeLayer(layer); yield; }
-    }
+    const wanted = new Set<string>();
+    const zoom = Math.floor(map.getZoom());
     const used = new Set<string>(), occupied = new Set<string>();
     if (appearance.places) {
       const size = map.getSize();
@@ -44,23 +51,24 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const element = document.createElement('span'); element.textContent = label.name;
         used.add(label.name);
         occupied.add(`${Math.floor(label.x / 115)}/${Math.floor(label.y / 35)}`);
-        L.marker([label.point[1], label.point[0]], { pane: 'appPlaceLabels', interactive: false,
+        retain(`label/place/${label.kind}/${label.name}/${label.point.join('/')}`, label.name, `${label.width}/${label.kind}`, labels, () => L.marker([label.point[1], label.point[0]], { pane: 'appPlaceLabels', interactive: false,
           icon: L.divIcon({ className: `app-place-label app-place-${label.kind}`, html: element,
-            iconSize: [label.width, 24], iconAnchor: [label.width / 2, label.kind === 'city' ? 32 : 12] }) }).addTo(labels);
+            iconSize: [label.width, 24], iconAnchor: [label.width / 2, label.kind === 'city' ? 32 : 12] }) }), wanted);
         yield;
       }
     }
     for (const tile of tiles) {
-      const cached = cache.get(tile.join('/'));
-      if (appearance.surfaces) for (const surface of cached?.surfaces || []) {
+      const tileKey = tile.join('/');
+      const cached = cache.get(tileKey);
+      if (appearance.surfaces) for (const [index, surface] of (cached?.surfaces || []).entries()) {
         const zoom = Math.floor(map.getZoom());
         if (zoom < surface.minZoom || zoom > surface.maxZoom) continue;
         const paint = surface.paints[appearance.theme]?.find((p: any) => zoom >= p.minZoom && zoom <= p.maxZoom);
         if (!paint) continue;
-        L.polygon(surface.rings.map((ring: number[][]) => ring.map(p => [p[1], p[0]])), {
+        retain(`${tileKey}/surface/${index}`, surface, `${zoom}/${appearance.theme}`, surfaces, () => L.polygon(surface.rings.map((ring: number[][]) => ring.map(p => [p[1], p[0]])), {
           pane: 'appSurfaces', renderer: surfaceRenderer, interactive: false,
           stroke: false, fillColor: paint.color, fillOpacity: paint.opacity, fillRule: 'evenodd', smoothFactor: .3,
-        }).addTo(surfaces);
+        }), wanted);
         yield;
       }
       if (appearance.transit) for (const label of cached?.transit || []) {
@@ -73,8 +81,8 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         if (!map.getBounds().contains(ll) || used.has(key) || occupied.has(cell) || occupied.size >= 90) continue;
         used.add(key); occupied.add(cell);
         const element = document.createElement('span'); element.textContent = label.name;
-        L.marker(ll, { pane: 'appRoadLabels', interactive: false,
-          icon: L.divIcon({ className: 'app-transit-label', html: element, iconSize: [100, 20], iconAnchor: [50, 10] }) }).addTo(labels);
+        retain(`label/transit/${key}`, label.name, 'transit', labels, () => L.marker(ll, { pane: 'appRoadLabels', interactive: false,
+          icon: L.divIcon({ className: 'app-transit-label', html: element, iconSize: [100, 20], iconAnchor: [50, 10] }) }), wanted);
         yield;
       }
       if (!cached?.collection) continue;
@@ -83,9 +91,9 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const style = feature.properties.style;
         return zoom >= (style & 31) && zoom <= ((style >> 5) & 31);
       }) };
-      if (appearance.roads) for (const feature of collection.features) {
-        L.geoJSON(feature, { pane: 'appRoads', interactive: false,
-          style: { renderer, color: appearance.theme === 'night' ? '#6f9399' : '#ffffff', weight: 3, opacity: .9 } }).addTo(roads);
+      if (appearance.roads) for (const [index, feature] of collection.features.entries()) {
+        retain(`${tileKey}/road/${index}`, feature, `${zoom}/${appearance.theme}`, roads, () => L.geoJSON(feature, { pane: 'appRoads', interactive: false,
+          style: { renderer, color: appearance.theme === 'night' ? '#6f9399' : '#ffffff', weight: 3, opacity: .9 } }), wanted);
         yield;
       }
       if (!appearance.labels) continue;
@@ -101,10 +109,18 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         if (occupied.has(cell) || occupied.size >= 70) continue;
         occupied.add(cell); used.add(name);
         const element = document.createElement('span'); element.textContent = name;
-        L.marker(ll, { pane: 'appRoadLabels', interactive: false,
-          icon: L.divIcon({ className: 'app-road-label', html: element, iconSize: [120, 18], iconAnchor: [60, 9] }) }).addTo(labels);
+        retain(`label/road/${name}/${point.join('/')}`, name, 'road', labels, () => L.marker(ll, { pane: 'appRoadLabels', interactive: false,
+          icon: L.divIcon({ className: 'app-road-label', html: element, iconSize: [120, 18], iconAnchor: [60, 9] }) }), wanted);
         yield;
       }
+    }
+    // Keep the current map as a backdrop until new viewport tiles arrive.
+    // Reconcile only after the pass completes so interrupted drawing never clears it.
+    const complete = tiles.every(tile => cache.has(tile.join('/')));
+    for (const [key, entry] of rendered) {
+      if (wanted.has(key)) continue;
+      if (!complete && !key.startsWith('label/')) continue;
+      entry.group.removeLayer(entry.layer); rendered.delete(key); yield;
     }
   }
   async function load() {
@@ -166,6 +182,6 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   void load();
   return { setActive(value: boolean) { active = value; if (!value) suspend(); else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => void load(), dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
-    map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear();
+    map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
   } };
 }

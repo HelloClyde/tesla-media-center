@@ -14,6 +14,8 @@ beforeEach(()=>{
   vi.stubGlobal('Worker',FakeWorker);
   vi.stubGlobal('AudioContext',class {
     state='running';destination={};resume(){return Promise.resolve();}close(){return Promise.resolve();}
+    createGain(){return {gain:{value:1,setTargetAtTime:vi.fn()},connect(){},disconnect(){}};}
+    createDynamicsCompressor(){return {threshold:{value:0},knee:{value:0},ratio:{value:0},attack:{value:0},release:{value:0},connect(){},disconnect(){}};}
     createBuffer(_channels:number,length:number){return {getChannelData:()=>new Float32Array(length)};}
     createBufferSource(){return {connect(){},disconnect(){},start(){starts++;},stop(){},onended:null};}
   });

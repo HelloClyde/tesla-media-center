@@ -2,17 +2,46 @@
 const base = '/tts/matcha-1.13.8-q8-v1/';
 let tts;
 const progress = status => postMessage({type:'progress', status});
+// IndexedDB also works when Cache Storage is unavailable (for example on HTTP).
+function modelStore(url, data) {
+  return new Promise((resolve, reject) => {
+    const opening = indexedDB.open('tmc-tts-assets', 1);
+    opening.onupgradeneeded = () => opening.result.createObjectStore('assets');
+    opening.onerror = () => reject(opening.error);
+    opening.onblocked = () => reject(Error('语音缓存数据库被占用'));
+    opening.onsuccess = () => {
+      const db = opening.result;
+      const tx = db.transaction('assets', data ? 'readwrite' : 'readonly');
+      const request = data ? tx.objectStore('assets').put(data, url) : tx.objectStore('assets').get(url);
+      tx.oncomplete = () => { db.close(); resolve(request.result); };
+      tx.onerror = tx.onabort = () => { db.close(); reject(tx.error || Error('语音缓存读写失败')); };
+    };
+  });
+}
+let cacheFailed = false;
+function cacheStatus(status, failed = false) {
+  cacheFailed ||= failed;
+  postMessage({type:'cache', status:cacheFailed ? '模型缓存未完整保存，下次可能重新下载；请检查浏览器存储空间或站点数据设置' : status});
+}
 async function asset(name) {
   const url = base + name;
   let cache;
-  try { cache = await caches.open('tmc-tts-matcha-1.13.8'); } catch { /* Storage may be disabled. */ }
-  const hit = await cache?.match(url);
-  if (hit) { progress('读取本地语音缓存'); return hit.arrayBuffer(); }
+  try {
+    cache = await caches.open('tmc-tts-matcha-1.13.8');
+    const hit = await cache.match(url);
+    if (hit) {
+      const data = await hit.arrayBuffer();
+      if (data.byteLength) { progress('读取本地语音缓存'); cacheStatus('模型资源已从本地缓存读取'); return data; }
+    }
+  } catch { /* Fall back to IndexedDB. */ }
+  try {
+    const hit = await modelStore(url);
+    if (hit instanceof ArrayBuffer && hit.byteLength) {
+      progress('读取本地语音缓存'); cacheStatus('模型资源已从本地缓存读取（IndexedDB）'); return hit;
+    }
+  } catch { /* Download remains available if storage is disabled. */ }
   const response = await fetch(url);
   if (!response.ok) throw Error('语音资源加载失败（' + response.status + '），请检查部署资源');
-  const copy = response.clone();
-  // Cache errors never prevent synthesis (private mode, insufficient quota, etc.).
-  const saving = cache?.put(url, copy).catch(() => {});
   // Compressed Content-Length is not the size of the decompressed stream.
   const total = response.headers.get('Content-Encoding') ? 0 : Number(response.headers.get('Content-Length'));
   let data;
@@ -23,7 +52,15 @@ async function asset(name) {
     data=new Uint8Array(length);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
     data=data.buffer;
   } else data=await response.arrayBuffer();
-  await saving;
+  if (!data.byteLength) throw Error('语音资源为空，请重试');
+  let saved = false;
+  if (cache) {
+    try { await cache.put(url, new Response(data)); saved = true; } catch { /* Try IndexedDB. */ }
+  }
+  if (!saved) {
+    try { await modelStore(url, data); saved = true; } catch { /* Report persistence failure below. */ }
+  }
+  cacheStatus(saved ? '模型资源已保存到本地，下次无需重新下载' : '', !saved);
   return data;
 }
 async function init() {

@@ -1,8 +1,13 @@
-import { reactive } from 'vue';
+import { navigationVoiceVolume } from './navigationVolume';
+import { reactive, watch } from 'vue';
 export const localSpeechState = reactive({ status:'尚未加载端侧语音', ready:false, loading:false, speaking:false,
-  error:'', synthesisMs:0, audioSeconds:0, cacheHit:false });
+  error:'', modelCacheStatus:'', synthesisMs:0, audioSeconds:0, cacheHit:false });
 type Audio = {samples:Float32Array; sampleRate:number; ms:number};
 let worker:Worker|undefined, context:AudioContext|undefined, source:AudioBufferSourceNode|undefined;
+let voiceGain:GainNode|undefined, limiter:DynamicsCompressorNode|undefined;
+watch(navigationVoiceVolume, value => {
+  if (voiceGain && context) voiceGain.gain.setTargetAtTime(value / 100, context.currentTime, .03);
+}, { flush:'sync' });
 let loading:Promise<void>|undefined, rejectLoad:((e:Error)=>void)|undefined;
 let loadTimer:ReturnType<typeof setTimeout>|undefined;
 let sequence=0, request=0;
@@ -61,10 +66,11 @@ export function loadLocalSpeech():Promise<void> {
   loading=new Promise<void>((resolve,reject)=>{
     rejectLoad=reject;
     try {
-      worker=new Worker('/tts/worker.js?v=3');
+      worker=new Worker('/tts/worker.js?v=4');
       loadTimer=setTimeout(()=>fail('语音资源加载超时，请检查网络后重试'),180000);
       worker.onerror=()=>fail('端侧语音执行失败，请检查 WASM 支持及部署资源');
       worker.onmessage=({data})=>{
+        if(data.type==='cache')localSpeechState.modelCacheStatus=data.status;
         if(data.type==='progress')localSpeechState.status=data.status;
         if(data.type==='ready'){clearTimeout(loadTimer);rejectLoad=undefined;localSpeechState.ready=true;localSpeechState.loading=false;localSpeechState.status='端侧中文语音已就绪';resolve();}
         if(data.type==='error')fail(data.message);
@@ -81,6 +87,13 @@ export function loadLocalSpeech():Promise<void> {
 /** Call during a user gesture to unlock audio before asynchronous model loading. */
 export async function prepareLocalSpeech() {
   context ||= new AudioContext();
+  if (!voiceGain) {
+    voiceGain=context.createGain();voiceGain.gain.value=navigationVoiceVolume.value/100;
+    limiter=context.createDynamicsCompressor();
+    limiter.threshold.value=-3;limiter.knee.value=0;limiter.ratio.value=20;
+    limiter.attack.value=.003;limiter.release.value=.15;
+    voiceGain.connect(limiter);limiter.connect(context.destination);
+  }
   await context.resume();
   if(context.state!=='running')throw new Error('请点击语音按钮启用声音播放');
   await loadLocalSpeech();
@@ -106,7 +119,7 @@ export async function speakLocal(text:string, maxDelayMs=Infinity) {
       if(Date.now()-started>maxDelayMs){localSpeechState.status='语音已过时，跳过本次播报';return;}
       if(context!.state!=='running')throw new Error('声音通道未启用，请点击语音按钮');
       const buffer=context!.createBuffer(1,audio.samples.length,audio.sampleRate);buffer.getChannelData(0).set(audio.samples);
-      source=context!.createBufferSource();source.buffer=buffer;source.connect(context!.destination);
+      source=context!.createBufferSource();source.buffer=buffer;source.connect(voiceGain!);
       localSpeechState.speaking=true;localSpeechState.status='正在播放端侧合成语音';
       const current=source;current.onended=()=>{current.disconnect();if(source===current){source=undefined;localSpeechState.speaking=false;localSpeechState.status='播报完成';}};
       current.start();
@@ -114,5 +127,6 @@ export async function speakLocal(text:string, maxDelayMs=Infinity) {
 }
 export function releaseLocalSpeech() {
   cancelLocalSpeechPreload();stopLocalSpeech();fail('语音引擎已释放');synthesizing.clear();localSpeechState.error='';
+  voiceGain?.disconnect();limiter?.disconnect();voiceGain=undefined;limiter=undefined;
   void context?.close();context=undefined;cache.clear();cacheBytes=0;
 }

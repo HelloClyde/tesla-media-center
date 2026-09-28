@@ -9,8 +9,41 @@ window.addEventListener('message', function (event) {
   const request = event.data;
   const reply = (data) => parent.postMessage({ type: 'tmc-search-result', ...data }, location.origin);
   if (request.securityCode) window._AMapSecurityConfig = { securityJsCode: request.securityCode };
+  let searchStarted = false;
+  const stage = (name) => parent.postMessage({ type: 'tmc-search-stage', stage: name }, location.origin);
   window.tmcSearchReady = async function () {
-    const query = (nearby) => new Promise((resolve, reject) => {
+    if (searchStarted) return;
+    searchStarted = true;
+    const resolveCity = () => new Promise(resolve => {
+      const center = request.center;
+      if (!Array.isArray(center) || center.length !== 2 || !center.every(Number.isFinite)
+        || Math.abs(center[0]) > 180 || Math.abs(center[1]) > 85) return resolve('全国');
+      const cacheKey = 'tmc:search-city:' + center.map(n => n.toFixed(2)).join(',');
+      try {
+        const cached = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
+        if (cached && typeof cached.city === 'string' && Date.now() - cached.time < 600000) return resolve(cached.city);
+      } catch (_) {}
+      let settled = false;
+      const finish = (city) => {
+        if (settled) return;
+        settled = true; clearTimeout(timer);
+        if (city !== '全国') {
+          try { sessionStorage.setItem(cacheKey, JSON.stringify({ city, time: Date.now() })); } catch (_) {}
+        }
+        resolve(city);
+      };
+      const timer = setTimeout(() => finish('全国'), 2000);
+      try {
+        new AMap.Geocoder({ extensions: 'base' }).getAddress(center, (status, result) => {
+          const address = result?.regeocode?.addressComponent;
+          const city = typeof address?.city === 'string' && address.city
+            || (['北京市', '上海市', '天津市', '重庆市'].includes(address?.province) ? address.province : '');
+          finish(status === 'complete' && city ? city : '全国');
+        });
+      } catch (_) { finish('全国'); }
+    });
+    const query = (city) => new Promise((resolve, reject) => {
+      stage('query');
       let settled = false;
       const finish = (error, pois = []) => {
         if (settled) return;
@@ -28,20 +61,19 @@ window.addEventListener('message', function (event) {
         finish(null, result.poiList.pois);
       };
       try {
-        const service = new AMap.PlaceSearch({ city: '全国', citylimit: false, pageSize: 20, pageIndex: 1, extensions: 'base' });
-        if (nearby) service.searchNearBy(request.keywords, request.center, 30000, callback);
-        else service.search(request.keywords, callback);
+        const service = new AMap.PlaceSearch({ city, citylimit: false, pageSize: 20, pageIndex: 1, extensions: 'base' });
+        service.search(request.keywords, callback);
       } catch (error) { finish(error); }
     });
     try {
-      const hasCenter = Array.isArray(request.center) && request.center.length === 2 && request.center.every(Number.isFinite)
-        && Math.abs(request.center[0]) <= 180 && Math.abs(request.center[1]) <= 85;
-      // Keep national matches available even when a similarly named place exists nearby.
-      const results = await Promise.allSettled(hasCenter ? [query(true), query(false)] : [query(false)]);
-      const successful = results.filter(result => result.status === 'fulfilled');
-      if (!successful.length) throw results[0].reason;
+      stage('query');
+      const city = await resolveCity();
+      // Prefer the current city without excluding explicit out-of-city keywords.
+      // Never issue a parallel nearby query.
+      let matches = await query(city);
+      if (!matches.length && city !== '全国') matches = await query('全国');
       const ids = new Set();
-      const pois = successful.flatMap(result => result.value).filter(p => {
+      const pois = matches.filter(p => {
         if (!p.id || !p.location || ids.has(p.id)) return false;
         ids.add(p.id); return true;
       });
@@ -52,8 +84,10 @@ window.addEventListener('message', function (event) {
     } catch (error) { reply({ status: 'error', message: error?.message || '高德搜索服务初始化失败' }); }
   };
   const script = document.createElement('script');
-  script.src = 'https://webapi.amap.com/maps?v=1.4.15&plugin=AMap.PlaceSearch&callback=tmcSearchReady&key=' + encodeURIComponent(request.key);
+  script.src = 'https://webapi.amap.com/maps?v=1.4.15&plugin=AMap.PlaceSearch,AMap.Geocoder&callback=tmcSearchReady&key=' + encodeURIComponent(request.key);
+  script.onload = () => { if (window.AMap && typeof window.AMap.PlaceSearch === 'function') window.tmcSearchReady(); };
   script.onerror = () => reply({ status: 'error', message: '高德搜索 SDK 加载失败，请检查网络' });
+  stage('sdk-loading');
   document.head.appendChild(script);
 });
 parent.postMessage({ type: 'tmc-search-ready' }, location.origin);

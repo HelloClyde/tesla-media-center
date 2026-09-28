@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { navigationVoiceVolume, setNavigationVoiceVolume } from '@/functions/navigationVolume';
 import { navigationCoordinateMode, setNavigationCoordinateMode } from '@/functions/navigationCoordinates';
 import MapCacheSettings from '@/components/MapCacheSettings.vue';
 import SimpleView from '@/components/SimpleView.vue';
@@ -168,7 +169,11 @@ onUnmounted(() => {
                 </article>
 
                 <article class="settings-card">
-                    <div class="card-head"><h2>导航定位坐标</h2></div>
+                    <div class="card-head"><h2>导航设置</h2></div>
+                    <label for="navigation-volume">导航语音音量：{{ navigationVoiceVolume }}%</label>
+                    <input id="navigation-volume" type="range" min="0" max="300" step="10" :value="navigationVoiceVolume" @input="setNavigationVoiceVolume(Number(($event.target as HTMLInputElement).value))" style="width:100%;accent-color:var(--color-accent)" />
+                    <p class="console-hint">默认 150%，100% 为原始音量。调整立即生效并自动保存在当前浏览器，仅影响导航和端侧语音测试。</p>
+
                     <el-select :model-value="navigationCoordinateMode" aria-label="导航定位坐标转换" @update:model-value="setNavigationCoordinateMode($event)">
                         <el-option label="不转换（默认）" value="direct" />
                         <el-option label="WGS-84 → GCJ-02" value="wgs84" />
