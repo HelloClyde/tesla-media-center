@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from 'vitest';
-import { defineComponent, h, onBeforeUnmount } from 'vue';
+import { defineComponent, h, onBeforeUnmount, Teleport } from 'vue';
 import { mount, flushPromises } from '@vue/test-utils';
 import { createRouter, createMemoryHistory } from 'vue-router';
 import AppView from './AppView.vue';
@@ -11,7 +11,7 @@ it('retains only the QQ player across app navigation and disposes it on logout',
   const created = vi.fn(), stopped = vi.fn(), otherStopped = vi.fn();
   const Music = defineComponent({ name: 'QQMusicView', setup() {
     created(); onBeforeUnmount(stopped);
-    return () => h('audio', { 'data-test': 'persistent-audio' });
+    return () => h(Teleport, { to: 'body' }, h('audio', { 'data-test': 'persistent-audio' }));
   } });
   const Other = defineComponent({ setup() { onBeforeUnmount(otherStopped); return () => h('div', 'Map'); } });
   const router = createRouter({ history: createMemoryHistory(), routes: [
@@ -21,15 +21,18 @@ it('retains only the QQ player across app navigation and disposes it on logout',
   ] });
   await router.push('/apps/qqmusic'); await router.isReady();
   const wrapper = mount({ template: '<router-view />' }, { global: { plugins: [router], stubs: { 'el-icon': true } } });
-  const audio = wrapper.get('audio').element;
+  const audio = document.querySelector('[data-test=persistent-audio]')!;
+  expect(audio.isConnected).toBe(true);
   await router.push('/apps/amap'); await flushPromises();
   expect(stopped).not.toHaveBeenCalled();
-  expect(wrapper.find('audio').exists()).toBe(false);
+  expect(document.querySelector('[data-test=persistent-audio]')).toBe(audio);
+  expect(audio.isConnected).toBe(true);
   await router.push('/apps/qqmusic'); await flushPromises();
-  expect(wrapper.get('audio').element).toBe(audio);
+  expect(document.querySelector('[data-test=persistent-audio]')).toBe(audio);
   expect(created).toHaveBeenCalledTimes(1);
   expect(otherStopped).toHaveBeenCalledTimes(1);
   await router.push('/login'); await flushPromises();
   expect(stopped).toHaveBeenCalledTimes(1);
+  expect(audio.isConnected).toBe(false);
   wrapper.unmount();
 });

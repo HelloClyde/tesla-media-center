@@ -5,6 +5,9 @@ import { computed, reactive, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import AppLauncher from './apps/HomeView.vue';
 import { RouterView,useRouter } from 'vue-router';
 import BackgroundAppDock from '@/components/BackgroundAppDock.vue';
+import { startLayoutDiagnostics } from '@/functions/viewportDiagnostics';
+const stopLayoutDiagnostics = startLayoutDiagnostics();
+onBeforeUnmount(stopLayoutDiagnostics);
 
 console.info('origin ua:', navigator.userAgent);
 Object.defineProperty(navigator, 'userAgent', {

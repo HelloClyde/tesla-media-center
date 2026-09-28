@@ -6,6 +6,7 @@ import AudioOutputTest from '@/components/AudioOutputTest.vue';
 import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import WebGLComputeTest from '@/components/WebGLComputeTest.vue';
+import ViewportDiagnostics from '@/components/ViewportDiagnostics.vue';
 import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import { get, post } from '@/functions/requests';
@@ -213,6 +214,7 @@ onUnmounted(() => {
                 </article>
             </el-tab-pane>
             <el-tab-pane label="WebGL 算力" name="webgl"><WebGLComputeTest v-if="activeTab === 'webgl'" /></el-tab-pane>
+            <el-tab-pane label="布局诊断" name="layout"><ViewportDiagnostics /></el-tab-pane>
             <el-tab-pane label="设备诊断" name="diagnostics">
             <section class="diagnostics-panel">
                 <div class="panel-head">

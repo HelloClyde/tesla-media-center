@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import QQMusicControlIcon from './QQMusicControlIcon.vue';
 import QQMusicComments from './QQMusicComments.vue';
+import { captureLayout } from '@/functions/viewportDiagnostics';
 import type { PlayMode } from './qqMusicQueue';
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import { ArrowDown, ArrowLeft, ArrowRight } from '@element-plus/icons-vue';
@@ -64,6 +65,7 @@ async function load() {
   finally { if (!disposed && id === generation) busy.value = false; }
 }
 watch(() => props.song.mid, load, { immediate: true });
+watch(() => props.song.mid, async () => { captureLayout('切歌前', true); await nextTick(); captureLayout('切歌后', true); });
 watch([active, lines, () => props.commentsOpen], async () => {
   if (props.commentsOpen) return;
   await nextTick();
@@ -71,7 +73,7 @@ watch([active, lines, () => props.commentsOpen], async () => {
   const line = container?.querySelector<HTMLElement>('[aria-current="true"]');
   if (container && line) container.scrollTo({ top: line.offsetTop - container.offsetTop - container.clientHeight / 2 + line.clientHeight / 2, behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
 }, { flush: 'post' });
-nextTick(() => panel.value?.focus());
+nextTick(() => panel.value?.focus({ preventScroll: true }));
 onBeforeUnmount(() => { disposed = true; ++generation; titleObserver?.disconnect(); });
 function time(value: number) { return `${Math.floor(value / 60)}:${String(Math.floor(value % 60)).padStart(2, '0')}`; }
 </script>
@@ -107,6 +109,10 @@ function time(value: number) { return `${Math.floor(value / 60)}:${String(Math.f
 </template>
 
 <style scoped>
+/* Playback errors must not resize the stage during source fallback / track changes. */
+.listening > footer { position: relative; }
+.listening .play-error { position: absolute; bottom: 100%; left: 0; right: 0; max-height: 3.2em; overflow: auto; }
+.listening .lyrics { overscroll-behavior: contain; overflow-anchor: none; }
 /* Reserve geometry while metadata and lyrics are replaced between tracks. */
 .timeline > span { flex: 0 0 5ch; width: 5ch; white-space: nowrap; }
 .timeline > span:last-child { text-align: right; }

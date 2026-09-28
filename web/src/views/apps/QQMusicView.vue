@@ -12,6 +12,8 @@ import QQMusicControlIcon from './QQMusicControlIcon.vue';
 import QQMusicPlaylistShelf from './QQMusicPlaylistShelf.vue';
 import QQMusicBrowse from './QQMusicBrowse.vue';
 import QQMusicNowPlaying from './QQMusicNowPlaying.vue';
+import { createMediaPresentation } from '@/functions/musicPresentation';
+import { captureLayout } from '@/functions/viewportDiagnostics';
 import QQMusicComments from './QQMusicComments.vue';
 import { freshRadioBatch } from './qqMusicRadio';
 import { NextTrackPreload } from './qqMusicPreload';
@@ -291,15 +293,15 @@ function loadedMetadata() {
   if (audio.value && restoredPosition && Number.isFinite(audio.value.duration)) { audio.value.currentTime = Math.min(restoredPosition, audio.value.duration); restoredPosition = 0; }
   updateTime();
 }
-function updateMediaSession() {
-  if (!('mediaSession' in navigator) || !current.value) return;
-  try {
-    const song = current.value;
-    navigator.mediaSession.metadata = new MediaMetadata({ title: song.title, artist: song.singer, album: song.album, artwork: song.cover ? [{ src: song.cover }] : [] });
-    navigator.mediaSession.playbackState = playing.value ? 'playing' : 'paused';
-  } catch { /* Older car browsers may only implement part of Media Session. */ }
-}
-watch([current, playing], updateMediaSession);
+const mediaPresentation = 'mediaSession' in navigator
+  ? createMediaPresentation(navigator.mediaSession, data => new MediaMetadata(data)) : undefined;
+watch(current, song => {
+  captureLayout('后台曲目切换', true);
+  try { mediaPresentation?.track(song); } catch { /* Partial Media Session support. */ }
+});
+watch([playing, loadingTrack, advancing], () => {
+  try { mediaPresentation?.state(playing.value, loadingTrack.value || advancing.value); } catch { /* Partial Media Session support. */ }
+});
 let sources: string[] = [];
 let sourceIndex = 0;
 const nextTrackPreload = new NextTrackPreload();
@@ -769,7 +771,10 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
     <QQMusicNowPlaying v-if="nowPlayingOpen && current" :song="current" :comments-open="commentsOpen" :comments="comments" :comments-busy="commentsBusy" :comments-error="commentsError" :comments-more="commentsMore" @lyrics="commentsOpen = false" @more-comments="loadComments" :mode="mode" :mode-label="modeLabels[mode]" :radio-active="radioActive" :eq-enabled="eqEnabled" @mode="cycleMode" @equalizer="eqOpen = true" :liked="!!knownLikes[current.mid]" :collection-busy="collectionBusy" :load-word-lyrics="() => api('word-lyrics?mid=' + encodeURIComponent(current!.mid))" @queue="openQueue()" @like="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)" @comments="openComments(current)" @add="openAdd(current)" :playing="playing" :elapsed="elapsed" :duration="duration" :loading="loadingTrack" :previous-disabled="mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0" :next-disabled="advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" :error="error" :load-lyrics="() => api('lyrics?mid=' + encodeURIComponent(current!.mid))" @close="nowPlayingOpen = false; commentsOpen = false" @toggle="toggle" @previous="step(-1)" @next="step(1)" @seek="value => { if (audio && duration) audio.currentTime = Math.min(duration, value); }" />
     <el-dialog v-model="eqOpen" title="音效 · 均衡器与空间感" width="min(440px, 94vw)" align-center><div class="eq-settings"><el-switch :model-value="eqEnabled" :loading="eqBusy" active-text="开启音效" @change="(value: string | number | boolean) => setEq(!!value)" /><el-select v-if="eqEnabled" v-model="eqPreset" aria-label="均衡器音效" @change="applyEq"><el-option v-for="(preset, id) in eqPresets" :key="id" :value="id" :label="preset.name" /></el-select></div><div class="spatial-settings"><el-switch v-model="spatialEnabled" :disabled="!eqEnabled || eqBusy" active-text="空间音效" @change="applySpatial" /><template v-if="spatialEnabled && eqEnabled"><el-tag>{{ spatialChannels === 8 ? '7.1 合成环绕' : spatialChannels === 6 ? '5.1 合成环绕' : '双声道混响' }}</el-tag><el-switch v-model="forceStereo" active-text="兼容模式（强制双声道）" @change="applySpatial" /><el-radio-group v-model="spatialRoom" @change="updateRoom"><el-radio-button value="room">小房间</el-radio-button><el-radio-button value="hall">音乐厅</el-radio-button></el-radio-group><label>空间强度 {{ spatialAmount }}%<el-slider v-model="spatialAmount" :min="0" :max="50" aria-label="空间混响强度" @input="applySpatial" /></label></template><p>自动尝试 7.1 → 5.1 → 双声道；音效失败时恢复原声。当前为普通歌曲合成环绕，不是原生全景声解码。若车机声场异常，可开启兼容模式。</p></div></el-dialog>
     <el-dialog :model-value="!!addSong" title="添加到我的歌单" width="min(500px, 94vw)" align-center @update:model-value="(value: boolean) => { if (!value) addSong = undefined; }"><el-button :loading="collectionBusy" @click="collection('create')">新建歌单</el-button><p v-if="!ownedPlaylists.length">暂无自建歌单</p><el-button v-for="playlist in ownedPlaylists" :key="playlist.id" class="playlist-choice" :disabled="collectionBusy" @click="collection('add', addSong, playlist.id)">{{ playlist.title }}</el-button></el-dialog>
-    <audio :key="audioKey" :crossorigin="eqEnabled ? 'anonymous' : undefined" ref="audio" preload="metadata" @playing="recordPlayback" @pause="playing = false" @timeupdate="updateTime" @durationchange="updateTime" @loadedmetadata="loadedMetadata" @ended="playing = false; step(1, true)" @error="mediaError" />
+    <!-- KeepAlive detaches its subtree; a connected audio node must outlive route changes. -->
+    <Teleport to="body">
+    <audio data-qqmusic-player hidden :key="audioKey" :crossorigin="eqEnabled ? 'anonymous' : undefined" ref="audio" preload="metadata" @playing="recordPlayback" @pause="playing = false" @timeupdate="updateTime" @durationchange="updateTime" @loadedmetadata="loadedMetadata" @ended="playing = false; step(1, true)" @error="mediaError" />
+    </Teleport>
     <el-dialog v-model="accountOpen" title="QQ 音乐账号" width="min(400px, 90vw)" align-center @close="stopPoll(); qrBusy = false; qr = ''; loginHint = `使用${scanApp}扫码，确认登录 QQ 音乐`">
       <div class="account-panel" v-if="account.loggedIn"><p>已登录账号 {{ account.account }}</p><p class="membership-label">{{ membership.label }}<span v-if="membership.level"> · LV{{ membership.level }}</span></p><el-button @click="refreshMembership">刷新会员信息</el-button><el-button @click="logout">退出 QQ 音乐登录</el-button></div>
       <div class="account-panel" v-else>
