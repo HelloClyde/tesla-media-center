@@ -1,122 +1,39 @@
-import { defineStore } from 'pinia'
-import { ref } from 'vue'
-
+import { defineStore } from 'pinia';
+import { ref } from 'vue';
 export class GeoLocation {
-  accuracy: number = 0;
-  altitude: number | null = null;
-  altitudeAccuracy: number | null = null;
-  heading: number | null = null;
-  latitude: number = 0;
-  longitude: number = 0;
-  speed: number | null = null;
-  timestamp: number = 0;
+  accuracy=0; altitude: number|null=null; altitudeAccuracy: number|null=null;
+  heading: number|null=null; latitude=0; longitude=0; speed: number|null=null;
+  timestamp=0; source: 'gps'|'mock'='gps';
 }
-
-export const useGeoLocationStore = defineStore('geoLocation', () => {
-  const initState = ref(false);
-  const positionList = ref<Array<GeoLocation>>([]);
-  const listeners = {} as any;
-  let mode = 'gps';
-  const mockPosList = [] as Array<GeoLocation>;
-  const myWindow = window as any;
-
-  function getCurPosition(): GeoLocation {
-    return positionList.value[0];
+export const useGeoLocationStore=defineStore('geoLocation',()=>{
+  const positionList=ref<GeoLocation[]>([]);
+  const listeners=new Map<string,(pos:GeoLocation)=>void>();
+  const errors=new Map<string,(error:GeolocationPositionError)=>void>();
+  let initialized=false, requesting=false, generation=0, mode='gps';
+  const mockPosList:GeoLocation[]=[];
+  function publish(pos:GeoLocation) {
+    if (!Number.isFinite(pos.latitude)||!Number.isFinite(pos.longitude)||Math.abs(pos.latitude)>90||Math.abs(pos.longitude)>180) return;
+    // Do not discard stationary fixes: timestamps, heading and accuracy can change.
+    positionList.value.unshift(pos);positionList.value=positionList.value.slice(0,100);
+    listeners.forEach(callback=>callback(pos));
   }
-
-  function positionConverter(src: GeolocationPosition): GeoLocation {
-    const ret = new GeoLocation();
-    ret.accuracy = src.coords.accuracy;
-    ret.altitude = src.coords.altitude;
-    ret.altitudeAccuracy = src.coords.altitudeAccuracy;
-    ret.heading = src.coords.heading;
-    ret.latitude = src.coords.latitude;
-    ret.longitude = src.coords.longitude;
-    ret.speed = src.coords.speed;
-    ret.timestamp = new Date().getTime();
-
-    return ret;
+  function refresh() {
+    if(mode==='mock') { const pos=mockPosList[mockPosList.length-1];if(pos)publish({...pos,source:'mock'});return; }
+    if(requesting||!navigator.geolocation)return;
+    requesting=true;const id=++generation;
+    const watchdog=setTimeout(()=>{if(id===generation){requesting=false;generation++;}},12000);
+    const finish=()=>{clearTimeout(watchdog);requesting=false;};
+    try { navigator.geolocation.getCurrentPosition(pos=>{
+      if(id!==generation)return;finish();
+      const c=pos.coords;
+      publish({accuracy:c.accuracy,altitude:c.altitude,altitudeAccuracy:c.altitudeAccuracy,heading:c.heading,latitude:c.latitude,longitude:c.longitude,speed:c.speed,timestamp:pos.timestamp,source:'gps'});
+    },error=>{if(id!==generation)return;finish();errors.forEach(callback=>callback(error));},
+    {enableHighAccuracy:false,maximumAge:2000,timeout:10000}); }catch {finish();}
   }
-
-  function addListener(name: string, callback: (pos: GeoLocation) => void) {
-    listeners[name] = callback;
-  }
-
-  function removeListener(name: string) {
-    listeners[name] = null;
-  }
-
-  function switchMode(runMode: string) {
-    mode = runMode;
-  }
-
-  function addMockPos(pos: GeoLocation) {
-    mockPosList.push(pos);
-  }
-
-  function posUpdateCallBack(geo: GeoLocation) {
-    // const geo = positionConverter(position)
-
-    // 计算精度
-    let needPush = true;
-    if (myWindow.AMap) {
-      const lastGeo = positionList.value.length == 0 ? null : positionList.value[0];
-      if (lastGeo != null) {
-        const dist = myWindow.AMap.GeometryUtil.distance([geo.longitude, geo.latitude], [lastGeo.longitude, lastGeo.latitude]);
-        if (geo.accuracy > dist) {
-          needPush = false;
-        }
-      }
-    }
-
-    if (needPush) {
-      positionList.value.unshift(geo);
-      positionList.value = positionList.value.slice(0, 100);
-      console.debug('updated position', geo);
-
-      console.debug('listeners', listeners);
-      for (const name in listeners) {
-        const callback = listeners[name];
-        if (callback) {
-          callback(geo);
-        }
-      }
-    }
-  }
-
-
-  function init() {
-    // 初始化 
-    if (!initState.value) {
-      console.info('start fix rate to get position');
-      setInterval(() => {
-        console.debug('position start to refresh.');
-        if (mode === 'gps') {
-          navigator.geolocation.getCurrentPosition((position) => {
-            posUpdateCallBack(positionConverter(position))
-          });
-        } else if (mode === 'mock') {
-          if (mockPosList.length != 0) {
-            posUpdateCallBack(mockPosList[mockPosList.length - 1])
-          }
-        }
-
-      }, 1000);
-      initState.value = true;
-    } else {
-      console.info('is inited, ignore');
-    }
-  };
-
-
-  // 通过返回值暴露所管理的状态
-  return {
-    positionList,
-    getCurPosition,
-    init,
-    addListener,
-    removeListener,
-    switchMode,
-    addMockPos
-  }
-})
+  function init(){if(initialized)return;initialized=true;refresh();setInterval(refresh,1000);}
+  return {positionList,init,refresh,getCurPosition:()=>positionList.value[0],
+    addListener:(name:string,callback:(pos:GeoLocation)=>void)=>listeners.set(name,callback),
+    addErrorListener:(name:string,callback:(error:GeolocationPositionError)=>void)=>errors.set(name,callback),
+    removeListener:(name:string)=>{listeners.delete(name);errors.delete(name);},
+    switchMode:(value:string)=>{mode=value;},addMockPos:(pos:GeoLocation)=>mockPosList.push(pos)};
+});

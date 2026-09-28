@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, watch, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
+import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
+const geoLocation = useGeoLocationStore();
 import { useRouter } from 'vue-router';
 import L from 'leaflet';
 import 'leaflet-rotate';
@@ -73,7 +75,7 @@ let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined,
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
-let watchId: number | undefined, simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnType<typeof setInterval> | undefined;
+let simulation: ReturnType<typeof setInterval> | undefined, staleTimer: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, lastFix = 0, offCount = 0, lastReplan = 0, spoken = '';
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string) {
@@ -207,8 +209,7 @@ function stop() {
   locationGeneration++;
   if (locationTimeout) clearTimeout(locationTimeout);
   locationTimeout = undefined;
-  if (watchId !== undefined) navigator.geolocation.clearWatch(watchId);
-  watchId = undefined;
+  geoLocation.removeListener('amap-navigation');
   if (simulation) clearInterval(simulation);
   if (staleTimer) clearInterval(staleTimer);
   simulation = undefined; staleTimer = undefined; mode.value = 'idle';
@@ -239,29 +240,38 @@ function locate(navigate = false) {
     error.value = '浏览器长时间未返回位置；已授权也可能暂时没有定位信号，请稍后重试或在地图上选择起点';
   }, 25000);
   if (navigate) { overviewActive.value = false; overviewGeneration++; mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined; heading.value = undefined; applyOrientation(); map.setZoom(17); }
-  const receive = (position: GeolocationPosition) => {
+  const receive = (position: GeoLocation) => {
     if (disposed || id !== locationGeneration) return;
-    if (Date.now() - position.timestamp > 15000) { status.value = '收到的位置已过期，等待更新的位置'; return; }
-    received = true;
+    if (position.source !== 'gps') return;
+    if (!Number.isFinite(position.timestamp) || position.timestamp <= 0 || Date.now() - position.timestamp > 15000 || position.timestamp > Date.now() + 5000) { status.value = '收到的位置已过期，等待更新的位置'; return; }
+    received = true; error.value = "";
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
-    const point = wgs84togcj02(position.coords.longitude, position.coords.latitude) as Point;
+    const point = wgs84togcj02(position.longitude, position.latitude) as Point;
     lastFix = Date.now();
     if (!navigate) { clearRoute(); origin.value = point; originName.value = '当前位置'; endpoints(); map.panTo(latLng(point)); status.value = '已定位，请选择目的地'; }
-    updatePosition(point, position.coords.accuracy, position.coords.heading, position.coords.speed);
+    updatePosition(point, position.accuracy, position.heading, position.speed);
+    if (!navigate) geoLocation.removeListener('amap-navigation');
   };
   const failed = (failure: GeolocationPositionError) => {
     if (disposed || id !== locationGeneration) return;
+    if (failure.code !== 1) { if (!received) status.value = '暂未取得位置，正在重试'; return; }
     stop(); status.value = '未能取得当前位置';
     error.value = failure.code === 1 ? '此网站的定位请求被拒绝，请检查网站权限及浏览器定位设置' :
       failure.code === 2 ? '浏览器暂时无法提供位置，请检查车机定位信号，或在地图上选择起点' :
       failure.code === 3 ? '获取位置超时；这不代表未授权，请稍后重试或在地图上选择起点' : '定位失败，请重试';
   };
   if (navigate) {
-    watchId = navigator.geolocation.watchPosition(receive, failed, { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 });
+
     lastFix = Date.now();
     staleTimer = setInterval(() => { if (Date.now() - lastFix > 15000) status.value = '定位信号中断，导航提示已暂停'; }, 3000);
-  } else navigator.geolocation.getCurrentPosition(receive, failed, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+  }
+  geoLocation.addListener('amap-navigation', receive);
+  geoLocation.addErrorListener('amap-navigation', failed);
+  const cached = geoLocation.getCurPosition();
+  if (cached) receive(cached);
+  geoLocation.init();
+  geoLocation.refresh();
 }
 onMounted(() => {
   if (!mapElement.value) return;
