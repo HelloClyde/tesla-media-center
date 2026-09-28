@@ -5,6 +5,7 @@ brotlicffi
 cryptography
 imageio-ffmpeg
 requests
+qrcode[pil]>=7.4,<9
 aiohttp
 
 qqmusic-api-python==0.7.3

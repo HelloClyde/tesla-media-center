@@ -16,6 +16,7 @@ const router = createRouter({
       name: 'apps',
       component: AppViewVue,
       children:[
+        { path: 'tencent-video', name: 'tencent-video', component: () => import('../views/apps/TencentVideoView.vue') },
         { path: 'gam4980', name: 'gam4980', component: () => import('../views/apps/Gam4980View.vue') },
         { path: 'amap', name: 'amap-app', component: () => import('../views/apps/AmapAppView.vue') },
         { path: 'qqmusic', name: 'qqmusic', component: () => import('../views/apps/QQMusicView.vue') },

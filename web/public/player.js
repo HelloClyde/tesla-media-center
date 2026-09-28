@@ -117,6 +117,10 @@ Player.prototype.initDownloadWorker = function () {
                 self.onGetFileInfo(objData.i);
                 break;
             case kFileData:
+                if (objData.error) {
+                    if (objData.q === self.downloadSeqNo) self.reportPlayError(-1, 0, objData.error);
+                    break;
+                }
                 if (self.downloadProto == kProtoStream){
                     self.onFileDataStream(objData.d, objData.s, objData.e, objData.q, objData.size);
                 } else {
@@ -174,7 +178,7 @@ Player.prototype.initDecodeWorker = function () {
     }
 };
 
-Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource) {
+Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource, httpSources) {
     if (this.destroyed) return { e: -1, m: "Player destroyed" };
     this.logger.logInfo("Play " + url + ".");
     console.log('waitHeaderLength', waitHeaderLength);
@@ -274,6 +278,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
         if (!this.isStream) {
             var req = {
                 t: kGetFileInfoReq,
+                sources: httpSources,
                 u: url,
                 p: this.downloadProto
             };

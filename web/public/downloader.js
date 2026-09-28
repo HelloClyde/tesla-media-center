@@ -38,7 +38,56 @@ Downloader.prototype.reportData = function (start, end, seq, data, size=-1) {
 };
 
 // Http implement.
+// Opt-in range transport: try CDN URLs first, then the authenticated byte relay.
+// Keep the selected source across reads (including seeks) without restarting decoding.
+Downloader.prototype.readRange = async function (start, end) {
+    var lastError;
+    for (var index = this.sourceIndex; index < this.sources.length; index++) {
+        var controller = new AbortController();
+        var timer = setTimeout(() => controller.abort(), 8000);
+        try {
+            var response = await fetch(this.sources[index], {
+                headers: { Range: 'bytes=' + start + '-' + end },
+                mode: 'cors', credentials: 'same-origin', referrerPolicy: 'no-referrer',
+                signal: controller.signal
+            });
+            var range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+            var total = range && Number(range[3]);
+            var actualEnd = Math.min(end, total - 1);
+            if (response.status !== 206 || !range || !Number.isSafeInteger(total) || total <= start ||
+                Number(range[1]) !== start || Number(range[2]) !== actualEnd ||
+                (this.sourceSize && this.sourceSize !== total)) throw new Error('Invalid byte range');
+            var expected = actualEnd - start + 1;
+            var data = new Uint8Array(expected);
+            var reader = response.body.getReader();
+            var offset = 0;
+            while (true) {
+                var chunk = await reader.read();
+                if (chunk.done) break;
+                if (offset + chunk.value.length > expected) throw new Error('Oversized byte range');
+                data.set(chunk.value, offset);
+                offset += chunk.value.length;
+            }
+            if (offset !== expected) throw new Error('Incomplete byte range');
+            this.sourceIndex = Math.max(this.sourceIndex, index);
+            this.sourceSize = total;
+            return { data: data.buffer, end: actualEnd, total: total };
+        } catch (error) {
+            lastError = error;
+        } finally {
+            clearTimeout(timer);
+            controller.abort();
+        }
+    }
+    throw lastError || new Error('No media source');
+};
+
 Downloader.prototype.getFileInfoByHttp = function (url) {
+    if (this.sources) {
+        this.readRange(0, 0).then(result => this.reportFileSize(result.total, 200),
+            () => this.reportFileSize(0, 502));
+        return;
+    }
     this.logger.logInfo("Getting file size " + url + ".");
     var size = 0;
     var status = 0;
@@ -67,7 +116,16 @@ Downloader.prototype.getFileInfoByHttp = function (url) {
     xhr.send();
 };
 
+Downloader.prototype.reportDownloadError = function (seq) {
+    self.postMessage({ t: kFileData, q: seq, error: '视频直连及转接均失败，请重试' });
+};
+
 Downloader.prototype.downloadFileByHttp = function (url, start, end, seq) {
+    if (this.sources) {
+        this.readRange(start, end).then(result => this.reportData(start, result.end, seq, result.data),
+            () => this.reportDownloadError(seq));
+        return;
+    }
     //this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");
     var xhr = new XMLHttpRequest;
     xhr.open('get', url, true);
@@ -255,6 +313,9 @@ self.onmessage = function (evt) {
     var objData = evt.data;
     switch (objData.t) {
         case kGetFileInfoReq:
+            self.downloader.sources = Array.isArray(objData.sources) && objData.sources.length ? objData.sources : null;
+            self.downloader.sourceIndex = 0;
+            self.downloader.sourceSize = 0;
             self.downloader.getFileInfo(objData.p, objData.u);
             break;
         case kDownloadFileReq:
