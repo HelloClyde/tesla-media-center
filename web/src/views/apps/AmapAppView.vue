@@ -114,9 +114,18 @@ watch([current, () => next.value?.key, mode, muted], () => {
   ]).catch(() => { /* Playback reports engine errors; navigation remains usable. */ });
 });
 
-function endNavigation() {
-  stop(); controller?.abort(); generation++; busy.value = false; status.value = '导航已结束'; draw();
+function finishNavigationFollow(message: string) {
+  const wasLive = mode.value === 'live';
+  stop(wasLive);
+  controller?.abort(); generation++; busy.value = false;
+  overviewActive.value = false; overviewGeneration++; following.value = true;
+  // Live navigation keeps its existing GPS watch; simulation returns to real GPS.
+  if (!wasLive && viewActive.value) locate(false, true);
+  status.value = message;
+  draw(false); followLocation();
 }
+function endNavigation() { finishNavigationFollow('导航已结束，继续跟随车辆'); }
+
 watchEffect(() => {
   if (mode.value === 'idle' || !current.value) { clearBackgroundNavigation(); return; }
   publishBackgroundNavigation({ simulated: mode.value === 'demo', muted: muted.value,
@@ -126,7 +135,7 @@ watchEffect(() => {
 });
 onDeactivated(() => {
   viewActive.value = false; appMap?.setActive(false); cancelSearch();
-  if (mode.value === 'idle') stop();
+  if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
 });
 onActivated(async () => {
   viewActive.value = true;
@@ -136,6 +145,7 @@ onActivated(async () => {
   if (location.value && marker) marker.setLatLng(latLng(location.value));
   if (following.value && location.value) map.panTo(latLng(location.value), { animate: false });
   applyOrientation();
+  if (resumeLocationOnActivate) { resumeLocationOnActivate = false; locate(false, true); }
 });
 
 function endpoints() {
@@ -238,7 +248,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   marker.setLatLng(latLng(point));
   if (following.value) applyOrientation();
   else marker.setRotation((heading.value || 0) * Math.PI / 180);
-  if (following.value && mode.value !== 'idle') map.panTo(latLng(point), { animate: false });
+  if (following.value) map.panTo(latLng(point), { animate: false });
   }
   if (!current.value || mode.value === 'idle') return;
   if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
@@ -255,7 +265,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (recovered) spoken = '';
   status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置' : '实时导航中 · 车机定位';
   if (remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
-    stop(); arrived.value = true; status.value = '已到达目的地附近'; speak('已到达目的地附近'); return;
+    finishNavigationFollow('已到达目的地附近，继续跟随车辆'); arrived.value = true; speak('已到达目的地附近'); return;
   }
   const turn = next.value;
   if (turn && turn.distance < 250) {
@@ -264,14 +274,18 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   }
 }
 function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
-function stop() {
+let trackingLocation = false, resumeLocationOnActivate = false;
+function stop(keepLocation = false) {
   cancelLocalSpeechPreload();
-  locationGeneration++;
-  if (positionWatch !== undefined) navigator.geolocation?.clearWatch(positionWatch);
-  positionWatch = undefined; liveSpeed.value = null;
-  if (locationTimeout) clearTimeout(locationTimeout);
-  locationTimeout = undefined;
-  geoLocation.removeListener('amap-navigation');
+  if (!keepLocation) {
+    trackingLocation = false;
+    locationGeneration++;
+    if (positionWatch !== undefined) navigator.geolocation?.clearWatch(positionWatch);
+    positionWatch = undefined; liveSpeed.value = null;
+    if (locationTimeout) clearTimeout(locationTimeout);
+    locationTimeout = undefined;
+    geoLocation.removeListener('amap-navigation');
+  }
   if (simulation) clearInterval(simulation);
   simulation = undefined; mode.value = 'idle';
   stopLocalSpeech();
@@ -279,16 +293,17 @@ function stop() {
 function startDemo() {
   prepareVoice();
   if (!current.value) return;
-  stop(); overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
+  stop(); orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
   headingAnchor = current.value.path[0]; heading.value = bearingBetween(headingAnchor, pointAt(current.value, 25));
   map.setZoom(17); updatePosition(current.value.path[0]);
   simulation = setInterval(() => { if (current.value) updatePosition(pointAt(current.value, progress.value + 15)); }, 500);
 }
-function locate(navigate = false) {
+function locate(navigate = false, preserveRoute = false) {
   if (navigate) prepareVoice();
   if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
   if (!window.isSecureContext) { error.value = '当前位置页面不是安全连接，请通过 HTTPS 访问后再定位'; status.value = '定位需要安全连接'; return; }
-  if (!navigate) clearRoute(); else stop();
+  if (!navigate && !preserveRoute) clearRoute(); else stop();
+  trackingLocation = true;
   following.value = true;
   const id = locationGeneration; error.value = ''; status.value = '正在获取当前位置…';
   let received = false;
@@ -305,7 +320,13 @@ function locate(navigate = false) {
     status.value = '等待车机返回位置，将继续获取';
     error.value = '定位尚未返回，仍在等待；可打开设备诊断核对，或在地图上选择起点';
   }, 25000);
-  if (navigate) { overviewActive.value = false; overviewGeneration++; mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined; heading.value = undefined; applyOrientation(); map.setZoom(17); }
+  if (navigate) {
+    orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++;
+    mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined;
+    // Use the route's initial direction until GPS supplies a usable vehicle heading.
+    if (heading.value === undefined && current.value) heading.value = bearingBetween(current.value.path[0], pointAt(current.value, 25));
+    applyOrientation(); map.setZoom(17);
+  }
   const receive = (position: GeoLocation) => {
     if (disposed || id !== locationGeneration) return;
     if (position.source !== 'gps') return;
@@ -317,7 +338,7 @@ function locate(navigate = false) {
     locationTimeout = undefined;
     const point = browserNavigationPoint(position.longitude, position.latitude);
     liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
-    if (!navigate) { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first) map.setView(latLng(point), 16); status.value = '已定位，请选择目的地'; }
+    if (mode.value === 'idle') { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first && !preserveRoute && !navigate) map.setView(latLng(point), 16); if (!preserveRoute && !navigate) status.value = '已定位，请选择目的地'; }
     updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
 
   };

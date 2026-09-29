@@ -30,9 +30,16 @@ export async function searchWebPlaces(keywords: string, signal: AbortSignal, cen
     const receive = (event: MessageEvent) => {
       if (event.origin !== window.location.origin || event.source !== frame.contentWindow) return;
       if (event.data?.type === 'tmc-search-ready') {
-        frame.contentWindow?.postMessage({ type: 'tmc-search', key, keywords,
-          center: center?.length === 2 && center.every(Number.isFinite) && Math.abs(center[0]) <= 180 && Math.abs(center[1]) <= 85 ? center : undefined,
-          securityCode: config.data.data?.amap_security_js_code || '' }, window.location.origin);
+        try {
+          // Vue refs wrap coordinate arrays in a Proxy, which postMessage cannot clone.
+          const point = center?.length === 2 && center.every(Number.isFinite)
+            && Math.abs(center[0]) <= 180 && Math.abs(center[1]) <= 85
+            ? [center[0], center[1]] : undefined;
+          frame.contentWindow?.postMessage({ type: 'tmc-search', key, keywords, center: point,
+            securityCode: config.data.data?.amap_security_js_code || '' }, window.location.origin);
+        } catch {
+          finish(new Error('搜索请求发送失败，请重新搜索'));
+        }
       } else if (event.data?.type === 'tmc-search-stage') {
         if (event.data.stage === 'sdk-loading') deadline(30000, '高德搜索 SDK 加载超时，请检查车机到高德服务的网络连接');
         if (event.data.stage === 'query') deadline(12000, '高德地点查询超时，搜索服务未及时返回结果');

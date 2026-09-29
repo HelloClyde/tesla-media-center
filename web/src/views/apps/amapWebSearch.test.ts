@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import axios from 'axios';
+import { ref } from 'vue';
 import { searchWebPlaces } from './amapWebSearch';
 
 vi.mock('axios', () => ({ default: { get: vi.fn() } }));
@@ -78,4 +79,31 @@ it('reports SDK network timeout separately from search failure', async () => {
     await vi.advanceTimersByTimeAsync(30000); await rejection;
     expect(frame()).toBeNull();
   } finally { vi.useRealTimers(); }
+});
+
+it('sends a cloneable coordinate snapshot from a Vue location ref', async () => {
+  configured();
+  const location = ref<[number, number]>([120.28447, 30.199608]);
+  expect(() => structuredClone(location.value)).toThrow();
+  const pending = searchWebPlaces('江南名府', new AbortController().signal, location.value);
+  await vi.waitFor(() => expect(frame()).not.toBeNull());
+  let sent: any;
+  const post = vi.spyOn(frame().contentWindow!, 'postMessage').mockImplementation(value => { sent = structuredClone(value); });
+  reply({ type: 'tmc-search-ready' });
+  expect(post).toHaveBeenCalledOnce();
+  expect(sent.center).toEqual([120.28447, 30.199608]);
+  location.value[0] = 121;
+  expect(sent.center[0]).toBe(120.28447);
+  reply({ type: 'tmc-search-result', status: 'ok', data: { coordinateSystem: 'GCJ-02', places: [] } });
+  await expect(pending).resolves.toEqual([]);
+});
+it('reports a message-send failure immediately and removes the frame', async () => {
+  configured();
+  const pending = searchWebPlaces('测试', new AbortController().signal);
+  const rejection = expect(pending).rejects.toThrow('搜索请求发送失败');
+  await vi.waitFor(() => expect(frame()).not.toBeNull());
+  vi.spyOn(frame().contentWindow!, 'postMessage').mockImplementation(() => { throw new DOMException('not cloneable', 'DataCloneError'); });
+  reply({ type: 'tmc-search-ready' });
+  await rejection;
+  expect(frame()).toBeNull();
 });

@@ -9,7 +9,7 @@ function surface(park: boolean) {
   let seed = 42;
   for (let i = 0; i < pixels.data.length; i += 4) {
     seed = (seed * 1664525 + 1013904223) >>> 0;
-    const tone = (park ? 161 : 77) + (seed / 4294967296 - .5) * 9;
+    const tone = (park ? 91 : 77) + (seed / 4294967296 - .5) * 9;
     pixels.data.set([tone, tone + 4, tone + 8, 255], i);
   }
   ctx.putImageData(pixels, 0, 0);
@@ -38,18 +38,28 @@ function surface(park: boolean) {
 
 export function createVehicleRoadMesh() {
   const driveTexture = surface(false), parkTexture = surface(true);
-  const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 256;
-  const ctx = canvas.getContext('2d')!;
-  const pixels = ctx.createImageData(128, 256);
-  for (let y=0; y<256; y++) for (let x=0; x<128; x++) {
-    const edge = Math.min(x/20, (127-x)/20, y/65, (255-y)/65, 1);
-    const v = Math.max(0, edge); const a = 255*v*v*(3-2*v);
-    pixels.data.set([a,a,a,255], (y*128+x)*4);
+  // Fine aggregate relief, independent of painted parking/road markings.
+  const grain = document.createElement('canvas'); grain.width = grain.height = 256;
+  const ctx = grain.getContext('2d')!;
+  const pixels = ctx.createImageData(256, 256);
+  let seed = 1337;
+  for (let i = 0; i < pixels.data.length; i += 4) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    const value = 95 + (seed >>> 24) * .25;
+    pixels.data.set([value, value, value, 255], i);
   }
-  ctx.putImageData(pixels,0,0);
-  const material = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1,
-    map: parkTexture, alphaMap: new THREE.CanvasTexture(canvas), transparent: true, depthWrite: false });
+  ctx.putImageData(pixels, 0, 0);
+  const bump = new THREE.CanvasTexture(grain);
+  bump.wrapS = bump.wrapT = THREE.RepeatWrapping;
+  bump.repeat.set(8, 22); bump.anisotropy = 8;
+  const material = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: .94,
+    map: parkTexture, bumpMap: bump, bumpScale: .008 });
   const road = new THREE.Mesh(new THREE.PlaneGeometry(6.4,18), material);
+  // Opaque ground extends to the horizon instead of fading into a blank backdrop.
+  const surround = new THREE.Mesh(new THREE.PlaneGeometry(600, 600),
+    new THREE.MeshStandardMaterial({ color: '#5b6065', roughness: .96, bumpMap: bump, bumpScale: .008 }));
+  surround.position.z = -.006; surround.receiveShadow = true;
+  road.add(surround);
   road.receiveShadow = true;
   road.rotation.x = -Math.PI/2; road.position.set(0,-.82,.45);
   road.userData.driveTexture = driveTexture; road.userData.parkTexture = parkTexture;

@@ -4,11 +4,15 @@ import { ElMessage } from 'element-plus';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { del, get, post } from '@/functions/requests';
 import getAMap from '@/functions/amapConfig';
 import { createTeslaMapGround } from './teslaMapGround';
 import { vehicleMapPoint } from './teslaMapCoordinates';
+import { repairVehicleInterior } from './teslaInterior';
+import { createVehicleLights } from './teslaLights';
+import { createVehicleStreet } from './teslaStreet';
 import { createVehicleRoadMesh } from './teslaRoad';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
@@ -43,6 +47,30 @@ let lastForcedSyncAt = 0;
 let tabPollInFlight = false;
 let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean; includeMeta?: boolean } | null = null;
 let vehicleScene: THREE.Scene | null = null;
+let vehicleEnvironment: THREE.WebGLRenderTarget | null = null;
+let vehicleSky: Sky | null = null;
+let vehicleLights: ReturnType<typeof createVehicleLights> | undefined;
+const headlights = ref(false);
+watch(headlights, value => { vehicleLights?.setEnabled(value); renderVehicleViewer(); });
+let vehicleStreet: ReturnType<typeof createVehicleStreet> | undefined;
+let sunLight: THREE.DirectionalLight | undefined;
+let skyLight: THREE.HemisphereLight | undefined;
+const sceneNight = ref((() => { try { return localStorage.getItem('tmc.tesla.scene-night') === 'true'; } catch { return false; } })());
+headlights.value = sceneNight.value;
+function updateSceneLighting() {
+  if (!vehicleScene || !vehicleSky || !vehicleRenderer || !sunLight || !skyLight) return;
+  const night = sceneNight.value;
+  vehicleSky.visible = !night;
+  vehicleScene.background = new THREE.Color(night ? '#070e20' : '#c6d9e5');
+  vehicleScene.fog = new THREE.Fog(night ? '#070e20' : '#c6d9e5', 65, 220);
+  vehicleScene.environmentIntensity = night ? .018 : .22;
+  sunLight.color.set(night ? '#a3baff' : '#fff1dc');
+  sunLight.intensity = night ? .18 : 3;
+  skyLight.intensity = night ? .12 : .65;
+  vehicleStreet?.setNight(night);
+  renderVehicleViewer();
+}
+watch(sceneNight, () => { headlights.value = sceneNight.value; updateSceneLighting(); try { localStorage.setItem('tmc.tesla.scene-night', String(sceneNight.value)); } catch { /* Optional persistence. */ } });
 let vehicleCamera: THREE.PerspectiveCamera | null = null;
 let vehicleRenderer: THREE.WebGLRenderer | null = null;
 let vehicleModelRoot: THREE.Group | null = null;
@@ -78,7 +106,7 @@ let vehicleWheelMeshes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; dir
 let vehicleSplitWheelGroups: THREE.Group[] = [];
 let vehicleDoorNodes: THREE.Object3D[] = [];
 const modelDoorsOpen = ref(false);
-const mixedMap = ref(true);
+const mixedMap = ref(false);
 const mixedMapReady = ref(false);
 const mixedMapStatus = ref('等待车辆位置');
 let vehicleMapGround: ReturnType<typeof createTeslaMapGround> | undefined;
@@ -1091,7 +1119,8 @@ function initVehicleViewer() {
   }
   const container = vehicleVisualRef.value;
   vehicleScene = new THREE.Scene();
-  vehicleScene.background = new THREE.Color('#eef2f6');
+  vehicleScene.background = new THREE.Color('#c6d9e5');
+  vehicleScene.fog = new THREE.Fog('#c6d9e5', 65, 220);
 
   vehicleCamera = new THREE.PerspectiveCamera(32, 1, 0.1, 1200);
   vehicleCamera.position.copy(DEFAULT_VEHICLE_CAMERA_POSITION);
@@ -1129,24 +1158,37 @@ function initVehicleViewer() {
     scheduleVehicleViewReset();
   });
 
-  vehicleScene.add(new THREE.HemisphereLight('#fdfefe', '#aeb7c2', 2.4));
-
-  const keyLight = new THREE.DirectionalLight('#ffffff', 2.4);
-  keyLight.position.set(5, 8, 7);
+  // The visible sky, paint reflections and sunlight share one sun direction.
+  vehicleSky = new Sky();
+  vehicleSky.scale.setScalar(450);
+  const sun = new THREE.Vector3(-5, 7, 4).normalize();
+  const uniforms = vehicleSky.material.uniforms;
+  uniforms.turbidity.value = 3;
+  uniforms.rayleigh.value = 1.6;
+  uniforms.mieCoefficient.value = .004;
+  uniforms.mieDirectionalG.value = .8;
+  uniforms.sunPosition.value.copy(sun);
+  vehicleScene.add(vehicleSky);
+  const environmentScene = new THREE.Scene();
+  const reflectionSky = vehicleSky.clone();
+  environmentScene.add(reflectionSky);
+  const pmrem = new THREE.PMREMGenerator(vehicleRenderer);
+  vehicleEnvironment = pmrem.fromScene(environmentScene, .04, .1, 1000);
+  vehicleScene.environment = vehicleEnvironment.texture;
+  vehicleScene.environmentIntensity = .22;
+  pmrem.dispose();
+  skyLight = new THREE.HemisphereLight('#dcecff', '#655b4d', .65);
+  vehicleScene.add(skyLight);
+  const keyLight = new THREE.DirectionalLight('#fff1dc', 3);
+  sunLight = keyLight;
+  keyLight.position.copy(sun).multiplyScalar(12);
   keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(1024, 1024);
-  Object.assign(keyLight.shadow.camera, { left: -5, right: 5, top: 5, bottom: -5, near: .5, far: 25 });
-  keyLight.shadow.normalBias = .025;
+  keyLight.shadow.mapSize.set(2048, 2048);
+  Object.assign(keyLight.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: .5, far: 30 });
+  keyLight.shadow.normalBias = .015;
   keyLight.shadow.bias = -.0001;
+  keyLight.shadow.radius = 3;
   vehicleScene.add(keyLight);
-
-  const rimLight = new THREE.DirectionalLight('#dbeafe', 1.1);
-  rimLight.position.set(-6, 4, -5);
-  vehicleScene.add(rimLight);
-
-  const fillLight = new THREE.PointLight('#b6d9ff', 0.9, 24);
-  fillLight.position.set(-3, 3, 5);
-  vehicleScene.add(fillLight);
 
   vehicleModelPivot = new THREE.Group();
   vehicleModelPivot.position.y = 0.85;
@@ -1154,12 +1196,17 @@ function initVehicleViewer() {
 
   vehicleRoadMesh = createVehicleRoadMesh();
   vehicleModelPivot.add(vehicleRoadMesh);
+  vehicleStreet = createVehicleStreet();
+  vehicleStreet.group.position.y = vehicleRoadMesh.position.y;
+  vehicleModelPivot.add(vehicleStreet.group);
+  updateSceneLighting();
 
   const loader = new GLTFLoader();
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
   loader.load('/models/2022_tesla_model_y.glb?v=plates-1', (gltf: { scene: THREE.Group }) => {
     const model = gltf.scene;
+    repairVehicleInterior(model);
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
@@ -1170,6 +1217,7 @@ function initVehicleViewer() {
     model.position.y += size.y * scale * 0.08;
     model.scale.setScalar(scale);
     if (vehicleRoadMesh) vehicleRoadMesh.position.y = -size.y * scale * .42 - .012;
+    if (vehicleStreet && vehicleRoadMesh) vehicleStreet.group.position.y = vehicleRoadMesh.position.y;
     model.traverse((child: THREE.Object3D) => {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
@@ -1179,6 +1227,8 @@ function initVehicleViewer() {
     });
 
     vehicleModelRoot = model;
+    vehicleLights = createVehicleLights(model);
+    vehicleLights.setEnabled(headlights.value);
     vehicleAppearance?.dispose();
     vehicleAppearance = createVehicleAppearance(model);
     vehicleAppearance.update(appearance);
@@ -1355,6 +1405,7 @@ function updateVehicleVisualState(immediate = false) {
     return;
   }
   const targetRotationY = mixedMapReady.value ? Math.PI : getVehicleOrientationByShift(currentShiftState.value);
+  if (vehicleStreet) vehicleStreet.group.visible = !mixedMapReady.value;
   if (vehicleControls) { vehicleControls.minDistance = mixedMapReady.value ? 12 : 5.5; vehicleControls.maxDistance = mixedMapReady.value ? 100 : 11; vehicleControls.minPolarAngle = mixedMapReady.value ? .25 : Math.PI / 3.6; }
   const preset = getVehicleCameraPresetByShift(currentShiftState.value);
   if (vehicleResetViewTimer !== null) {
@@ -1440,6 +1491,11 @@ function resetVehicleView() {
 }
 
 function disposeVehicleViewer() {
+  vehicleLights?.dispose(); vehicleLights = undefined;
+  vehicleStreet?.dispose(); vehicleStreet = undefined;
+  sunLight?.shadow.dispose(); sunLight = undefined; skyLight = undefined;
+  vehicleEnvironment?.dispose(); vehicleEnvironment = null;
+  vehicleSky?.geometry.dispose(); vehicleSky?.material.dispose(); vehicleSky = null;
   vehicleAppearance?.dispose(); vehicleAppearance = undefined;
   vehicleMapGround?.dispose(); vehicleMapGround = undefined;
   if (vehicleResetViewTimer !== null) {
@@ -1467,6 +1523,12 @@ function disposeVehicleViewer() {
     vehicleRoadMesh.userData.driveTexture?.dispose();
     vehicleRoadMesh.userData.parkTexture?.dispose();
     material.alphaMap?.dispose();
+    material.bumpMap?.dispose();
+    vehicleRoadMesh.children.forEach(child => {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry?.dispose();
+      (mesh.material as THREE.Material)?.dispose();
+    });
     material.dispose();
   }
   if (vehicleModelRoot) {
@@ -1731,6 +1793,8 @@ watch(currentShiftState, () => {
                 </div>
                 <div ref="vehicleVisualRef" class="vehicle-visual-stage"></div>
                 <div class="vehicle-map-controls">
+                  <button :aria-pressed="headlights" aria-label="切换车辆灯光" @click="headlights = !headlights">{{ headlights ? '车灯已开启' : '开启车灯' }}</button>
+                  <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间 · 切换白天' : '白天 · 切换夜间' }}</button>
                   <el-popover v-model:visible="appearanceOpen" trigger="click" placement="top-end" :width="300">
                     <template #reference><button aria-label="自定义车辆外观">车辆外观</button></template>
                     <div class="vehicle-appearance-editor">
