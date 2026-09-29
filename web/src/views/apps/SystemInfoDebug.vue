@@ -4,6 +4,7 @@ import { navigationCoordinateMode, setNavigationCoordinateMode } from '@/functio
 import MapCacheSettings from '@/components/MapCacheSettings.vue';
 import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
+import MediaKeyTest from '@/components/MediaKeyTest.vue';
 import AudioOutputTest from '@/components/AudioOutputTest.vue';
 import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
@@ -216,6 +217,7 @@ onUnmounted(() => {
             </section>
 
             </el-tab-pane>
+            <el-tab-pane label="媒体按键" name="media-keys"><MediaKeyTest v-if="activeTab === 'media-keys'" /></el-tab-pane>
             <el-tab-pane label="声音测试" name="sound"><template v-if="activeTab === 'sound'"><NavigationSpeechTest /><AudioOutputTest /></template></el-tab-pane>
             <el-tab-pane label="摄像头测试" name="camera">
                 <article class="settings-card">

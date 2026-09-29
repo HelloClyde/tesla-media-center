@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { registerMusicMediaControls, logMediaKey } from '@/functions/mediaKeyDiagnostics';
+let releaseMediaControls: (() => void) | undefined;
 import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
 import { backgroundMusic, musicCommands, clearBackgroundMusic } from '@/stores/backgroundMusic';
 defineOptions({ name: 'QQMusicView' });
@@ -662,6 +664,9 @@ watch([current, playing, loadingTrack, elapsed, duration, error, mode, queue, ra
 }, { immediate: true });
 onDeactivated(() => { accountOpen.value = false; eqOpen.value = false; addSong.value = undefined; stopPoll(); saveSession(); });
 onBeforeUnmount(clearBackgroundMusic);
+watch([() => current.value?.mid, playing, loadingTrack, error], () => {
+  logMediaKey('QQ 音乐状态', `${current.value?.title || '未选择歌曲'} · ${loadingTrack.value ? '加载中' : playing.value ? '播放中' : '已暂停'}${error.value ? ' · ' + error.value : ''}`);
+});
 onMounted(() => {
   musicCommands.toggle = () => { void toggle(); };
   musicCommands.previous = () => { void step(-1); };
@@ -669,15 +674,15 @@ onMounted(() => {
   musicCommands.open = () => { if (current.value) nowPlayingOpen.value = true; };
   refreshAccount().catch(e => { error.value = message(e); });
   if ('mediaSession' in navigator) {
-    const handlers: Partial<Record<MediaSessionAction, MediaSessionActionHandler>> = {
-      play: () => { if (!playing.value) void toggle(); }, pause: () => audio.value?.pause(),
-      previoustrack: () => { void step(-1); }, nexttrack: () => { void step(1); },
-      seekto: event => { if (audio.value && duration.value && event.seekTime !== undefined) audio.value.currentTime = Math.min(duration.value, Math.max(0, event.seekTime)); }
+    const handlers = {
+      play: () => { if (!playing.value) return toggle(); }, pause: () => audio.value?.pause(),
+      previoustrack: () => step(-1), nexttrack: () => step(1),
+      seekto: (event: MediaSessionActionDetails) => { if (audio.value && duration.value && event.seekTime !== undefined) audio.value.currentTime = Math.min(duration.value, Math.max(0, event.seekTime)); }
     };
-    for (const [action, handler] of Object.entries(handlers)) try { navigator.mediaSession.setActionHandler(action as MediaSessionAction, handler!); } catch {}
+    releaseMediaControls = registerMusicMediaControls(navigator.mediaSession, handlers);
   }
 });
-onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSession(); if (eqContext) void eqContext.close(); if ('mediaSession' in navigator) { for (const action of ['play', 'pause', 'previoustrack', 'nexttrack', 'seekto'] as MediaSessionAction[]) try { navigator.mediaSession.setActionHandler(action, null); } catch {} } disposed = true; clearTimeout(suggestionTimer); ++suggestionGeneration; ++commentsGeneration; stopPoll(); stopRadio(); ++playGeneration; audio.value?.pause(); audio.value?.removeAttribute('src'); audio.value?.load(); });
+onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSession(); if (eqContext) void eqContext.close(); releaseMediaControls?.(); disposed = true; clearTimeout(suggestionTimer); ++suggestionGeneration; ++commentsGeneration; stopPoll(); stopRadio(); ++playGeneration; audio.value?.pause(); audio.value?.removeAttribute('src'); audio.value?.load(); });
 </script>
 
 <template>
