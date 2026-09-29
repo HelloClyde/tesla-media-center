@@ -22,7 +22,6 @@ jobs:
     timeout-minutes: 45
     outputs:
       digest: ${{ steps.build.outputs.digest }}
-      image: ${{ steps.image.outputs.name }}
       aliyun-enabled: ${{ steps.image.outputs.aliyun-enabled }}
     steps:
       - name: Checkout
@@ -141,7 +140,11 @@ jobs:
       - name: Copy both architectures with bounded retries
         timeout-minutes: 28
         env:
-          SOURCE_IMAGE: ${{ needs.build-and-push.outputs.image }}
+          REPOSITORY: ${{ github.repository }}
           SOURCE_DIGEST: ${{ needs.build-and-push.outputs.digest }}
           DESTINATION_TAGS: ${{ steps.meta-aliyun.outputs.tags }}
-        run: bash tools/ci/sync-image.sh
+        # Public repository names can overlap a masked registry username.
+        # Derive the address locally instead of passing it as a job output.
+        run: |
+          export SOURCE_IMAGE="ghcr.io/${REPOSITORY,,}"
+          bash tools/ci/sync-image.sh
