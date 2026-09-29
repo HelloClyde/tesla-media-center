@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder
 
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
