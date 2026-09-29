@@ -4,6 +4,10 @@ import { ElMessage } from 'element-plus';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { configureStreetSun, applyStreetLighting, VEHICLE_SUN_DIRECTION } from './teslaSceneLighting';
+import { captureStreetReflections } from './teslaReflections';
+import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
+import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { del, get, post } from '@/functions/requests';
@@ -13,7 +17,7 @@ import { vehicleMapPoint } from './teslaMapCoordinates';
 import { repairVehicleInterior } from './teslaInterior';
 import { createVehicleLights } from './teslaLights';
 import { createVehicleStreet } from './teslaStreet';
-import { createVehicleRoadMesh } from './teslaRoad';
+import { createVehicleRoadMesh, ROAD_TEXTURE_LENGTH } from './teslaRoad';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
 function savedAppearance() {
@@ -47,9 +51,32 @@ let lastForcedSyncAt = 0;
 let tabPollInFlight = false;
 let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean; includeMeta?: boolean } | null = null;
 let vehicleScene: THREE.Scene | null = null;
+let streetReflectionsReady = false;
+let streetReflectionsDirty = true;
 let vehicleEnvironment: THREE.WebGLRenderTarget | null = null;
 let vehicleSky: Sky | null = null;
 let vehicleLights: ReturnType<typeof createVehicleLights> | undefined;
+const weatherMode=ref<SceneWeather|'auto'>('auto');
+try { const saved=localStorage.getItem('tmc.tesla.weather');if(saved==='auto'||saved&&saved in weatherLabels)weatherMode.value=saved as SceneWeather|'auto'; } catch {}
+const automaticWeather=ref<SceneWeather>('clear');
+const weatherStatus=ref('等待车辆位置');
+const activeWeather=computed(()=>weatherMode.value==='auto'?automaticWeather.value:weatherMode.value);
+let vehicleWeather:ReturnType<typeof createVehicleWeather>|undefined;
+let weatherTimer:number|undefined,weatherRequest:AbortController|undefined;
+async function refreshWeather(){
+  weatherRequest?.abort();
+  if(weatherMode.value!=='auto'||!state.documentVisible||!state.pageExposed||state.activeTab!=='status')return;
+  const lat=state.latestSample?.latitude,lon=state.latestSample?.longitude;
+  if(lat==null||lon==null){weatherStatus.value='等待车辆位置';return;}
+  const request=new AbortController();weatherRequest=request;
+  const timeout=window.setTimeout(()=>request.abort(),10000);
+  weatherStatus.value='正在获取天气';
+  try { const value=await fetchVehicleWeather(Number(lat),Number(lon),request.signal);
+    if(weatherRequest!==request||weatherMode.value!=='auto')return;
+    automaticWeather.value=value;weatherStatus.value='当地天气 · '+weatherLabels[value];
+  } catch {if(weatherRequest===request)weatherStatus.value='天气获取失败，可手动选择';}
+  finally {window.clearTimeout(timeout);}
+}
 const headlights = ref(false);
 watch(headlights, value => { vehicleLights?.setEnabled(value); renderVehicleViewer(); });
 let vehicleStreet: ReturnType<typeof createVehicleStreet> | undefined;
@@ -60,14 +87,15 @@ headlights.value = sceneNight.value;
 function updateSceneLighting() {
   if (!vehicleScene || !vehicleSky || !vehicleRenderer || !sunLight || !skyLight) return;
   const night = sceneNight.value;
+  vehicleLights?.setEnabled(headlights.value);
   vehicleSky.visible = !night;
   vehicleScene.background = new THREE.Color(night ? '#070e20' : '#c6d9e5');
   vehicleScene.fog = new THREE.Fog(night ? '#070e20' : '#c6d9e5', 65, 220);
-  vehicleScene.environmentIntensity = night ? .018 : .22;
-  sunLight.color.set(night ? '#a3baff' : '#fff1dc');
-  sunLight.intensity = night ? .18 : 3;
-  skyLight.intensity = night ? .12 : .65;
+  applyStreetLighting(vehicleScene, sunLight, skyLight, night);
   vehicleStreet?.setNight(night);
+  vehicleWeather?.set(activeWeather.value,night);
+  if(vehicleRoadMesh)applyWeatherLighting(vehicleScene,sunLight,vehicleSky,vehicleRoadMesh,activeWeather.value,night);
+  streetReflectionsDirty = true;
   renderVehicleViewer();
 }
 watch(sceneNight, () => { headlights.value = sceneNight.value; updateSceneLighting(); try { localStorage.setItem('tmc.tesla.scene-night', String(sceneNight.value)); } catch { /* Optional persistence. */ } });
@@ -629,7 +657,7 @@ function getVehicleMotionProfile() {
       active: true,
       direction: -1,
       moving: speedScale > 0,
-      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / 18,
+      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / ROAD_TEXTURE_LENGTH,
       wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
     };
   }
@@ -638,7 +666,7 @@ function getVehicleMotionProfile() {
       active: true,
       direction: 1,
       moving: speedScale > 0,
-      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / 18,
+      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / ROAD_TEXTURE_LENGTH,
       wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
     };
   }
@@ -1161,7 +1189,7 @@ function initVehicleViewer() {
   // The visible sky, paint reflections and sunlight share one sun direction.
   vehicleSky = new Sky();
   vehicleSky.scale.setScalar(450);
-  const sun = new THREE.Vector3(-5, 7, 4).normalize();
+  const sun = VEHICLE_SUN_DIRECTION.clone();
   const uniforms = vehicleSky.material.uniforms;
   uniforms.turbidity.value = 3;
   uniforms.rayleigh.value = 1.6;
@@ -1181,13 +1209,7 @@ function initVehicleViewer() {
   vehicleScene.add(skyLight);
   const keyLight = new THREE.DirectionalLight('#fff1dc', 3);
   sunLight = keyLight;
-  keyLight.position.copy(sun).multiplyScalar(12);
-  keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(2048, 2048);
-  Object.assign(keyLight.shadow.camera, { left: -6, right: 6, top: 6, bottom: -6, near: .5, far: 30 });
-  keyLight.shadow.normalBias = .015;
-  keyLight.shadow.bias = -.0001;
-  keyLight.shadow.radius = 3;
+  configureStreetSun(keyLight);
   vehicleScene.add(keyLight);
 
   vehicleModelPivot = new THREE.Group();
@@ -1196,7 +1218,10 @@ function initVehicleViewer() {
 
   vehicleRoadMesh = createVehicleRoadMesh();
   vehicleModelPivot.add(vehicleRoadMesh);
+  vehicleWeather=createVehicleWeather();vehicleModelPivot.add(vehicleWeather.group);
   vehicleStreet = createVehicleStreet();
+  const loadedStreet=vehicleStreet;
+  loadedStreet.ready.then(()=>{if(vehicleStreet===loadedStreet){streetReflectionsReady=true;streetReflectionsDirty=true;renderVehicleViewer();}});
   vehicleStreet.group.position.y = vehicleRoadMesh.position.y;
   vehicleModelPivot.add(vehicleStreet.group);
   updateSceneLighting();
@@ -1275,13 +1300,24 @@ function renderVehicleViewer() {
   if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
     return;
   }
+  if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
+    streetReflectionsDirty=false;
+    vehicleScene.updateMatrixWorld(true);
+    const position=vehicleModelRoot.getWorldPosition(new THREE.Vector3());position.y+=1.3;
+    const reflection=captureStreetReflections(vehicleRenderer,vehicleScene,vehicleModelRoot,position);
+    vehicleScene.environment=reflection.texture;
+    vehicleScene.environmentIntensity=.7;
+    vehicleEnvironment?.dispose();vehicleEnvironment=reflection;
+  }
   vehicleRenderer.render(vehicleScene, vehicleCamera);
 }
 
 function updateVehicleMotion(now: number) {
   const profile = getVehicleMotionProfile();
+  vehicleStreet?.setParked(!profile.moving);
   const deltaSec = vehicleMotionState.lastFrameTime ? Math.min((now - vehicleMotionState.lastFrameTime) / 1000, 0.05) : 0;
   vehicleMotionState.lastFrameTime = now;
+  vehicleWeather?.update(deltaSec,currentVehicleSpeedKmh.value/3.6);
   for (const door of vehicleDoorNodes) {
     const angle = modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0;
     door.rotation.y = THREE.MathUtils.damp(door.rotation.y, angle, 9, deltaSec);
@@ -1289,6 +1325,7 @@ function updateVehicleMotion(now: number) {
 
   if (!profile.active) {
     vehicleMotionState.roadOffset = 0;
+    vehicleRoadMesh?.userData.updateTravel?.(0);
     vehicleMotionState.bobPhase = 0;
     if (vehicleRoadMesh) {
       const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
@@ -1321,12 +1358,16 @@ function updateVehicleMotion(now: number) {
     }
     if (material.map) {
       material.map.offset.y = vehicleMotionState.roadOffset;
+      vehicleRoadMesh.userData.updateTravel?.(vehicleMotionState.roadOffset * ROAD_TEXTURE_LENGTH);
     }
   }
 
   if (!profile.moving) {
     return;
   }
+
+  // Road texture repeats once per street block; scenery uses that same physical displacement.
+  vehicleStreet?.advance(deltaSec * profile.roadSpeed * ROAD_TEXTURE_LENGTH * profile.direction);
 
   vehicleWheelMeshes.forEach(({ mesh, axis, direction }) => {
     mesh.rotation[axis] += deltaSec * profile.wheelSpeed * profile.direction * direction;
@@ -1346,7 +1387,16 @@ function startVehicleRenderLoop() {
     updateVehiclePoseTween(now);
     updateVehicleMotion(now);
     vehicleControls?.update();
-    vehicleRenderer.render(vehicleScene, vehicleCamera);
+    if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
+    streetReflectionsDirty=false;
+    vehicleScene.updateMatrixWorld(true);
+    const position=vehicleModelRoot.getWorldPosition(new THREE.Vector3());position.y+=1.3;
+    const reflection=captureStreetReflections(vehicleRenderer,vehicleScene,vehicleModelRoot,position);
+    vehicleScene.environment=reflection.texture;
+    vehicleScene.environmentIntensity=.7;
+    vehicleEnvironment?.dispose();vehicleEnvironment=reflection;
+  }
+  vehicleRenderer.render(vehicleScene, vehicleCamera);
   };
   vehicleRenderLoopFrame = window.requestAnimationFrame(frame);
 }
@@ -1492,8 +1542,10 @@ function resetVehicleView() {
 
 function disposeVehicleViewer() {
   vehicleLights?.dispose(); vehicleLights = undefined;
+  vehicleWeather?.dispose();vehicleWeather=undefined;
   vehicleStreet?.dispose(); vehicleStreet = undefined;
   sunLight?.shadow.dispose(); sunLight = undefined; skyLight = undefined;
+  streetReflectionsReady=false;streetReflectionsDirty=true;
   vehicleEnvironment?.dispose(); vehicleEnvironment = null;
   vehicleSky?.geometry.dispose(); vehicleSky?.material.dispose(); vehicleSky = null;
   vehicleAppearance?.dispose(); vehicleAppearance = undefined;
@@ -1518,6 +1570,7 @@ function disposeVehicleViewer() {
     vehicleRenderer.domElement.remove();
   }
   if (vehicleRoadMesh) {
+    vehicleRoadMesh.userData.disposeDetails?.();
     vehicleRoadMesh.geometry.dispose();
     const material = vehicleRoadMesh.material as THREE.MeshStandardMaterial;
     vehicleRoadMesh.userData.driveTexture?.dispose();
@@ -1691,6 +1744,7 @@ function renderTrackOnMap() {
 }
 
 onMounted(() => {
+  void refreshWeather();weatherTimer=window.setInterval(()=>void refreshWeather(),15*60*1000);
   document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
   Promise.all([loadSettings(), refreshActiveTabData({ immediate: true })]).finally(() => {
     restartAutoSyncTimer();
@@ -1708,6 +1762,7 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  weatherRequest?.abort();weatherRequest=undefined;window.clearInterval(weatherTimer);
   document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
   stopAutoSyncTimer();
   if (pageObserver) {
@@ -1716,6 +1771,11 @@ onUnmounted(() => {
   }
   disposeVehicleViewer();
 });
+
+watch(()=>[state.documentVisible,state.pageExposed,state.activeTab],()=>void refreshWeather());
+watch(weatherMode,()=>{try{localStorage.setItem('tmc.tesla.weather',weatherMode.value);}catch{}void refreshWeather();});
+watch(activeWeather,()=>updateSceneLighting());
+watch(()=>[state.latestSample?.latitude==null?'':Number(state.latestSample.latitude).toFixed(1),state.latestSample?.longitude==null?'':Number(state.latestSample.longitude).toFixed(1)].join(','),()=>void refreshWeather());
 
 watch(() => state.activeTab, (tabName) => {
   restartAutoSyncTimer();
@@ -1761,6 +1821,13 @@ watch(currentShiftState, () => {
             <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading">
               <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
               <div v-else class="vehicle-visual-shell">
+                <div class="vehicle-speed-hud" aria-label="当前车速">
+                  <span class="vehicle-speed-hud__label">车速</span>
+                  <div class="vehicle-speed-hud__reading">
+                    <strong>{{ state.latestSample?.speed != null && Number.isFinite(Number(state.latestSample.speed)) ? Math.round(Math.max(0, Number(state.latestSample.speed))) : '—' }}</strong>
+                    <span>{{ state.latestSample?.speed_unit || 'km/h' }}</span>
+                  </div>
+                </div>
                 <div class="vehicle-visual-overlay">
                   <div class="vehicle-overlay-card">
                     <span>当前档位</span>
@@ -1769,10 +1836,6 @@ watch(currentShiftState, () => {
                   <div class="vehicle-overlay-card">
                     <span>当前车况</span>
                     <strong>{{ state.latestSample?.vehicle_state || selectedVehicle?.state || '-' }}</strong>
-                  </div>
-                  <div class="vehicle-overlay-card">
-                    <span>速度</span>
-                    <strong>{{ state.latestSample?.speed != null ? `${state.latestSample.speed} ${state.latestSample.speed_unit || 'km/h'}` : '-' }}</strong>
                   </div>
                   <div class="vehicle-overlay-card">
                     <span>总公里数</span>
@@ -1795,6 +1858,14 @@ watch(currentShiftState, () => {
                 <div class="vehicle-map-controls">
                   <button :aria-pressed="headlights" aria-label="切换车辆灯光" @click="headlights = !headlights">{{ headlights ? '车灯已开启' : '开启车灯' }}</button>
                   <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间 · 切换白天' : '白天 · 切换夜间' }}</button>
+                  <label class="vehicle-weather-control">天气
+                    <select v-model="weatherMode" aria-label="场景天气">
+                      <option value="auto">跟随当地天气</option>
+                      <option v-for="(label,value) in weatherLabels" :key="value" :value="value">{{ label }}</option>
+                    </select>
+                    <small v-if="weatherMode==='auto'" role="status">{{ weatherStatus }}</small>
+                    <a v-if="weatherMode==='auto'" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>
+                  </label>
                   <el-popover v-model:visible="appearanceOpen" trigger="click" placement="top-end" :width="300">
                     <template #reference><button aria-label="自定义车辆外观">车辆外观</button></template>
                     <div class="vehicle-appearance-editor">
@@ -2679,4 +2750,17 @@ watch(currentShiftState, () => {
 .vehicle-paint-swatches button{width:30px;height:30px;border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 0 1px #cbd4da;cursor:pointer}
 .vehicle-paint-swatches button[aria-pressed=true]{box-shadow:0 0 0 2px #329cff}
 
+</style>
+
+<style scoped>
+.vehicle-weather-control{display:flex;align-items:center;gap:6px;flex-wrap:wrap;background:var(--color-background,#fff);padding:7px 10px;border-radius:12px;font-size:12px}.vehicle-weather-control select{font:inherit;padding:4px;border:1px solid #bcc8d1;border-radius:6px}.vehicle-weather-control small{flex-basis:100%}.vehicle-weather-control a{font-size:10px;color:#64778c}
+</style>
+
+<style scoped>
+.vehicle-speed-hud{position:absolute;top:18px;left:20px;z-index:3;pointer-events:none;min-width:108px;padding:10px 16px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.2);background:linear-gradient(135deg,rgba(12,23,32,.72),rgba(12,23,32,.38));color:#fff;text-shadow:0 2px 8px rgba(0,0,0,.35)}
+.vehicle-speed-hud__label{font-size:11px;letter-spacing:2px;color:rgba(255,255,255,.72)}
+.vehicle-speed-hud__reading{display:flex;align-items:baseline;gap:9px;white-space:nowrap}
+.vehicle-speed-hud__reading strong{font-size:clamp(38px,5vw,64px);font-weight:650;line-height:1.05;letter-spacing:-2px;font-variant-numeric:tabular-nums}
+.vehicle-speed-hud__reading span{font-size:12px;color:rgba(255,255,255,.8)}
+@media(max-height:600px){.vehicle-speed-hud{top:12px;left:14px;padding:8px 12px;min-width:92px}.vehicle-speed-hud__reading strong{font-size:42px}}
 </style>

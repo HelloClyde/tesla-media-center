@@ -6,6 +6,7 @@ export function repairVehicleInterior(model: T.Object3D) {
   model.updateWorldMatrix(true,true);
   const inverseRoot = model.matrixWorld.clone().invert();
   const doors = ['FL','FR','RL','RR'].map(id=>model.getObjectByName('Door_'+id));
+  repairFramelessRearDoors(model);
   const sources: T.Mesh[]=[];
   model.traverse(o=>{
     if (!(o instanceof T.Mesh) || Array.isArray(o.material)) return;
@@ -81,4 +82,63 @@ export function repairVehicleInterior(model: T.Object3D) {
     door.add(panelGroup);
   }
 
+}
+
+/** The source asset incorrectly parents the rear window seals to the moving doors. */
+export function repairFramelessRearDoors(model: T.Object3D) {
+  model.updateWorldMatrix(true, true);
+  const inverse = model.matrixWorld.clone().invert();
+  for (const id of ['RL', 'RR']) {
+    const door = model.getObjectByName('Door_' + id);
+    if (!door || door.userData.framelessRepaired) continue;
+    const trims: T.Mesh[] = [];
+    door.traverse(object => {
+      if (object instanceof T.Mesh && !Array.isArray(object.material) && object.material.name === 'Satin_Black_Trim') trims.push(object);
+    });
+    for (const mesh of trims) {
+      const source = mesh.geometry, transform = inverse.clone().multiply(mesh.matrixWorld);
+      const names = Object.keys(source.attributes), sizes = names.map(name => source.getAttribute(name).itemSize);
+      type Vertex = { distance: number; values: number[][] };
+      const outputs = [names.map(() => [] as number[]), names.map(() => [] as number[])];
+      const make = (index: number): Vertex => {
+        const p = new T.Vector3().fromBufferAttribute(source.getAttribute('position'), index).applyMatrix4(transform);
+        return { distance: p.y - 1.12, values: names.map(name => {
+          const attribute = source.getAttribute(name);
+          return Array.from({ length: attribute.itemSize }, (_, c) => attribute.getComponent(index, c));
+        }) };
+      };
+      for (let i = 0; i < (source.index?.count ?? source.getAttribute('position').count); i += 3) {
+        const triangle = [0, 1, 2].map(j => make(source.index ? source.index.getX(i + j) : i + j));
+        for (let side = 0; side < 2; side++) {
+          const polygon: Vertex[] = [];
+          for (let j = 0; j < 3; j++) {
+            const a = triangle[j], b = triangle[(j + 1) % 3];
+            const inside = side === 0 ? a.distance <= 0 : a.distance > 0;
+            const nextInside = side === 0 ? b.distance <= 0 : b.distance > 0;
+            if (inside) polygon.push(a);
+            if (inside !== nextInside) {
+              const t = a.distance / (a.distance - b.distance);
+              polygon.push({ distance: 0, values: a.values.map((values, k) => values.map((v, c) => v + (b.values[k][c] - v) * t)) });
+            }
+          }
+          for (let j = 1; j < polygon.length - 1; j++) for (const vertex of [polygon[0], polygon[j], polygon[j + 1]]) {
+            vertex.values.forEach((values, k) => outputs[side][k].push(...values));
+          }
+        }
+      }
+      const geometries = outputs.map(output => {
+        const geometry = new T.BufferGeometry();
+        names.forEach((name, i) => geometry.setAttribute(name, new T.Float32BufferAttribute(output[i], sizes[i])));
+        geometry.computeBoundingBox(); geometry.computeBoundingSphere(); return geometry;
+      });
+      // Belt-line trim stays on the door. Upper seals stay fixed to the body;
+      // the glass alone follows the door hinge when opened.
+      mesh.geometry = geometries[0];
+      const seal = new T.Mesh(geometries[1], mesh.material);
+      seal.name = 'Rear_Window_Body_Seal_' + id;
+      seal.applyMatrix4(transform); seal.castShadow = true; seal.receiveShadow = mesh.receiveShadow;
+      model.add(seal); source.dispose();
+    }
+    door.userData.framelessRepaired = true;
+  }
 }

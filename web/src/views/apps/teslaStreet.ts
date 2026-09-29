@@ -1,8 +1,28 @@
 import * as T from 'three';
+import { loadStreetTrees } from './teslaTreeAssets';
+import { createStreetTree } from './teslaTrees';
+import { createAssetCity } from './teslaCityAssets';
+import { createVehicleSkyline } from './teslaSkyline';
+import { createShopfrontMaterials } from './teslaShopfronts';
 
 // A lightweight streetscape with shared geometry/materials for the car browser.
 export function createVehicleStreet() {
   const group = new T.Group();
+  const skyline = createVehicleSkyline();
+  const shops = createShopfrontMaterials();
+  const city = createAssetCity();
+  const fallbackBuildings: T.Group[] = [];
+  group.add(city.group);
+  const ready = city.ready.then(loaded => { if (loaded) fallbackBuildings.forEach(building => building.visible = false); return loaded; });
+  group.add(skyline.group);
+  const moving: { group: T.Group; period: number }[] = [];
+  let parent: T.Group = group;
+  function section(z: number, period: number) {
+    parent = new T.Group();
+    parent.position.z = z;
+    group.add(parent);
+    moving.push({ group: parent, period });
+  }
   const textures:T.Texture[]=[];
   const loader=new T.TextureLoader();
   function textured(name:string,repeatX=1,repeatY=1) {
@@ -17,40 +37,12 @@ export function createVehicleStreet() {
   }
   const concrete = textured('concrete_wall_006');
   const bark = textured('bark_brown_02',1,2.7);
-  // Alpha-cut leaf clusters keep the canopy porous, rather than solid green blobs.
-  const leafCanvas=document.createElement('canvas'); leafCanvas.width=leafCanvas.height=128;
-  const context=leafCanvas.getContext('2d')!;
-  let seed=471;
-  function random() { seed=(seed*1664525+1013904223)>>>0; return seed/4294967296; }
-  for(let i=0;i<23;i++) {
-    const x=14+random()*100,y=14+random()*100;
-    context.save();context.translate(x,y);context.rotate(random()*Math.PI);
-    context.fillStyle=['#466536','#648046','#35502b','#7c914e'][i%4];
-    const length=5+random()*5,width=2+random()*3;
-    context.beginPath();context.ellipse(0,0,length,width,0,0,Math.PI*2);context.fill();
-    context.strokeStyle='rgba(189,192,107,.55)';context.lineWidth=.5;
-    context.beginPath();context.moveTo(-length,0);context.lineTo(length,0);
-    for(let vein=-2;vein<=2;vein++){context.moveTo(vein*2,0);context.lineTo(vein*2+2,width*.75);context.moveTo(vein*2,0);context.lineTo(vein*2+2,-width*.75);}context.stroke();context.restore();
-  }
-  const leafTexture=new T.CanvasTexture(leafCanvas);leafTexture.colorSpace=T.SRGBColorSpace;
-  const leaves = new T.MeshStandardMaterial({ map:leafTexture, roughness: .85, side:T.DoubleSide, alphaTest:.45 });
+  const trees: T.Group[] = [];
   const facade = textured('brick_wall_001');
   const glass = new T.MeshStandardMaterial({ color: '#354859', roughness: .3, metalness: .3, emissive: '#ffd9a0', emissiveIntensity: 0 });
   const pole = new T.MeshStandardMaterial({ color: '#454b50', metalness: .65, roughness: .45 });
   const bulb = new T.MeshStandardMaterial({ color: '#fff1cf', emissive: '#ffd59a', emissiveIntensity: 0 });
   const box = new T.BoxGeometry(1, 1, 1);
-  const trunk = new T.CylinderGeometry(.12, .19, 2.7, 7);
-  const leafGeometry = new T.PlaneGeometry(1.1,1.1);
-  const foliage=new T.InstancedMesh(leafGeometry, leaves, 28*240);
-  foliage.castShadow=true;foliage.receiveShadow=true;group.add(foliage);
-  const transform=new T.Object3D();let leafIndex=0;
-  const branchGeometry=new T.CylinderGeometry(1,1,1,6);
-  function branch(start:T.Vector3,end:T.Vector3,radius:number) {
-    const delta=end.clone().sub(start);
-    const m=mesh(branchGeometry,bark,0,0,0,radius,delta.length(),radius*.8);
-    m.position.copy(start).add(end).multiplyScalar(.5);
-    m.quaternion.setFromUnitVectors(new T.Vector3(0,1,0),delta.normalize());
-  }
   function mesh(geometry: T.BufferGeometry, material: T.Material, x: number, y: number, z: number, sx=1, sy=1, sz=1) {
     // Box UVs are rescaled per face in metres; long pavements must not stretch one tile.
     if(geometry===box && (material as T.MeshStandardMaterial).map) {
@@ -64,41 +56,60 @@ export function createVehicleStreet() {
       }
     }
     const m = new T.Mesh(geometry, material); m.position.set(x,y,z); m.scale.set(sx,sy,sz);
-    m.castShadow = true; m.receiveShadow = true; group.add(m); return m;
+    m.castShadow = true; m.receiveShadow = true; parent.add(m); return m;
   }
   const lamps: T.PointLight[] = [];
+  const lampGroups: T.Group[] = [];
+  let parked = true;
+  function updateLampVisibility() {
+    // Keep the entire orbit around the parked car clear of foreground poles.
+    for (const lamp of lampGroups) lamp.visible = !parked || Math.abs(lamp.position.z) >= 15;
+  }
   for (const side of [-1, 1]) {
+    parent = group;
     mesh(box, concrete, side*10, .08, 0, 4, .16, 150);
     mesh(box, concrete, side*7.95, .12, 0, .16, .24, 150);
     for (let i=0; i<14; i++) {
-      const z = i*10-65;
-      const x=side*10.5, height=3.8+random()*.7;
-      mesh(trunk, bark, x, 1.5, z);
-      for(let j=0;j<7;j++) {
-        const angle=j*Math.PI*2/7+i;
-        branch(new T.Vector3(x,1.9,z),new T.Vector3(x+Math.cos(angle)*1.3,height+.3*random(),z+Math.sin(angle)*1.3),.065);
-      }
-      for(let j=0;j<240;j++) {
-        const theta=random()*Math.PI*2, vertical=random()*2-1, radius=Math.cbrt(random())*1.85;
-        const horizontal=Math.sqrt(1-vertical*vertical);
-        transform.position.set(x+Math.cos(theta)*horizontal*radius,height+vertical*radius*.8,z+Math.sin(theta)*horizontal*radius);
-        transform.rotation.set(random()*Math.PI,random()*Math.PI,random()*Math.PI);
-        transform.scale.setScalar(.65+random()*.65);transform.updateMatrix();foliage.setMatrixAt(leafIndex++,transform.matrix);
-      }
+      section(i*10-65, 140);
+      const tree=createStreetTree(471+i*37+(side===1?163:0),bark);
+      tree.position.x=side*(10.1+(i%3)*.3);
+      parent.add(tree); trees.push(tree);
     }
     for (let i=0; i<10; i++) {
-      const z=i*15-67, height=8+(i*7%5)*2.5;
-      const wall=facade.clone();wall.color.set(['#ffffff','#c9c3b7','#ebe1cc','#b3b3aa'][i%4]);
+      section(i*15-67, 150);
+      fallbackBuildings.push(parent);
+      const z=0, height=8+(i*7%5)*2.5;
+      const variant=(i+(side===1?2:0))%5;
+      const style=shops.styles[variant];
+      const wall=(variant===2||variant===3?concrete:facade).clone();wall.color.set(['#d2b59c','#c9c3b7','#e9e1cf','#aebcc5','#b7a095'][variant]);
       mesh(box, wall, side*19, height/2, z, 8, height, 12);
       // Recessed shop fronts, horizontal stone bands and projecting window sills.
-      mesh(box,glass,side*14.94,1.35,z,.06,2.2,10.6);
-      mesh(box,concrete,side*14.6,2.65,z,.9,.18,11);
-      for(let f=1;f<Math.floor(height/2.5);f++) mesh(box,concrete,side*14.9,f*2.5,z,.22,.12,12);
-      for(let c=0;c<5;c++) mesh(box,concrete,side*14.8,1.35,z-5+c*2.5,.3,2.7,.14);
+      function frontage(material:T.Material, y:number, z:number, width:number, height:number, x=14.78) {
+        const face=new T.Mesh(new T.PlaneGeometry(width,height),material);
+        face.rotation.y=-side*Math.PI/2;face.position.set(side*x,y,z);parent.add(face);
+      }
+      // Individual shop windows and a separate glazed entrance with frame/handle/step.
+      for(const z of [-4.05,-1.35,4.05]) {
+        frontage(style.interior,1.35,z,2.35,2.25);
+        mesh(box,style.trim,side*14.72,1.35,z-1.2,.16,2.4,.09);
+        mesh(box,style.trim,side*14.72,1.35,z+1.2,.16,2.4,.09);
+      }
+      frontage(style.interior,1.27,1.35,1.15,2.25);
+      for(const z of [.72,1.98])mesh(box,style.trim,side*14.7,1.27,z,.2,2.5,.11);
+      mesh(box,style.trim,side*14.7,2.5,1.35,.2,.13,1.35);
+      mesh(box,pole,side*14.55,1.2,1.73,.05,.42,.045);
+      mesh(box,concrete,side*14.35,.09,1.35,1.1,.18,1.7);
+      frontage(style.sign,2.93,0,10.7,.65,14.65);
+      if(variant===0||variant===1||variant===4) {
+        const canopy=mesh(box,style.trim,side*14.1,2.58,0,1.8,.12,11.2);
+        canopy.rotation.z=side*.1;
+      }
+      if(variant!==3)for(let f=1;f<Math.floor(height/2.5);f++) mesh(box,concrete,side*14.9,f*2.5+.8,0,.22,.12,12);
+      if(variant===2||variant===4)for(const z of [-5.85,0,5.85])mesh(box,concrete,side*14.7,height/2,z,.45,height,.25);
       mesh(box, concrete, side*19, height+.12, z, 8.3, .24, 12.3);
-      for (let floor=0; floor<Math.floor(height/2.5); floor++) for (let column=0; column<4; column++) {
+      for (let floor=1; floor<Math.floor(height/2.5); floor++) for (let column=0; column<4; column++) {
         const wy=1.7+floor*2.5,wz=z-4.5+column*3;
-        mesh(box, glass, side*14.98, wy, wz, .035, 1.3, 1.5);
+        frontage((floor+column+i)%3===0?style.interior:glass,wy,wz,variant===3?2.2:1.5,1.3,14.85);
         mesh(box,pole,side*14.94,wy,wz,.06,1.32,.045);
         mesh(box,concrete,side*14.8,wy-.7,wz,.4,.1,1.75);
         if(i%3===1 && floor>0) {
@@ -108,20 +119,48 @@ export function createVehicleStreet() {
         }
       }
     }
-    for (const z of [-22, 0, 22]) {
-      mesh(box,pole,side*4.9,2.7,z,.1,5.4,.1);
-      mesh(box,pole,side*4.5,5.35,z,.9,.08,.1);
-      mesh(box,bulb,side*4.1,5.3,z,.5,.07,.28);
-      const light=new T.PointLight('#ffd49a',0,16,2);light.position.set(side*4.1,5.1,z);group.add(light);lamps.push(light);
+    for (const origin of [-60, 0, 60]) {
+      section(origin, 180);
+      lampGroups.push(parent);
+      const z = 0;
+      mesh(box,pole,side*8.35,2.7,z,.1,5.4,.1);
+      mesh(box,pole,side*7.95,5.35,z,.9,.08,.1);
+      mesh(box,bulb,side*7.55,5.3,z,.5,.07,.28);
+      const light=new T.PointLight('#ffd49a',0,16,2);light.position.set(side*7.55,5.1,z);parent.add(light);lamps.push(light);
     }
   }
-  return { group, setNight(night: boolean) {
+  const treeAssets=loadStreetTrees(trees);
+  updateLampVisibility();
+  return { group, ready: Promise.all([ready, treeAssets.ready]), setParked(value: boolean) {
+    if (parked === value) return;
+    parked = value; updateLampVisibility();
+  }, advance(distance: number) {
+    if (!Number.isFinite(distance) || distance === 0) return;
+    skyline.advance(distance);
+    city.advance(distance);
+    for (const item of moving) {
+      item.group.position.z = wrapStreetPosition(item.group.position.z + distance, item.period);
+    }
+    updateLampVisibility();
+  }, setNight(night: boolean) {
+    skyline.setNight(night);
+    city.setNight(night);
+    shops.setNight(night);
     glass.emissiveIntensity=night ? .65 : 0;
     bulb.emissiveIntensity=night ? 5 : 0;
     lamps.forEach(light=>light.intensity=night ? 70 : 0);
   }, dispose() {
+    treeAssets.dispose();
+    city.dispose();
+    skyline.dispose();
+    shops.dispose();
     const geometries=new Set<T.BufferGeometry>(), materials=new Set<T.Material>();
     group.traverse(o=>{if(o instanceof T.Mesh){geometries.add(o.geometry);materials.add(o.material as T.Material);}});
-    facade.dispose();textures.forEach(t=>t.dispose());foliage.dispose();leafTexture.dispose();geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());group.removeFromParent();
+    facade.dispose();textures.forEach(t=>t.dispose());trees.forEach(tree=>tree.userData.dispose());geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());group.removeFromParent();
   }};
+}
+
+// Recycle complete objects beyond the visible foreground, preserving all their parts.
+export function wrapStreetPosition(z: number, period: number) {
+  return ((z + period / 2) % period + period) % period - period / 2;
 }
