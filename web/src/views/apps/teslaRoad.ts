@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { addRoadSnow } from './teslaRoadSnow';
 
 export const ROAD_TEXTURE_LENGTH = 96;
 const ROAD_WIDTH = 16, ROAD_LENGTH = 384;
@@ -80,9 +81,9 @@ function surface(park: boolean) {
   return texture;
 }
 
-export function createVehicleRoadMesh() {
+export function createVehicleRoadMesh(manager?: THREE.LoadingManager) {
   const driveTexture = surface(false), parkTexture = surface(true);
-  const loader = new THREE.TextureLoader();
+  const loader = new THREE.TextureLoader(manager);
   function detail(name: string) {
     const texture = loader.load(`/textures/city-sample/asphalt-${name}.jpg`);
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
@@ -91,8 +92,7 @@ export function createVehicleRoadMesh() {
   }
   const normal = detail('normalgl'), roughness = detail('roughness');
   let disposed = false;
-  const image = new Image();
-  image.onload = () => {
+  new THREE.ImageLoader(manager).load('/textures/city-sample/asphalt-color.jpg', (image) => {
     if (disposed) return;
     for (const texture of [driveTexture, parkTexture]) {
       const canvas = texture.image as HTMLCanvasElement, ctx = canvas.getContext('2d')!;
@@ -100,8 +100,7 @@ export function createVehicleRoadMesh() {
       for (let y=0; y<canvas.height; y+=height) for(let x=0;x<canvas.width;x+=width) ctx.drawImage(image,x,y,width,height);
       ctx.drawImage(texture.userData.markings,0,0); texture.needsUpdate = true;
     }
-  };
-  image.src = '/textures/city-sample/asphalt-color.jpg';
+  });
   const material = new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: .94,
     map: parkTexture, normalMap: normal, normalScale: new THREE.Vector2(.28,.28), roughnessMap: roughness });
   const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, ROAD_LENGTH), material);
@@ -110,10 +109,15 @@ export function createVehicleRoadMesh() {
     new THREE.MeshStandardMaterial({ color: '#41494b', roughness: .96 }));
   surround.position.z = -.006; surround.receiveShadow = true;
   road.add(surround);
+  const setSnow = addRoadSnow(material);
+  road.userData.setSnow = (enabled: boolean) => {
+    setSnow(enabled);
+    surround.material.color.set(enabled ? '#c9d1d5' : '#41494b');
+  };
   road.receiveShadow = true;
   road.rotation.x = -Math.PI/2; road.position.set(0,-.82,.45);
   road.userData.updateTravel = (distance: number) => { normal.offset.y = roughness.offset.y = distance / 4; };
-  road.userData.disposeDetails = () => { disposed = true; image.onload = null; normal.dispose(); roughness.dispose(); };
+  road.userData.disposeDetails = () => { disposed = true; normal.dispose(); roughness.dispose(); };
   road.userData.textureLength = ROAD_TEXTURE_LENGTH;
   road.userData.driveTexture = driveTexture; road.userData.parkTexture = parkTexture;
   return road;

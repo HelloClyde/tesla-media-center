@@ -30,12 +30,20 @@ class AmapAppTest(unittest.TestCase):
     def test_ready_route_allowlist_and_geometry_validation(self):
         route = {'path': [[116.4, 39.9], [116.401, 39.9]], 'steps': [
             {'start': 0, 'end': 1, 'road': '示例路', 'private': 'hidden'}],
-            'distance': 85, 'labels': ['方案一'], 'breaks': [], 'key': 'hidden'}
+            'distance': 85, 'labels': ['方案一'], 'breaks': [], 'key': 'hidden',
+            'duration': 8460, 'tolls': 71, 'tollCurrency': 'CNY'}
         data = {'state': 'ready', 'routes': [route], 'secret': 'hidden'}
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             result = amap_app.invoke_helper(self.payload)
         self.assertTrue(result['navigationAvailable'])
         self.assertNotIn('hidden', json.dumps(result))
+        self.assertEqual(result['routes'][0]['duration'], 8460)
+        self.assertEqual(result['routes'][0]['tolls'], 71)
+        route.update(duration=-1, tolls=True)
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+            invalid = amap_app.invoke_helper(self.payload)['routes'][0]
+        self.assertIsNone(invalid['duration'])
+        self.assertIsNone(invalid['tolls'])
         route['steps'][0]['end'] = 10
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             with self.assertRaises(ValueError):

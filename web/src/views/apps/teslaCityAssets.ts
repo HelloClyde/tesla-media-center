@@ -4,13 +4,13 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 // Shared authored geometry and textures; each block only owns its transform.
-export function createAssetCity() {
+export function createAssetCity(manager?: T.LoadingManager) {
   const group = new T.Group();
   group.name = 'DowntownCity';
   const geometries = new Set<T.BufferGeometry>();
   const materials = new Set<T.MeshStandardMaterial>();
   const textures = new Set<T.Texture>();
-  const brick = new T.TextureLoader().load('/textures/city-sample/brick-realistic.jpg');
+  const brick = new T.TextureLoader(manager).load('/textures/city-sample/brick-realistic.jpg');
   brick.colorSpace=T.SRGBColorSpace;brick.flipY=false;brick.wrapS=brick.wrapT=T.RepeatWrapping;brick.anisotropy=4;textures.add(brick);
   const interiors = new Set<T.MeshStandardMaterial>();
   let disposed = false, night = false, travel = 0;
@@ -29,7 +29,7 @@ export function createAssetCity() {
     textures.forEach(value => value.dispose());
     group.clear();
   }
-  const loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+  const loader = new GLTFLoader(manager).setMeshoptDecoder(MeshoptDecoder);
   const ready = Promise.all([loader.loadAsync('/models/city-sample/downtown.glb'), loader.loadAsync('/models/city-sample/alley-apartments.glb').catch(() => null)]).then(([base, alley]) => {
     const scene=base.scene;
     if(alley){ alley.scene.name='Alley_apartments'; scene.add(alley.scene); }

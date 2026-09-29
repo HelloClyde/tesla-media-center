@@ -37,3 +37,7 @@ This is a lightweight browser street sample, not a complete AAA scene. Desktop r
 
 ## Runtime size optimization
 Run `node tools/vehicle-model/optimize-scene-textures.cjs` after asset preparation. Full-resolution JPEG recompression (4:4:4 chroma); opaque GLB textures are converted from PNG where smaller. No geometry simplification or resolution reduction in this pass. Original inputs backed up to ignored .local-data/scene-size-originals. Street assets: 34,492,627 -> 18,139,066 bytes; vehicle excluded.
+
+
+## Tree distance detail
+`prepare-tree-lod.cjs` derives `tree-lod.glb` from the existing CC0 tree: 157,909 to 30,827 triangles. It contains geometry only; runtime reuses original materials and textures. Full geometry is retained within 24 world units, with 15% switching hysteresis. The 28-tree placement test selects 8 original and 20 distant models (4,421,452 to 1,879,812 triangles before frustum culling). This is a geometry-work comparison, not measured car-browser FPS.

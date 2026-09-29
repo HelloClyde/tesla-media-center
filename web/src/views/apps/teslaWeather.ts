@@ -38,7 +38,8 @@ export function applyWeatherLighting(scene:T.Scene,sun:T.DirectionalLight,sky:T.
   const horizon=scene.getObjectByName('Distant_city_horizon');if(horizon)horizon.visible=mode==='clear'||mode==='cloudy';
   if(overcast){const color=night?'#0b1420':fog?'#b8c1c7':'#9daab5';scene.background=new T.Color(color);scene.fog=new T.Fog(color,fog?8:25,fog?85: snow?130:180);sun.intensity*=.35;}
   const material=road.material as T.MeshStandardMaterial;
+  road.userData.setSnow?.(snow);
   material.roughness=wet?.24:.94;
   material.color.set(wet?'#79828a':'#ffffff');
-  material.normalScale?.setScalar(wet?.18:.28);
+  material.normalScale?.setScalar(snow?.08:wet?.18:.28);
 }

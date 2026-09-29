@@ -6,11 +6,11 @@ import { createVehicleSkyline } from './teslaSkyline';
 import { createShopfrontMaterials } from './teslaShopfronts';
 
 // A lightweight streetscape with shared geometry/materials for the car browser.
-export function createVehicleStreet() {
+export function createVehicleStreet(manager?: T.LoadingManager) {
   const group = new T.Group();
   const skyline = createVehicleSkyline();
   const shops = createShopfrontMaterials();
-  const city = createAssetCity();
+  const city = createAssetCity(manager);
   const fallbackBuildings: T.Group[] = [];
   group.add(city.group);
   const ready = city.ready.then(loaded => { if (loaded) fallbackBuildings.forEach(building => building.visible = false); return loaded; });
@@ -24,7 +24,7 @@ export function createVehicleStreet() {
     moving.push({ group: parent, period });
   }
   const textures:T.Texture[]=[];
-  const loader=new T.TextureLoader();
+  const loader=new T.TextureLoader(manager);
   function textured(name:string,repeatX=1,repeatY=1) {
     function load(kind:string) {
       const texture=loader.load(`/textures/streetscape/${name}_${kind}.jpg`);
@@ -60,10 +60,13 @@ export function createVehicleStreet() {
   }
   const lamps: T.PointLight[] = [];
   const lampGroups: T.Group[] = [];
-  let parked = true;
+  let parked = true, nightMode = false;
   function updateLampVisibility() {
     // Keep the entire orbit around the parked car clear of foreground poles.
     for (const lamp of lampGroups) lamp.visible = !parked || Math.abs(lamp.position.z) >= 15;
+    // Keep distant bulbs emissive, but only shade nearby geometry with real lights.
+    const nearest = lamps.filter(light => light.parent?.visible).sort((a,b) => Math.abs(a.parent!.position.z) - Math.abs(b.parent!.position.z)).slice(0,4);
+    for (const light of lamps) light.visible = nightMode && nearest.includes(light);
   }
   for (const side of [-1, 1]) {
     parent = group;
@@ -129,7 +132,7 @@ export function createVehicleStreet() {
       const light=new T.PointLight('#ffd49a',0,16,2);light.position.set(side*7.55,5.1,z);parent.add(light);lamps.push(light);
     }
   }
-  const treeAssets=loadStreetTrees(trees);
+  const treeAssets=loadStreetTrees(trees, manager);
   updateLampVisibility();
   return { group, ready: Promise.all([ready, treeAssets.ready]), setParked(value: boolean) {
     if (parked === value) return;
@@ -143,6 +146,7 @@ export function createVehicleStreet() {
     }
     updateLampVisibility();
   }, setNight(night: boolean) {
+    nightMode = night; updateLampVisibility();
     skyline.setNight(night);
     city.setNight(night);
     shops.setNight(night);

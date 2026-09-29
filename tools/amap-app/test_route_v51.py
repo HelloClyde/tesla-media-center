@@ -1,6 +1,6 @@
 import struct
 import unittest
-from route_v51 import decode, fields, unpack
+from route_v51 import decode, fields, unpack, route_summary
 
 
 def vi(value):
@@ -40,6 +40,15 @@ def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9)):
 
 
 class RouteV51Test(unittest.TestCase):
+    def test_route_summary_units_and_missing_values(self):
+        # Summary fields captured from the Hangzhou -> Shanghai response.
+        route = fields(msg(f7=8460, f4=msg(f1=7100, f2=13551100, f5=b'CNY')))
+        self.assertEqual(route_summary(route), {'duration': 8460, 'tolls': 71, 'tollCurrency': 'CNY'})
+        self.assertEqual(route_summary({})['tolls'], None)
+        self.assertEqual(route_summary(fields(msg(f4=msg(f1=0, f2=0))))['tolls'], 0)
+        self.assertIsNone(route_summary(fields(msg(f7=0)))['duration'])
+        self.assertIsNone(route_summary(fields(msg(f4=msg(f1=7100, f5=b'USD'))))['tolls'])
+
     def test_decodes_absolute_first_and_zigzag_deltas(self):
         route = decode(fixture())[0]
         self.assertEqual(route['path'], [[116.4, 39.9], [116.401, 39.9]])

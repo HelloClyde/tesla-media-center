@@ -119,6 +119,26 @@ def unpack(raw):
     return route_data
 
 
+def route_summary(route):
+    # v5.1 route.7 is the planned travel time in seconds; route.4 is
+    # the toll summary (1: minor currency units, 2: charged distance, 5: currency).
+    duration = one(route, 7, None)
+    duration = duration if type(duration) is int and 0 < duration <= 30 * 86400 else None
+    tolls = currency = None
+    if 4 in route:
+        try:
+            toll = fields(one(route, 4))
+            amount = one(toll, 1, None)
+            currency = one(toll, 5, b'CNY').decode('ascii')
+            if type(amount) is int and 0 <= amount <= 100000000 and currency == 'CNY':
+                tolls = amount / 100
+            else:
+                currency = None
+        except (ValueError, TypeError, UnicodeError, AttributeError):
+            currency = None
+    return {'duration': duration, 'tolls': tolls, 'tollCurrency': currency}
+
+
 def decode(raw, origin=None, destination=None):
     outer = fields(unpack(raw))
     header = fields(one(outer, 1, b""))
@@ -191,7 +211,7 @@ def decode(raw, origin=None, destination=None):
             raise ValueError("route distance mismatch")
         labels = [one(fields(item), 2, b"").decode("utf-8") for item in route.get(12, [])]
         routes.append({"id": len(routes), "labels": labels, "path": path, "steps": steps, "breaks": breaks,
-                       "distance": round(measured), "roads": list(dict.fromkeys(step["road"] for step in steps))})
+                       **route_summary(route), "distance": round(measured), "roads": list(dict.fromkeys(step["road"] for step in steps))})
     if not 1 <= len(routes) <= 10:
         raise ValueError("route count")
     return routes

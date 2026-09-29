@@ -1,6 +1,7 @@
 import L from 'leaflet';
 import axios from 'axios';
 import { createMapRenderQueue } from './mapRenderQueue';
+import { surroundingTiles } from './amapTilePrefetch';
 import { viewportTiles } from './amapViewport';
 import { layoutPlaceLabels, type PlaceLabel } from './amapPlaceLabels';
 
@@ -123,64 +124,97 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       entry.group.removeLayer(entry.layer); rendered.delete(key); yield;
     }
   }
+  let loading = false;
+  const failures = new Map<string, { count: number; retryAt: number }>();
+  function needsTile(tile: number[]) {
+    const key = tile.join('/'), cached = cache.get(key), failure = failures.get(key);
+    return (!cached || Date.now() - cached.time > 600000)
+      && (!failure || (failure.count < 3 && Date.now() >= failure.retryAt));
+  }
+  function markFailed(tile: number[]) {
+    const key = tile.join('/'), count = (failures.get(key)?.count || 0) + 1;
+    failures.set(key, { count, retryAt: Date.now() + 2000 * 2 ** (count - 1) });
+    if (failures.size > 256) failures.delete(failures.keys().next().value!);
+  }
   async function load() {
-    if (disposed || moving || !active) return;
-    const id = ++generation;
-    request?.abort(); request = new AbortController();
+    if (disposed || !active || loading) return;
     const tiles = visible();
-    if (!tiles.length) { draw([]); report('路线总览 · 放大后显示道路详情'); return; }
-    const missing = tiles.filter(t => !cache.has(t.join('/')) || Date.now() - cache.get(t.join('/'))!.time > 600000);
     draw(tiles);
-    if (!missing.length) { report(''); return; }
-    report('正在加载 App 地图…');
-    let failed = false;
-    for (const level of [...new Set(missing.map(t => t[0]))]) {
+    if (!tiles.length) { report('路线总览 · 放大后显示道路详情'); return; }
+    const missing = tiles.filter(needsTile);
+    const prefetch = missing.length === 0;
+    const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
+    if (!candidates.length) {
+      const retryTimes = [...failures.values()].filter(f => f.count < 3 && f.retryAt > Date.now()).map(f => f.retryAt);
+      if (retryTimes.length) timer = setTimeout(() => void load(), Math.max(100, Math.min(...retryTimes) - Date.now()));
+      report(tiles.some(t => failures.has(t.join('/'))) ? '部分图层加载失败，可重试补齐' : '');
+      return;
+    }
+    loading = true;
+    const id = generation;
+    const controller = new AbortController(); request = controller;
+    // Small warm-up batches keep viewport requests responsive. Each completed
+    // batch re-evaluates the current view before doing any more background work.
+    const level = candidates[0][0];
+    const batch = candidates.filter(t => t[0] === level).slice(0, prefetch ? 4 : 24);
+    if (!prefetch) report('正在加载 App 地图…');
+    try {
+      let response;
+      const deadline = Date.now() + 90000;
+      while (true) {
+        response = await axios.post('/api/amap-app/map', { level, tiles: batch.map(t => t.slice(1)) }, { signal: controller.signal, timeout: 70000 });
+        if (response.status !== 202 || !response.data.data?.pending) break;
+        if (Date.now() >= deadline) throw new Error('地图加载超时');
+        await new Promise(resolve => setTimeout(resolve, 750));
+        if (disposed || id !== generation) return;
+      }
       if (disposed || id !== generation) return;
-      try {
-        const batch = missing.filter(t => t[0] === level);
-        let response;
-        const deadline = Date.now() + 90000;
-        while (true) {
-          if (disposed || id !== generation) return;
-          response = await axios.post('/api/amap-app/map', { level, tiles: batch.map(t => t.slice(1)) }, { signal: request.signal, timeout: 70000 });
-          if (response.status !== 202 || !response.data.data?.pending) break;
-          if (Date.now() >= deadline) throw new Error('地图加载超时，请重试');
-          await new Promise(resolve => setTimeout(resolve, 750));
-        }
-        if (disposed || id !== generation) return;
-        if (response.data.status !== 'ok') throw new Error(response.data.message || '请登录后重试');
-        for (const tile of response.data.data.tiles) {
-          if (tile.error) { failed = true; continue; }
-          const key = `${tile.level}/${tile.x}/${tile.y}`;
-          cache.delete(key); cache.set(key, { time: tile.missingLayers?.length ? 0 : Date.now(), collection: tile.collection, surfaces: tile.surfaces, transit: tile.transit, placeLabels: tile.placeLabels, missingLayers: tile.missingLayers });
-          if (tile.missingLayers?.length) failed = true;
-        }
-        while (cache.size > 128) cache.delete(cache.keys().next().value!);
-        draw(tiles);
-      } catch {
-        if (disposed || id !== generation) return;
-        failed = true;
+      if (response.data.status !== 'ok') throw new Error('地图请求失败');
+      const returned = new Set<string>();
+      for (const tile of response.data.data.tiles) {
+        const key = `${tile.level}/${tile.x}/${tile.y}`;
+        if (!batch.some(t => t.join('/') === key)) continue;
+        returned.add(key);
+        if (tile.error) { markFailed([tile.level, tile.x, tile.y]); continue; }
+        cache.delete(key); cache.set(key, { time: tile.missingLayers?.length ? 0 : Date.now(), collection: tile.collection, surfaces: tile.surfaces, transit: tile.transit, placeLabels: tile.placeLabels, missingLayers: tile.missingLayers });
+        if (tile.missingLayers?.length) markFailed([tile.level, tile.x, tile.y]); else failures.delete(key);
+      }
+      for (const tile of batch) if (!returned.has(tile.join('/'))) markFailed(tile);
+      const protectedKeys = new Set(visible().map(t => t.join('/')));
+      for (const key of cache.keys()) {
+        if (cache.size <= 128) break;
+        if (!protectedKeys.has(key)) cache.delete(key);
+      }
+      draw(visible());
+    } catch {
+      if (!disposed && id === generation) batch.forEach(markFailed);
+    } finally {
+      loading = false;
+      if (request === controller) request = undefined;
+      if (!disposed && active) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => void load(), 100);
       }
     }
-    report(failed ? '部分图层加载失败，可重试补齐' : '');
   }
 
   function suspend() {
     moving = true;
-    generation++; request?.abort(); renderQueue.cancel();
+    // Movement only pauses drawing, never throws away an in-flight download.
+    renderQueue.cancel();
     if (timer) clearTimeout(timer);
   }
   function schedule() {
     if (!active || disposed) return;
     moving = false;
-    generation++; request?.abort(); renderQueue.cancel();
+    renderQueue.cancel();
     if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void load(), 220);
+    timer = setTimeout(() => void load(), 100);
   }
   map.on('movestart zoomstart', suspend);
   map.on('moveend zoomend rotate', schedule);
   void load();
-  return { setActive(value: boolean) { active = value; if (!value) suspend(); else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => void load(), dispose() {
+  return { setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); suspend(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => { failures.clear(); void load(); }, dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
   } };

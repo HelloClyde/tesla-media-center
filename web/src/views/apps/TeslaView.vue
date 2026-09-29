@@ -1145,6 +1145,11 @@ function initVehicleViewer() {
   if (vehicleViewerInitialized || !vehicleVisualRef.value) {
     return;
   }
+  state.visualLoading = true;
+  state.visualError = '';
+  const manager = new THREE.LoadingManager();
+  let resourceFailed = false;
+
   const container = vehicleVisualRef.value;
   vehicleScene = new THREE.Scene();
   vehicleScene.background = new THREE.Color('#c6d9e5');
@@ -1155,12 +1160,14 @@ function initVehicleViewer() {
   vehicleCamera.lookAt(DEFAULT_VEHICLE_CAMERA_TARGET);
 
   vehicleRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  vehicleRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  vehicleRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
   vehicleRenderer.setSize(container.clientWidth || 640, container.clientHeight || 420);
   vehicleRenderer.outputColorSpace = THREE.SRGBColorSpace;
   vehicleRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   vehicleRenderer.toneMappingExposure = 1;
   vehicleRenderer.shadowMap.enabled = true;
+  vehicleRenderer.shadowMap.autoUpdate = false;
+  vehicleRenderer.shadowMap.needsUpdate = true;
   vehicleRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.innerHTML = '';
   container.appendChild(vehicleRenderer.domElement);
@@ -1216,20 +1223,49 @@ function initVehicleViewer() {
   vehicleModelPivot.position.y = 0.85;
   vehicleScene.add(vehicleModelPivot);
 
-  vehicleRoadMesh = createVehicleRoadMesh();
+  const activeRenderer = vehicleRenderer;
+  manager.onError = () => {
+    resourceFailed = true;
+    if (vehicleRenderer !== activeRenderer) return;
+    state.visualError = '场景资源加载失败，请刷新重试';
+    state.visualLoading = false;
+  };
+  vehicleRoadMesh = createVehicleRoadMesh(manager);
   vehicleModelPivot.add(vehicleRoadMesh);
   vehicleWeather=createVehicleWeather();vehicleModelPivot.add(vehicleWeather.group);
-  vehicleStreet = createVehicleStreet();
+  vehicleStreet = createVehicleStreet(manager);
   const loadedStreet=vehicleStreet;
   loadedStreet.ready.then(()=>{if(vehicleStreet===loadedStreet){streetReflectionsReady=true;streetReflectionsDirty=true;renderVehicleViewer();}});
   vehicleStreet.group.position.y = vehicleRoadMesh.position.y;
   vehicleModelPivot.add(vehicleStreet.group);
   updateSceneLighting();
 
-  const loader = new GLTFLoader();
+  manager.onLoad = async () => {
+    await loadedStreet.ready;
+    if (vehicleRenderer !== activeRenderer) return;
+    if (resourceFailed || !vehicleModelRoot) {
+      state.visualError = '场景资源加载失败，请刷新重试';
+      state.visualLoading = false;
+      return;
+    }
+    streetReflectionsReady = true;
+    streetReflectionsDirty = true;
+    try {
+      resizeVehicleViewer();
+      // Render the complete scene and its reflections before revealing it.
+      renderVehicleViewer();
+      state.visualLoading = false;
+    } catch (error) {
+      console.error(error);
+      state.visualError = '场景渲染失败，请刷新重试';
+      state.visualLoading = false;
+    }
+  };
+  const loader = new GLTFLoader(manager);
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
   loader.load('/models/2022_tesla_model_y.glb?v=plates-1', (gltf: { scene: THREE.Group }) => {
+    if (vehicleRenderer !== activeRenderer) return;
     const model = gltf.scene;
     repairVehicleInterior(model);
     const box = new THREE.Box3().setFromObject(model);
@@ -1265,12 +1301,11 @@ function initVehicleViewer() {
     vehicleModelPivot?.add(model);
     vehicleModelPivot?.updateMatrixWorld(true);
     detectVehicleWheelMeshes(model, new THREE.Box3().setFromObject(model));
-    state.visualError = '';
-    state.visualLoading = false;
     syncMixedMap();
     updateVehicleVisualState(true);
     resizeVehicleViewer();
   }, undefined, (error: unknown) => {
+    if (vehicleRenderer !== activeRenderer) return;
     console.error(error);
     state.visualError = '车辆模型加载失败';
     state.visualLoading = false;
@@ -1296,10 +1331,12 @@ function resizeVehicleViewer() {
   renderVehicleViewer();
 }
 
-function renderVehicleViewer() {
+let lastShadowUpdate = 0;
+function renderVehicleViewer(refreshShadows = true) {
   if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
     return;
   }
+  if (refreshShadows) vehicleRenderer.shadowMap.needsUpdate = true;
   if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
     streetReflectionsDirty=false;
     vehicleScene.updateMatrixWorld(true);
@@ -1383,20 +1420,20 @@ function startVehicleRenderLoop() {
     if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
       return;
     }
+    if (!state.documentVisible || state.activeTab !== 'status') return;
     const now = performance.now();
     updateVehiclePoseTween(now);
     updateVehicleMotion(now);
-    vehicleControls?.update();
-    if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
-    streetReflectionsDirty=false;
-    vehicleScene.updateMatrixWorld(true);
-    const position=vehicleModelRoot.getWorldPosition(new THREE.Vector3());position.y+=1.3;
-    const reflection=captureStreetReflections(vehicleRenderer,vehicleScene,vehicleModelRoot,position);
-    vehicleScene.environment=reflection.texture;
-    vehicleScene.environmentIntensity=.7;
-    vehicleEnvironment?.dispose();vehicleEnvironment=reflection;
-  }
-  vehicleRenderer.render(vehicleScene, vehicleCamera);
+    const cameraChanged = vehicleControls?.update();
+    const doorsMoving = vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
+    const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween;
+    const weatherMoving = activeWeather.value === 'rain' || activeWeather.value === 'snow';
+    if (!moving && !weatherMoving && !cameraChanged && !vehicleViewTween && !streetReflectionsDirty) return;
+    if (moving && now - lastShadowUpdate >= 80) {
+      vehicleRenderer.shadowMap.needsUpdate = true;
+      lastShadowUpdate = now;
+    }
+    renderVehicleViewer(false);
   };
   vehicleRenderLoopFrame = window.requestAnimationFrame(frame);
 }
@@ -1818,9 +1855,9 @@ watch(currentShiftState, () => {
       <el-tabs v-model="state.activeTab" class="tesla-tabs">
         <el-tab-pane label="车辆状态" name="status">
           <section class="tesla-grid tesla-grid--content">
-            <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading">
+            <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading" element-loading-text="正在加载车辆、场景与贴图…" element-loading-background="#111c26">
               <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
-              <div v-else class="vehicle-visual-shell">
+              <div v-else class="vehicle-visual-shell" :class="{ 'vehicle-visual-shell--loading': state.visualLoading }" :aria-busy="state.visualLoading">
                 <div class="vehicle-speed-hud" aria-label="当前车速">
                   <span class="vehicle-speed-hud__label">车速</span>
                   <div class="vehicle-speed-hud__reading">
@@ -1855,16 +1892,18 @@ watch(currentShiftState, () => {
                   </div>
                 </div>
                 <div ref="vehicleVisualRef" class="vehicle-visual-stage"></div>
-                <div class="vehicle-map-controls">
-                  <button :aria-pressed="headlights" aria-label="切换车辆灯光" @click="headlights = !headlights">{{ headlights ? '车灯已开启' : '开启车灯' }}</button>
-                  <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间 · 切换白天' : '白天 · 切换夜间' }}</button>
-                  <label class="vehicle-weather-control">天气
+                <div class="vehicle-map-controls" role="toolbar" aria-label="车辆场景选项">
+                <button class="model-door-preview" :aria-pressed="modelDoorsOpen" :disabled="state.visualLoading"
+                  title="仅演示模型，不控制真实车辆" @click="modelDoorsOpen = !modelDoorsOpen">
+                  {{ modelDoorsOpen ? '收起车门' : '展开车门' }}
+                </button>
+                  <button :aria-pressed="headlights" aria-label="切换车辆灯光" @click="headlights = !headlights">{{ headlights ? '车灯 · 开' : '车灯 · 关' }}</button>
+                  <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间' : '白天' }}</button>
+                  <label class="vehicle-weather-control" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '场景天气'">天气
                     <select v-model="weatherMode" aria-label="场景天气">
-                      <option value="auto">跟随当地天气</option>
+                      <option value="auto">自动</option>
                       <option v-for="(label,value) in weatherLabels" :key="value" :value="value">{{ label }}</option>
                     </select>
-                    <small v-if="weatherMode==='auto'" role="status">{{ weatherStatus }}</small>
-                    <a v-if="weatherMode==='auto'" href="https://open-meteo.com/" target="_blank" rel="noopener noreferrer">Open-Meteo</a>
                   </label>
                   <el-popover v-model:visible="appearanceOpen" trigger="click" placement="top-end" :width="300">
                     <template #reference><button aria-label="自定义车辆外观">车辆外观</button></template>
@@ -1881,14 +1920,11 @@ watch(currentShiftState, () => {
                       <el-button @click="Object.assign(appearance, defaultAppearance)">恢复默认</el-button>
                     </div>
                   </el-popover>
-                  <span class="vehicle-map-caption" role="status">{{ mixedMap ? mixedMapStatus : '示意路面' }}</span>
+
                   <button v-if="mixedMap && vehiclePosition && (!mixedMapReady || mixedMapStatus.includes('不完整') || mixedMapStatus.includes('缺失'))" @click="vehicleMapGround?.retry()">重试地图</button>
-                  <button :aria-pressed="mixedMap" @click="mixedMap = !mixedMap">{{ mixedMap ? '切回车辆展示' : '3D 地图混合' }}</button>
+                  <button :aria-pressed="mixedMap" @click="mixedMap = !mixedMap">{{ mixedMap ? '车辆展示' : '3D 地图' }}</button>
                 </div>
-                <button class="model-door-preview" :aria-pressed="modelDoorsOpen" :disabled="state.visualLoading"
-                  title="仅演示模型，不控制真实车辆" @click="modelDoorsOpen = !modelDoorsOpen">
-                  {{ modelDoorsOpen ? '收起模型车门' : '展开模型车门' }}
-                </button>
+                <span v-if="mixedMap" class="vehicle-map-caption" role="status">{{ mixedMapStatus }}</span>
               </div>
             </article>
           </section>
@@ -2763,4 +2799,67 @@ watch(currentShiftState, () => {
 .vehicle-speed-hud__reading strong{font-size:clamp(38px,5vw,64px);font-weight:650;line-height:1.05;letter-spacing:-2px;font-variant-numeric:tabular-nums}
 .vehicle-speed-hud__reading span{font-size:12px;color:rgba(255,255,255,.8)}
 @media(max-height:600px){.vehicle-speed-hud{top:12px;left:14px;padding:8px 12px;min-width:92px}.vehicle-speed-hud__reading strong{font-size:42px}}
+</style>
+
+<style scoped>
+/* Keep the scene full bleed, with a compact header and a separate speed HUD. */
+.tesla-page--visual :deep(.el-tabs__header) {
+  top: 12px; left: 18px; right: auto; max-width: calc(100% - 36px);
+  padding: 0 8px; border: 1px solid rgba(255,255,255,.14); border-radius: 14px;
+  background: rgba(15,24,31,.52); box-shadow: 0 4px 20px #0002;
+  --el-text-color-primary: #fff; --el-color-primary: #fff;
+}
+.tesla-page--visual :deep(.el-tabs__nav-wrap::after),
+.tesla-page--visual :deep(.el-tabs__active-bar) { display: none; }
+.tesla-page--visual :deep(.el-tabs__item) {
+  height: 40px; padding: 0 14px !important; color: #ffffffa8; font-size: 13px;
+}
+.tesla-page--visual :deep(.el-tabs__item.is-active) { color: #fff; text-shadow: 0 0 12px #fff5; }
+.tesla-page--visual .vehicle-speed-hud {
+  top: 76px; left: 20px; padding: 8px 12px; border: 0; background: #111d2870;
+  border-radius: 12px; backdrop-filter: blur(12px);
+}
+.vehicle-map-controls {
+  position: absolute; left: 14px; right: 14px; bottom: 14px; max-width: none;
+  flex-wrap: nowrap; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px; border: 1px solid #ffffff24; border-radius: 16px;
+  background: #101a25b8; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  overflow-x: auto; scrollbar-width: none;
+}
+.vehicle-map-controls::-webkit-scrollbar { display: none; }
+.vehicle-map-controls button, .vehicle-map-controls .vehicle-weather-control {
+  position: static; flex: 0 0 auto; margin: 0; min-height: 40px; box-sizing: border-box;
+  padding: 8px 12px; border: 1px solid transparent; border-radius: 10px;
+  background: transparent; color: #f1f5f9; font-size: 12px; white-space: nowrap;
+  backdrop-filter: none;
+}
+.vehicle-map-controls button:hover, .vehicle-map-controls button[aria-pressed=true] {
+  color: #fff; background: #ffffff1c; border-color: #ffffff26;
+}
+.vehicle-map-controls button:focus-visible, .vehicle-weather-control select:focus-visible {
+  outline: 2px solid #89c7ff; outline-offset: -2px;
+}
+.vehicle-map-controls .vehicle-weather-control { flex-wrap: nowrap; gap: 6px; }
+.vehicle-weather-control select { color: #fff; background: #ffffff12; border-color: #ffffff30; max-width: 90px; }
+.vehicle-weather-control option { color: #17212c; background: #fff; }
+.vehicle-map-caption { position: absolute; bottom: 80px; right: 22px; color: #fff; text-shadow: 0 1px 4px #000; pointer-events: none; }
+.tesla-page--visual .vehicle-visual-overlay {
+  top: 76px; right: 20px; width: auto; padding: 12px 14px; gap: 9px;
+  border-radius: 12px; background: #101a2575; backdrop-filter: blur(12px);
+}
+.tesla-page--visual .vehicle-overlay-card { flex-direction: row; justify-content: space-between; align-items: baseline; gap: 18px; }
+.tesla-page--visual .vehicle-overlay-card span { color: #ffffffad; text-shadow: none; }
+.tesla-page--visual .vehicle-overlay-card strong { color: #fff; text-shadow: none; font-variant-numeric: tabular-nums; }
+@media(max-width: 700px) {
+  .vehicle-map-controls { left: 8px; right: 8px; bottom: 8px; justify-content: flex-start; gap: 2px; padding: 6px; }
+  .vehicle-map-controls button, .vehicle-map-controls .vehicle-weather-control { padding: 8px; }
+}
+@media(max-height: 520px) {
+  .tesla-page--visual .vehicle-visual-overlay { gap: 5px; padding: 8px 10px; }
+  .tesla-page--visual .vehicle-speed-hud { top: 70px; }
+}
+</style>
+
+<style scoped>
+.vehicle-visual-shell--loading { visibility: hidden; pointer-events: none; }
 </style>

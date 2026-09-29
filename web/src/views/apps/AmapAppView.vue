@@ -36,18 +36,44 @@ watch(mapAppearance, value => appMap?.setAppearance(value), { deep: true });
 let appMap: ReturnType<typeof attachAppMap> | undefined;
 import 'leaflet/dist/leaflet.css';
 import { browserNavigationPoint } from '@/functions/navigationCoordinates';
+import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
+import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 const router = useRouter();
 const mapElement = ref<HTMLElement>();
 const topPanel = ref<HTMLElement>(), footerPanel = ref<HTMLElement>();
 const overviewActive = ref(false), orientation = ref<'north' | 'heading'>('north');
 const heading = ref<number>();
+const displayedPosition = ref<Point>(), displayedHeading = ref(0);
+const positionTransition = createPositionTransition();
+let positionFrame: number | undefined;
+function cancelPositionAnimation() {
+  if (positionFrame !== undefined) cancelAnimationFrame(positionFrame);
+  positionFrame = undefined;
+}
+function animatePosition(point: Point, snap = false) {
+  cancelPositionAnimation();
+  positionTransition.move({ point, heading: heading.value || 0 }, performance.now(), snap);
+  const frame = (now: number) => {
+    positionFrame = undefined;
+    if (!viewActive.value || disposed || !map) return;
+    const value = positionTransition.sample(now)!;
+    displayedPosition.value = value.point; displayedHeading.value = value.heading;
+    marker?.setLatLng(latLng(value.point));
+    if (following.value) {
+      applyOrientation();
+      map.panTo(latLng(value.point), { animate: false });
+    } else marker?.setRotation(value.heading * Math.PI / 180);
+    if (!positionTransition.done(now)) positionFrame = requestAnimationFrame(frame);
+  };
+  frame(performance.now());
+}
 let headingAnchor: Point | undefined, overviewGeneration = 0;
 function applyOrientation() {
   if (!map || !viewActive.value) return;
-  const bearing = orientation.value === 'heading' && !overviewActive.value ? -(heading.value || 0) : 0;
+  const bearing = orientation.value === 'heading' && !overviewActive.value ? -displayedHeading.value : 0;
   if (Math.abs(((map.getBearing() - bearing + 540) % 360) - 180) > .5) map.setBearing(bearing);
-  marker?.setRotation((heading.value || 0) * Math.PI / 180);
+  marker?.setRotation(displayedHeading.value * Math.PI / 180);
 }
 const viewModeLabel = computed(() => overviewActive.value ? '路线全览' : orientation.value === 'heading' ? '车头向上' : '北向上');
 const nextViewModeLabel = computed(() => overviewActive.value ? '北向上' : !following.value ? viewModeLabel.value : orientation.value === 'north' ? '车头向上' : current.value ? '路线全览' : '北向上');
@@ -80,6 +106,7 @@ function followLocation() {
   }
   applyOrientation();
   if (map && (location.value || hasOrigin.value)) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
+  if (location.value) animatePosition(location.value, true);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
 const searching = ref(false), searchMessage = ref('');
@@ -134,6 +161,7 @@ watchEffect(() => {
   }, { stop: endNavigation, toggleVoice });
 });
 onDeactivated(() => {
+  cancelPositionAnimation();
   viewActive.value = false; appMap?.setActive(false); cancelSearch();
   if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
 });
@@ -142,8 +170,7 @@ onActivated(async () => {
   await nextTick();
   if (disposed || !map || !viewActive.value) return;
   map.invalidateSize({ pan: false }); appMap?.setActive(true); endpoints(); draw(false);
-  if (location.value && marker) marker.setLatLng(latLng(location.value));
-  if (following.value && location.value) map.panTo(latLng(location.value), { animate: false });
+  if (location.value) animatePosition(location.value, true);
   applyOrientation();
   if (resumeLocationOnActivate) { resumeLocationOnActivate = false; locate(false, true); }
 });
@@ -245,10 +272,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   location.value = point;
   if (viewActive.value) {
   if (!marker) marker = L.marker(latLng(point), { icon: L.divIcon({ className: '', html: '<div class="amap-vehicle">▲</div>', iconSize: [36,36], iconAnchor: [18,18] }), rotateWithView: true, zIndexOffset: 1000 }).addTo(map);
-  marker.setLatLng(latLng(point));
-  if (following.value) applyOrientation();
-  else marker.setRotation((heading.value || 0) * Math.PI / 180);
-  if (following.value) map.panTo(latLng(point), { animate: false });
+  animatePosition(point);
   }
   if (!current.value || mode.value === 'idle') return;
   if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
@@ -400,13 +424,13 @@ onMounted(() => {
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
   mapReady.value = true; endpoints(); locate(false);
 });
-onBeforeUnmount(() => { clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="location" :heading="heading || 0" :bearing="orientation === 'heading' ? heading || 0 : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
@@ -444,7 +468,7 @@ onBeforeUnmount(() => { clearBackgroundNavigation(); mapElement.value?.removeEve
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <template v-if="mode === 'idle'">
         <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
-        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong>{{ formatDistance(route.distance) }}</strong><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
+        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
@@ -483,4 +507,12 @@ onBeforeUnmount(() => { clearBackgroundNavigation(); mapElement.value?.removeEve
 .search-tips button{display:flex;flex-direction:column;gap:5px;white-space:normal;line-height:1.4;padding:12px 8px}
 .search-tips button:hover{background:#e4f8ef}.search-tips strong{font-weight:500}
 .search-tips{overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b2cec5 transparent}
+</style>
+
+
+<style scoped>
+.route-options button{flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;min-width:160px;text-align:left;padding:10px 12px}
+.route-options .route-duration{font-size:19px;line-height:1.25;font-variant-numeric:tabular-nums}
+.route-options .route-cost{font-size:12px;color:inherit;opacity:.85}
+.route-options small{white-space:normal}
 </style>

@@ -68,7 +68,16 @@ def invoke_helper(payload=None):
             labels = route.get("labels", [])
             if not isinstance(labels, list) or any(not isinstance(v, str) or len(v) > 100 for v in labels):
                 raise ValueError("invalid route labels")
-            clean["routes"].append({"id": index, "path": path, "steps": safe_steps, "breaks": breaks,
+            summary = {}
+            for key, maximum in (("duration", 30 * 86400), ("tolls", 1000000)):
+                value = route.get(key)
+                summary[key] = value if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= maximum else None
+            if summary['duration'] == 0:
+                summary['duration'] = None
+            summary['tollCurrency'] = 'CNY' if route.get('tollCurrency') == 'CNY' else None
+            if summary['tollCurrency'] is None:
+                summary['tolls'] = None
+            clean["routes"].append({**summary, "id": index, "path": path, "steps": safe_steps, "breaks": breaks,
                                     "distance": length, "labels": labels[:10]})
     if result["state"] == "partial":
         routes = result.get("routes", [])
