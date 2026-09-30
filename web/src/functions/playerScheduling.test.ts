@@ -7,7 +7,8 @@ function setup() {
   const workerUrls: string[] = [];
   const context = vm.createContext({ URL,
     document: { currentScript: { src: 'https://example.test/player.js?v=build-hash' } },
-    Logger: class { logInfo() {} }, kProtoHttp: 0, kAudioFrame: 4, kVideoFrame: 5,
+    Logger: class { logInfo() {} }, kProtoHttp: 0, kProtoStream: 2, kDownloadFileReq: 9,
+    kAudioFrame: 4, kVideoFrame: 5,
     Worker: class { constructor(url: string) { workerUrls.push(url); } },
     requestAnimationFrame: vi.fn(), console,
   });
@@ -32,6 +33,74 @@ it('drains due AAC and video packets at low refresh rates but renders only the l
   expect(p.renderVideoFrame).toHaveBeenCalledOnce();
   expect(Array.from(p.renderVideoFrame.mock.calls[0][0])).toEqual([6]);
   expect(p.frameBuffer.map((f: any) => f.s)).toEqual([0.233]);
+});
+it('also drains ordinary MP4 packets when the display refreshes slowly', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false;
+  p.frameBuffer = [
+    { t: 4, s: 0, d: [1] }, { t: 5, s: 0, d: [2] },
+    { t: 4, s: 0.023, d: [3] }, { t: 5, s: 0.033, d: [4] },
+    { t: 4, s: 0.046, d: [5] }, { t: 5, s: 0.066, d: [6] },
+    { t: 5, s: 0.233, d: [7] },
+  ];
+  p.displayLoop();
+  expect(p.pcmPlayer.play).toHaveBeenCalledTimes(3);
+  expect(p.renderVideoFrame).toHaveBeenCalledOnce();
+  expect(Array.from(p.renderVideoFrame.mock.calls[0][0])).toEqual([6]);
+  expect(p.frameBuffer.map((f: any) => f.s)).toEqual([0.233]);
+});
+it('does not discard future MP4 video frames while the audio clock is at zero', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false; p.pcmPlayer.getTimestamp = () => 0;
+  p.frameBuffer = [{ t: 5, s: 0, d: [1] }, { t: 5, s: 0.2, d: [2] }];
+  p.displayLoop();
+  expect(p.frameBuffer.map((f: any) => f.s)).toEqual([0.2]);
+  expect(Array.from(p.renderVideoFrame.mock.calls[0][0])).toEqual([1]);
+});
+it('bounds Douyin range prefetch when its playback clock is not advancing', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false; p.maxAheadSeconds = 12;
+  p.decoderState = 2; p.duration = 379000; p.waitHeaderLength = 1700000;
+  p.fileInfo = { offset: 5 * 1024 * 1024, size: 80 * 1024 * 1024, chunkSize: 1024 * 1024 };
+  p.downloadWorker.postMessage = vi.fn(); p.downloading = false;
+  p.downloadOneChunk();
+  expect(p.downloadWorker.postMessage).not.toHaveBeenCalled();
+  p.pcmPlayer.getTimestamp = () => 15;
+  p.downloadOneChunk();
+  expect(p.downloadWorker.postMessage).toHaveBeenCalledOnce();
+});
+it('pauses downloads until a blocked audio clock is resumed by a click', async () => {
+  const { player: p } = setup();
+  const state = vi.fn(); p.setAudioBlockedCallback(state);
+  const audioCtx = { state: 'suspended', resume: vi.fn(async () => { audioCtx.state = 'running'; }) };
+  p.onVideoParam = vi.fn(); p.onAudioParam = vi.fn(() => { p.pcmPlayer = { audioCtx }; });
+  p.stopDownloadTimer = vi.fn(); p.startDownloadTimer = vi.fn(); p.startDecoding = vi.fn();
+  p.onOpenDecoder({ e: 0, v: {}, a: {} });
+  expect(p.audioBlocked).toBe(true);
+  expect(p.stopDownloadTimer).toHaveBeenCalledOnce();
+  expect(p.startDecoding).not.toHaveBeenCalled();
+  expect(await p.resumeBlockedAudio()).toBe(true);
+  expect(p.startDecoding).toHaveBeenCalledOnce();
+  expect(p.startDownloadTimer).toHaveBeenCalledOnce();
+  expect(state.mock.calls.map(([blocked]) => blocked)).toEqual([true, false]);
+});
+it('keeps decoding incoming ranges while buffering and stops downloads on manual pause', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false; p.pcmPlayer.pause = vi.fn(); p.pcmPlayer.resume = vi.fn();
+  p.showLoading = vi.fn(); p.hideLoading = vi.fn(); p.stopTrackTimer = vi.fn(); p.startTrackTimer = vi.fn();
+  p.pauseDecoding = vi.fn(); p.stopDownloadTimer = vi.fn(); p.startDownloadTimer = vi.fn();
+  p.fileInfo = { size: 100, offset: 0, chunkSize: 10 }; p.decoderState = 2;
+  p.startBuffering();
+  expect(p.playerState).toBe(1);
+  expect(p.pauseDecoding).not.toHaveBeenCalled();
+  expect(p.stopDownloadTimer).not.toHaveBeenCalled();
+  p.stopBuffering();
+  expect(p.pcmPlayer.resume).toHaveBeenCalledOnce();
+  expect(p.startTrackTimer).toHaveBeenCalledOnce();
+  p.pause();
+  expect(p.stopDownloadTimer).toHaveBeenCalledOnce();
+  p.resume();
+  expect(p.startDownloadTimer).toHaveBeenCalledOnce();
 });
 it('anchors the first audio timestamp to its actual scheduled start', () => {
   const { player: p } = setup();

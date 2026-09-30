@@ -13,7 +13,8 @@ const clip = { vid, title: '公开短视频', pageUrl: `https://www.douyin.com/v
 const response = (data: unknown) => ({ ok: true, json: async () => ({ status: 'ok', data }) });
 class FakePlayer {
   destroy = vi.fn(); play = vi.fn(() => ({ e: 0 })); pause = vi.fn(); resume = vi.fn();
-  setLoadingDiv = vi.fn(); setTrack = vi.fn(); setFinishCallback = vi.fn(); setTimeCallback = vi.fn();
+  setLoadingDiv = vi.fn(); setTrack = vi.fn(); setFinishCallback = vi.fn((callback: () => void) => { this.finish = callback; }); setTimeCallback = vi.fn();
+  finish: (() => void) | undefined;
   getState = () => 1;
   constructor() { players.push(this); }
 }
@@ -21,9 +22,15 @@ beforeEach(() => {
   players.length = 0; localStorage.clear(); fetchMock.mockReset();
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
   vi.stubGlobal('Player', FakePlayer); vi.stubGlobal('fetch', fetchMock);
-  fetchMock.mockImplementation(async (url: string) => url.includes('/source')
-    ? response({ ...clip, url: '/api/douyin/media/token', urls: ['https://v5.zjcdn.com/test.mp4?secret=temporary'] })
-    : response({ items: [clip, { ...clip, vid: '7674149236469451483', pageUrl: 'https://www.douyin.com/video/7674149236469451483' }] }));
+  fetchMock.mockImplementation(async (url: string, options?: RequestInit) => {
+    if (url.includes('/source')) {
+      const requested = JSON.parse(String(options?.body)).url as string;
+      const requestedVid = requested.match(/\d{15,22}/)?.[0] || vid;
+      return response({ ...clip, vid: requestedVid, pageUrl: `https://www.douyin.com/video/${requestedVid}`,
+        url: '/api/douyin/media/token', urls: ['https://v5.zjcdn.com/test.mp4?secret=temporary'] });
+    }
+    return response({ items: [clip, { ...clip, vid: '7674149236469451483', pageUrl: 'https://www.douyin.com/video/7674149236469451483' }] });
+  });
 });
 afterEach(() => { view?.unmount(); view = undefined; vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 async function openFirst() {
@@ -32,6 +39,7 @@ async function openFirst() {
 }
 it('automatically opens the first video with WASM and persists only public metadata', async () => {
   await openFirst(); expect(players[0].play).toHaveBeenCalledOnce();
+  expect((players[0] as any).chunkSize).toBe(1024 * 1024);
   expect(players[0].play.mock.calls[0]).toEqual(['/api/douyin/media/token', expect.anything(), expect.any(Function),
     524288, false, undefined, ['https://v5.zjcdn.com/test.mp4?secret=temporary', '/api/douyin/media/token']]);
   expect(view!.find('video').exists()).toBe(false);
@@ -43,6 +51,32 @@ it('destroys the previous player on next video, close and unmount', async () => 
   expect(players[0].destroy).toHaveBeenCalledOnce();
   view!.unmount(); view = undefined;
   expect(players[1].destroy).toHaveBeenCalledOnce();
+});
+it('switches videos with vertical swipes on the whole video surface', async () => {
+  await openFirst();
+  const screen = view!.find('.screen');
+  await screen.trigger('touchstart', { touches: [{ clientX: 100, clientY: 280 }] });
+  await screen.trigger('touchend', { changedTouches: [{ clientX: 103, clientY: 150 }] });
+  await flushPromises();
+  expect(players).toHaveLength(2);
+  expect(players[0].destroy).toHaveBeenCalledOnce();
+  await screen.trigger('touchstart', { touches: [{ clientX: 100, clientY: 150 }] });
+  await screen.trigger('touchend', { changedTouches: [{ clientX: 103, clientY: 280 }] });
+  await flushPromises();
+  expect(players).toHaveLength(3);
+});
+it('remembers the auto-next option and only advances at the end when enabled', async () => {
+  await openFirst();
+  const option = view!.find('.auto-next input');
+  expect((option.element as HTMLInputElement).checked).toBe(false);
+  players[0].finish?.(); await flushPromises();
+  expect(players).toHaveLength(1);
+  await option.setValue(true);
+  expect(localStorage.getItem('tmc.douyin.auto-next.v1')).toBe('true');
+  players[0].finish?.(); await flushPromises();
+  expect(players).toHaveLength(2);
+  players[1].finish?.(); await flushPromises();
+  expect(players).toHaveLength(2);
 });
 it('aborts outstanding playback and ignores source responses after exit', async () => {
   let resolve!: (value: unknown) => void;

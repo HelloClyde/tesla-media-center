@@ -54,8 +54,6 @@ WORKDIR /root/tesla-media-center
 COPY requirement.txt ./
 COPY tools/amap-app/requirements.txt ./amap-requirements.txt
 RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
-ENV PLAYWRIGHT_BROWSERS_PATH=/opt/tmc/ms-playwright
-RUN python -m playwright install --with-deps --no-shell chromium
 
 # Linked COPY layers do not depend on earlier code/dependency layers.
 COPY --link docker_build/amap-assets/libserverkey.so docker_build/amap-assets/libamapr.so docker_build/amap-assets/style-day.data docker_build/amap-assets/style-night.data docker_build/amap-assets/signing-certificate.rsa /opt/tmc/amap-app/
@@ -69,6 +67,7 @@ RUN ln -s dist web/public
 
 COPY --link *.py ./
 COPY --link ffvideo/ ./ffvideo/
+COPY --link tools/douyin/ ./tools/douyin/
 COPY --link tools/amap-app/ ./tools/amap-app/
 RUN python tools/amap-app/release_assets.py --verify-only --directory /opt/tmc/amap-app && \
     python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper"

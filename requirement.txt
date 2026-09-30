@@ -5,7 +5,8 @@ brotlicffi
 cryptography
 imageio-ffmpeg
 requests
-playwright==1.63.0
+curl_cffi==0.16.3
+quickjs==1.19.4
 qrcode[pil]>=7.4,<9
 aiohttp
 

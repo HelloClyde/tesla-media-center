@@ -1,14 +1,11 @@
 """Temporary, session-isolated login through the official Douyin QR panel."""
-import base64
 import copy
-import os
 import secrets
 import threading
 import time
 
 from flask import request, session
 from ffvideo.utils import login_check, json_ok, json_fail
-from ffvideo.douyin_browser import allowed_media
 
 
 class Accounts:
@@ -35,48 +32,62 @@ class Accounts:
             if not entry['cancel'].is_set():
                 entry.update(values)
 
-    def run(self, entry):
+    @staticmethod
+    def http_cookies(client):
+        return [
+            {'name': cookie.name, 'value': cookie.value, 'domain': cookie.domain,
+             'path': cookie.path or '/', 'secure': cookie.secure,
+             'httpOnly': cookie.has_nonstandard_attr('HttpOnly')}
+            for cookie in client.cookies.jar
+            if cookie.domain.lstrip('.') in ('douyin.com', 'www.douyin.com', 'login.douyin.com')
+        ]
+
+    def run_http(self, entry):
+        client = None
         try:
-            from playwright.sync_api import sync_playwright, TimeoutError
-            with sync_playwright() as pw:
-                browser = pw.chromium.launch(channel=os.environ.get('TMC_DOUYIN_BROWSER_CHANNEL', 'chromium'), headless=True)
-                try:
-                    context = browser.new_context(viewport={'width': 1280, 'height': 800}, locale='zh-CN', service_workers='block')
-                    context.route('**/*', lambda route: route.abort() if route.request.resource_type == 'media' or allowed_media(route.request.url) else route.continue_())
-                    page = context.new_page()
-                    page.goto('https://www.douyin.com/jingxuan', wait_until='domcontentloaded', timeout=30000)
-                    qr = page.locator('#douyin_login_comp_scan_code img[src^="data:image/"]').first
-                    if not qr.is_visible():
-                        try:
-                            page.get_by_role('button', name='登录', exact=True).click(timeout=10000)
-                        except TimeoutError:
-                            # The official page can open its panel while the click waits.
-                            if not qr.is_visible():
-                                raise
-                    qr.wait_for(state='visible', timeout=30000)
-                    image = 'data:image/png;base64,' + base64.b64encode(qr.screenshot(timeout=10000)).decode()
-                    self.update(entry, state='waiting', qrcode=image, message='请使用抖音 App 扫码，并在手机上确认登录')
-                    while not entry['cancel'].is_set() and time.time() < entry['expires']:
-                        if time.time() - entry['touched'] > 45:
-                            break
-                        cookies = [c for c in context.cookies() if c['domain'].lstrip('.') in ('douyin.com', 'www.douyin.com')]
-                        if any(c['name'] == 'sessionid' and c['value'] for c in cookies):
-                            self.update(entry, cookies=cookies, state='confirmed', qrcode='', message='已登录', expires=time.time() + 86400)
-                            return
-                        if page.locator('iframe[src*="/verifycenter/captcha/"]').count():
-                            self.update(entry, state='error', qrcode='', message='抖音要求额外安全验证，请稍后重新扫码')
-                            return
-                        if page.get_by_text('二维码已失效', exact=False).count() or page.get_by_text('二维码已过期', exact=False).count():
-                            break
-                        page.wait_for_timeout(1000)
-                    self.update(entry, state='expired', qrcode='', message='二维码已过期，请刷新')
-                finally:
-                    browser.close()
+            from tools.douyin.visitor_probe import create_visitor_session, get_qrcode, check_qrcode
+            client = create_visitor_session()
+            qr = get_qrcode(client)
+            image = qr['qrcode']
+            if not image.startswith('data:image/'):
+                image = 'data:image/png;base64,' + image
+            self.update(entry, state='waiting', qrcode=image,
+                        message='请使用抖音 App 扫码，并在手机上确认登录')
+            while not entry['cancel'].is_set() and time.time() < entry['expires']:
+                if time.time() - entry['touched'] > 45:
+                    break
+                data = check_qrcode(client, qr['token'], qr.get('is_frontier', False))
+                state = data.get('status')
+                if state in ('2', 'scanned'):
+                    self.update(entry, message='已扫码，请在手机上确认登录')
+                elif state in ('3', 'confirmed'):
+                    cookies = self.http_cookies(client)
+                    if any(c['name'] == 'sessionid' and c['value'] for c in cookies):
+                        self.update(entry, cookies=cookies, state='confirmed', qrcode='',
+                                    message='已登录', expires=time.time() + 86400)
+                    else:
+                        self.update(entry, state='error', qrcode='',
+                                    message='扫码已确认，但登录凭据未返回；请刷新二维码重试')
+                    return
+                elif state in ('4', '5', 'refused', 'expired'):
+                    break
+                elif state not in ('1', 'new', None):
+                    self.update(entry, state='error', qrcode='', message='抖音返回未知扫码状态，请重试')
+                    return
+                time.sleep(2)
+            self.update(entry, state='expired', qrcode='', message='二维码已过期，请刷新')
         except Exception:
-            # Browser errors can include URLs/tokens; never expose them to clients.
-            self.update(entry, state='error', qrcode='', message='官方登录页面加载失败，请重试；如持续失败，请检查服务端浏览器组件')
+            self.update(entry, state='error', qrcode='',
+                        message='抖音登录验证失败，请刷新二维码重试')
         finally:
-            self.slots.release()
+            try:
+                if client is not None:
+                    client.close()
+            finally:
+                self.slots.release()
+
+    def run(self, entry):
+        return self.run_http(entry)
 
 
 def add_routes(app):
