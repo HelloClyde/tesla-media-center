@@ -5,11 +5,10 @@ import { viewportTiles } from './amapViewport';
 import { groundBounds, groundOffset, type MapPoint } from './teslaMapCoordinates';
 import { roadSpans, roadDeckGeometry, roadWidth } from './teslaRoadLevels';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { createLaneMesh } from './teslaLanes';
 
 const SIZE = 600, RESOLUTION = 2048, ZOOM = 17;
 type Tile = { level: number; x: number; y: number; error?: string; missingLayers?: string[];
-  collection?: { features: any[] }; surfaces?: any[]; buildings?: AppBuilding[]; laneBoundaries?: number[][][];
+  collection?: { features: any[] }; surfaces?: any[]; buildings?: AppBuilding[];
   roadPaints?: { day?: Record<string,{minZoom:number;maxZoom:number;outerWidth:number;innerWidth:number;outer:{color:string;opacity:number};inner:{color:string;opacity:number}}[]> } };
 
 /** A georeferenced ground layer in the SAME scene as the vehicle. No fabricated buildings. */
@@ -24,8 +23,6 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; group.add(ground);
   let buildingsMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | undefined;
   let roadsMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | undefined;
-  let lanesMesh: ReturnType<typeof createLaneMesh>;
-  function clearLanes() { if (lanesMesh) { lanesMesh.removeFromParent(); lanesMesh.geometry.dispose(); lanesMesh.material.dispose(); lanesMesh=undefined; } }
   function clearRoads() { if (roadsMesh) { roadsMesh.removeFromParent(); roadsMesh.geometry.dispose(); roadsMesh.material.dispose(); roadsMesh=undefined; } }
   function clearBuildings() { if (buildingsMesh) { buildingsMesh.removeFromParent(); buildingsMesh.geometry.dispose(); buildingsMesh.material.dispose(); buildingsMesh=undefined; } }
   const cache = new Map<string, { tile: Tile; at: number }>();
@@ -122,7 +119,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   }
   async function load(point: MapPoint) {
     const id=++generation; request?.abort(); const controller=new AbortController(); request=controller;
-    anchor=[...point]; ready=false; group.visible=false; clearLanes(); report('正在加载混合地图…',false); align();
+    anchor=[...point]; ready=false; group.visible=false; report('正在加载混合地图…',false); align();
     const bounds=groundBounds(point,SIZE/2);
     const tiles=viewportTiles(ZOOM,...bounds);
     // Building source is level 15 (type 5), independent of the even road levels.
@@ -162,37 +159,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       ready=true; group.visible=true; align();
       const detail=roadsMesh?' · 立交层高示意':'';
       const status=(buildingFailed?'混合地图 · 建筑图层不完整，可重试':partial?'混合地图 · 部分图层缺失':buildings.count ? `App 立体建筑 · ${buildings.count} 栋` : '混合地图 · 此处暂无建筑数据')+detail;
-      report(status+' · 正在加载车道边界…',true);
-      const laneTiles: Tile[]=[]; let laneFailed=false;
-      // Separate requests keep slow native decoding off the base-map critical path.
-      for (const key of tiles.filter(t=>t[0]===15)) {
-        if (disposed || id!==generation || controller.signal.aborted) return;
-        const cacheKey=`lanes/${key.join('/')}`;
-        try {
-          let tile=cache.get(cacheKey);
-          if (!tile || Date.now()-tile.at>600000) {
-            const deadline=Date.now()+90000;
-            let response;
-            do {
-              response=await axios.post('/api/amap-app/map',{layer:'lanes',level:15,tiles:[key.slice(1)]},{signal:controller.signal,timeout:70000});
-              if (response.status!==202 || !response.data.data?.pending) break;
-              if (Date.now()>deadline) throw new Error('lane timeout');
-              await new Promise(resolve=>setTimeout(resolve,750));
-              if (controller.signal.aborted) return;
-            } while (true);
-            if (disposed || id!==generation) return;
-            const value=response.data.data?.tiles?.[0] as Tile | undefined;
-            if (response.data.status!=='ok' || !value || value.error || !Array.isArray(value.laneBoundaries)) throw new Error('lane unavailable');
-            tile={tile:value,at:Date.now()};cache.set(cacheKey,tile);
-          }
-          laneTiles.push(tile.tile);
-          clearLanes();
-          lanesMesh=createLaneMesh(laneTiles.flatMap(t=>t.laneBoundaries || []),anchor!);
-          if (lanesMesh) group.add(lanesMesh);
-        } catch { laneFailed=true; }
-      }
-      if (disposed || id!==generation) return;
-      report(status+(laneFailed?' · 车道边界部分未加载，可重试':lanesMesh?' · 真实车道边界':' · 此处暂无车道边界'),true);
+      report(status,true);
       while (cache.size>64) cache.delete(cache.keys().next().value!);
     } catch {
       if (disposed || id!==generation) return;
@@ -209,6 +176,6 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       if (!anchor || Math.hypot(...offset)>120 || (!ready && !request && Date.now()>retryAfter)) void load(point);
     },
     retry() { if (latest) void load(latest); },
-    dispose() { disposed=true; generation++; request?.abort(); clearBuildings(); clearRoads(); clearLanes(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); cache.clear(); },
+    dispose() { disposed=true; generation++; request?.abort(); clearBuildings(); clearRoads(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); cache.clear(); },
   };
 }
