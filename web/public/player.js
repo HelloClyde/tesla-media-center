@@ -253,6 +253,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
         }
 
         this.fileInfo = new FileInfo(url);
+        this.mp4HeaderProbe = { offset: 0, header: [], active: true, identified: false };
         this.canvas = canvas;
         this.callback = callback;
         this.waitHeaderLength = waitHeaderLength || this.waitHeaderLength;
@@ -791,6 +792,8 @@ Player.prototype.onFileData = function (data, start, end, seq) {
         }
     }
 
+    // Inspect bytes before transferring their ArrayBuffer to the decoder worker.
+    if (!this.isStream && this.decoderState === decoderStateIdle && !this.inspectMp4Header(data, start)) return;
     var len = end - start + 1;
     this.fileInfo.offset += len;
 
@@ -820,6 +823,61 @@ Player.prototype.onFileData = function (data, start, end, seq) {
             this.downloadOneChunk();
         }, 0);
     }
+};
+
+// Track top-level MP4 boxes incrementally; retain at most 16 bytes, not the file.
+// Large sample tables can make moov exceed the default 512 KiB startup buffer.
+Player.prototype.inspectMp4Header = function (data, start) {
+    var probe = this.mp4HeaderProbe;
+    if (!probe || !probe.active) return true;
+    var bytes = new Uint8Array(data), end = start + bytes.length;
+    while (probe.offset < end) {
+        var cursor = probe.offset + probe.header.length;
+        if (cursor < start) { probe.active = false; return true; }
+        var required = 8;
+        if (probe.header.length >= 8 && probe.header[0] === 0 && probe.header[1] === 0 && probe.header[2] === 0 && probe.header[3] === 1) required = 16;
+        while (cursor < end && probe.header.length < required) probe.header.push(bytes[cursor++ - start]);
+        if (probe.header.length < required) {
+            if (probe.identified) this.waitHeaderLength = Math.max(this.waitHeaderLength, end + 16);
+            return true;
+        }
+        var header = new DataView(new Uint8Array(probe.header).buffer);
+        var size = header.getUint32(0), type = String.fromCharCode.apply(null, probe.header.slice(4, 8));
+        if (!probe.identified) {
+            if (type !== 'ftyp') { probe.active = false; return true; }
+            probe.identified = true;
+        }
+        if (size === 1) {
+            if (probe.header.length < 16) continue;
+            size = header.getUint32(8) * 4294967296 + header.getUint32(12);
+        }
+        if (!Number.isSafeInteger(size) || size < required || probe.offset + size > this.fileInfo.size) {
+            probe.active = false;
+            this.reportPlayError(8, 0, 'MP4 文件头不完整或长度无效，请重新获取视频');
+            return false;
+        }
+        var boxEnd = probe.offset + size;
+        if (type === 'moov') {
+            probe.active = false;
+            if (boxEnd > 16 * 1024 * 1024) {
+                this.reportPlayError(8, 0, 'MP4 视频头超过 16 MiB，当前播放器暂不支持');
+                return false;
+            }
+            this.waitHeaderLength = Math.max(this.waitHeaderLength, boxEnd);
+            return true;
+        }
+        // Do not download an entire mdat in search of a tail index.
+        if (type === 'mdat') { probe.active = false; return true; }
+        probe.offset = boxEnd; probe.header = [];
+    }
+    if (probe.active && probe.identified) {
+        if (probe.offset + 16 > 16 * 1024 * 1024) {
+            this.reportPlayError(8, 0, 'MP4 视频头偏移超过 16 MiB，当前播放器暂不支持');
+            return false;
+        }
+        this.waitHeaderLength = Math.max(this.waitHeaderLength, probe.offset + 16);
+    }
+    return true;
 };
 
 Player.prototype.onFileDataUnderDecoderIdle = function () {
