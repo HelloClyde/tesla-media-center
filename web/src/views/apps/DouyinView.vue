@@ -44,10 +44,11 @@ function stop() {
 function close() { ++commentGeneration; commentsController?.abort(); commentsBusy.value = false; stop(); current.value = null; error.value = ''; }
 async function loadCatalog(nextMode: 'home' | 'search' | 'recent' = mode.value) {
   if (nextMode === 'search' && !query.value.trim()) return;
-  mode.value = nextMode; catalogController?.abort(); const ticket = ++catalogGeneration;
+  catalogController?.abort(); const ticket = ++catalogGeneration;
   catalogError.value = ''; catalogBusy.value = false;
-  if (nextMode === 'recent') { recentQueue.value = [...recent.value]; panel.value = 'queue'; return; }
-  items.value = []; catalogBusy.value = true; catalogController = new AbortController();
+  if (nextMode === 'recent') { mode.value = nextMode; recentQueue.value = [...recent.value]; panel.value = 'queue'; return; }
+  if (nextMode === 'search') panel.value = 'queue';
+  catalogBusy.value = true; catalogController = new AbortController();
   const controller = catalogController;
   const timer = setTimeout(() => controller.abort(), 100000);
   try {
@@ -57,7 +58,7 @@ async function loadCatalog(nextMode: 'home' | 'search' | 'recent' = mode.value) 
     if (disposed || ticket !== catalogGeneration) return;
     if (!response.ok || result.status !== 'ok') throw new Error(result.status === 'need_login'
       ? '请先登录媒体中心' : result.message || '抖音列表加载失败');
-    items.value = result.data.items;
+    mode.value = nextMode; items.value = result.data.items;
     if (nextMode === 'home' && items.value.length) void open(items.value[0].pageUrl);
     if (nextMode === 'search') panel.value = 'queue';
   } catch (cause: any) {
@@ -190,6 +191,7 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
     <aside class="side">
       <header><div class="brand"><img src="/icon/DOUYIN_LOGO.svg" alt=""/><h1>抖音</h1></div><DouyinAccount @changed="close(); loadCatalog('home')"/></header>
       <form class="search" @submit.prevent="loadCatalog('search')"><input v-model="query" aria-label="搜索抖音视频" maxlength="80" placeholder="搜索视频" type="search"/><button :disabled="!query.trim()">搜索</button></form>
+      <p v-if="catalogError" class="notice catalog-error" role="alert">{{ catalogError }}</p>
       <div class="details">
         <span class="eyebrow">{{ index >= 0 ? `${index + 1} / ${visible.length}` : '正在观看' }}</span>
         <h2>{{ current?.title || '抖音短视频' }}</h2>
@@ -210,7 +212,7 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
       </section>
       <section v-else class="catalog" aria-label="抖音视频列表">
         <div class="actions"><button @click="loadCatalog('home')">换一批</button><button @click="loadCatalog('recent')">最近观看</button></div>
-        <p v-if="catalogBusy" role="status">正在加载视频…</p><p v-if="catalogError" role="alert">{{ catalogError }}</p>
+        <p v-if="catalogBusy" role="status">正在加载视频…</p>
         <button v-for="clip in visible" :key="clip.vid" class="card" :class="{selected:clip.vid===current?.vid}" @click="open(clip.pageUrl)"><img v-if="clip.cover" :src="clip.cover" alt="" loading="lazy" referrerpolicy="no-referrer"/><span>{{ clip.title }}</span></button>
       </section>
       <details class="share"><summary>打开分享链接</summary><form @submit.prevent="open()"><input v-model="link" aria-label="抖音分享链接" placeholder="粘贴分享链接" maxlength="4096"/><button :disabled="!link.trim() || busy">播放</button></form></details>

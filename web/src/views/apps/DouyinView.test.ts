@@ -90,6 +90,18 @@ it('reports restrictions without a fake playable result', async () => {
     ? { ok: false, json: async () => ({ status: 'unavailable', message: '需要官方验证' }) } : response({ items: [clip] }));
   await openFirst(); expect(view!.text()).toContain('需要官方验证'); expect(players).toHaveLength(0);
 });
+it('shows a search login restriction and keeps the current video queue', async () => {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation((url: string, options?: RequestInit) => url.includes('/search')
+    ? Promise.resolve({ ok: false, json: async () => ({ status: 'unavailable', message: '抖音搜索需要登录，请扫码登录后重试' }) })
+    : normalFetch(url, options));
+  await openFirst();
+  await view!.find('input[aria-label="搜索抖音视频"]').setValue('特斯拉');
+  await view!.find('form.search').trigger('submit'); await flushPromises();
+  expect(view!.find('.catalog-error').text()).toContain('抖音搜索需要登录');
+  expect(view!.find('.details .eyebrow').text()).toBe('1 / 2');
+  expect(view!.findAll('button').find(b => b.text() === '下一条')!.attributes('disabled')).toBeUndefined();
+});
 
 it('keeps comments and the video queue on the right without a landing grid', async () => {
   await openFirst();
