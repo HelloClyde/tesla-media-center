@@ -1755,31 +1755,29 @@ onBeforeUnmount(() => {
 
 .play-shell {
   height: 100%;
-  padding: 18px;
-  overflow: hidden;
+  padding: 12px;
+  overflow: auto;
 }
 
 .play-stage {
   display: grid;
-  grid-template-rows: auto 260px;
-  gap: 16px;
-  height: 100%;
-  overflow: hidden;
+  grid-template-rows: auto auto;
+  gap: 12px;
+  min-height: 100%;
   align-content: start;
 }
 
 .top-stage {
   display: flex;
-  gap: 16px;
-  min-height: fit-content;
-  overflow: visible;
+  gap: 12px;
+  min-width: 0;
   flex-wrap: nowrap;
   align-items: flex-start;
 }
 
 .screen-section {
-  flex: 1 1 auto;
-  min-height: fit-content;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -1797,11 +1795,12 @@ onBeforeUnmount(() => {
 }
 
 .utility-panel {
-  flex: 0 0 260px;
+  flex: 0 0 242px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 18px;
+  gap: 8px;
+  padding: 12px;
   border-radius: 26px;
   background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
@@ -1809,19 +1808,22 @@ onBeforeUnmount(() => {
 }
 
 .utility-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .utility-actions :deep(.el-button) {
   width: 100%;
   margin: 0;
+  min-width: 0;
+  height: 36px;
+  padding: 6px;
 }
 
 .controls-section {
   border-radius: 26px;
-  padding: 14px 18px;
+  padding: 12px;
   background: color-mix(in srgb, var(--color-background-soft) 82%, transparent);
   border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
   overflow: hidden;
@@ -1829,10 +1831,10 @@ onBeforeUnmount(() => {
 
 .touch-layout {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(180px, auto) minmax(240px, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(172px, 1fr) minmax(150px, .85fr) minmax(172px, 1fr);
+  gap: 12px;
   align-items: center;
-  height: 100%;
+  min-width: 0;
 }
 
 .debug-strip {
@@ -1974,7 +1976,7 @@ onBeforeUnmount(() => {
 }
 
 .control-pad {
-  width: min(200px, 100%);
+  width: 174px;
   aspect-ratio: 1;
   position: relative;
 }
@@ -1991,9 +1993,9 @@ onBeforeUnmount(() => {
 
 .control-btn {
   position: absolute;
-  width: 68px;
-  height: 68px;
-  border-radius: 20px;
+  width: 58px;
+  height: 58px;
+  border-radius: 16px;
   background: linear-gradient(145deg, #111827, #1f2937);
   color: white;
   font-size: 28px;
@@ -2006,10 +2008,10 @@ onBeforeUnmount(() => {
   transform: translateY(1px) scale(0.98);
 }
 
-.control-btn.up { top: 0; left: 66px; }
-.control-btn.left { top: 66px; left: 0; }
-.control-btn.right { top: 66px; left: 132px; }
-.control-btn.down { top: 132px; left: 66px; }
+.control-btn.up { top: 0; left: 58px; }
+.control-btn.left { top: 58px; left: 0; }
+.control-btn.right { top: 58px; left: 116px; }
+.control-btn.down { top: 116px; left: 58px; }
 
 .mini-controls,
 .shoulder-row {
@@ -2026,8 +2028,8 @@ onBeforeUnmount(() => {
 }
 
 .mini-btn {
-  min-width: 84px;
-  padding: 8px 12px;
+  min-width: 68px;
+  padding: 8px 10px;
   border-radius: 999px;
   background: rgba(148, 163, 184, 0.16);
   color: var(--color-text);
@@ -2043,12 +2045,12 @@ onBeforeUnmount(() => {
 .action-buttons {
   display: flex;
   align-items: center;
-  gap: 16px;
+  gap: 10px;
 }
 
 .action-btn {
-  width: 84px;
-  height: 84px;
+  width: 72px;
+  height: 72px;
   border-radius: 999px;
   color: white;
   font-size: 30px;
@@ -2073,10 +2075,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 1200px) {
-}
-
-@media (max-width: 720px) {
+@media (max-width: 620px) {
   .touch-layout,
   .rom-grid {
     grid-template-columns: 1fr;
