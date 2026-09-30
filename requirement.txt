@@ -5,6 +5,7 @@ brotlicffi
 cryptography
 imageio-ffmpeg
 requests
+playwright==1.63.0
 qrcode[pil]>=7.4,<9
 aiohttp
 

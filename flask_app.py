@@ -118,6 +118,8 @@ if __name__ == '__main__':
     gam4980.add_gam4980_route(app)
     bv.add_bv_route(app)
     tencent_video.add_routes(app)
+    from ffvideo import douyin
+    douyin.add_routes(app)
     qqmusic.add_qqmusic_route(app)
     amap_app.add_amap_app_route(app)
     from ffvideo.amap_map import add_amap_map_route

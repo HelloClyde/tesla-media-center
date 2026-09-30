@@ -13,6 +13,7 @@ export interface AppEntry {
 
 // The launcher and sidebar share this catalog so new applications stay in sync.
 export const applications: AppEntry[] = [
+  { route: '/apps/douyin', label: '抖音', description: '发现、搜索和播放公开短视频', icon: '/icon/DOUYIN_LOGO.svg', color: '#fe2c55', badge: '实验', keywords: '抖音 短视频 douyin' },
   { route: '/apps/amap', label: '高德导航', description: '路线规划与行程导航', icon: '/icon/AMAP_LOGO.ico', color: '#1595e7', badge: '实验', keywords: '地图 导航 amap' },
   { route: '/apps/tesla', label: '特斯拉', description: '查看车辆状态', icon: '/icon/TESLA_LOGO.svg', color: '#d24c59', keywords: '车辆 tesla' },
   { route: '/apps/qqmusic', label: 'QQ 音乐', description: '发现音乐，随心播放', icon: '/icon/QQMUSIC_LOGO.ico', color: '#13ac7b', keywords: '歌曲 音乐 qq' },

@@ -117,7 +117,7 @@ function routeTo(name: string){
         </div>
         <div class="menu-bottom">
           <button type="button" class="menu-item" v-for="item of pinnedApps" :data-pin-route="item.route" @pointerdown="pressSidebar(item.route,$event)" @contextmenu.prevent :key="item.route" :class="{ 'pin-insert-before': dragging?.over && dragging.before === item.route, 'menu-item-active': item.route === router.currentRoute.value.path, 'menu-item-qqmusic': item.route === '/apps/qqmusic' }" :aria-label="item.label" :title="item.label" :aria-current="item.route === router.currentRoute.value.path ? 'page' : undefined" @click="routeTo(item.route)">
-            <el-icon v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili', 'menu-icon-qqmusic': item.route === '/apps/qqmusic', 'menu-icon-brand': ['/apps/amap', '/apps/gam4980', '/apps/tencent-video', '/apps/bilibili', '/apps/tesla', '/apps/gba'].includes(item.route) }">
+            <el-icon v-if="typeof(item.icon) === 'string'" :class="{ 'menu-icon-bilibili': item.route === '/apps/bilibili', 'menu-icon-qqmusic': item.route === '/apps/qqmusic', 'menu-icon-brand': ['/apps/amap', '/apps/gam4980', '/apps/tencent-video', '/apps/douyin', '/apps/bilibili', '/apps/tesla', '/apps/gba'].includes(item.route) }">
               <img :src="item.icon" class="icon-svg" alt="" />
             </el-icon>
             <el-icon v-else>

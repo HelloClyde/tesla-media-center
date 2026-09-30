@@ -21,6 +21,8 @@ WORKDIR /root/tesla-media-center
 COPY requirement.txt ./
 COPY tools/amap-app/requirements.txt ./amap-requirements.txt
 RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/tmc/ms-playwright
+RUN python -m playwright install --with-deps --no-shell chromium
 
 COPY *.py ./
 COPY ffvideo ./ffvideo

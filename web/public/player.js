@@ -630,6 +630,7 @@ Player.prototype.seekTo = function(ms) {
     this.frameBuffer.length = 0;
 
     // Request decoder to seek.
+    if (this.decoderState === decoderStateFinished) this.decoderState = decoderStateReady;
     this.decodeWorker.postMessage({
         t: kSeekToReq,
         ms: ms
@@ -795,7 +796,8 @@ Player.prototype.onFileData = function (data, start, end, seq) {
 
     var objData = {
         t: kFeedDataReq,
-        d: data
+        d: data,
+        eof: !this.isStream && end + 1 === this.fileInfo.size
     };
     console.log('send to decode', objData);
     this.decodeWorker.postMessage(objData, [objData.d]);
@@ -1053,6 +1055,7 @@ Player.prototype.onAudioFrame = function (frame) {
 Player.prototype.onDecodeFinished = function (objData) {
     this.pauseDecoding();
     this.decoderState   = decoderStateFinished;
+    if (this.buffering) this.stopBuffering();
 };
 
 Player.prototype.getBufferTimerLength = function() {
@@ -1358,6 +1361,7 @@ Player.prototype.updateTrackTime = function () {
 };
 
 Player.prototype.startDecoding = function () {
+    if (this.decoderState === decoderStateFinished) return;
     // this.logger.logInfo("startDecoding.");
     var req = {
         t: kStartDecodingReq,
