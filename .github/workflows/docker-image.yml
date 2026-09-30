@@ -17,12 +17,9 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build and publish to GHCR
+    name: Build and publish AMD64 image
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    outputs:
-      digest: ${{ steps.build.outputs.digest }}
-      aliyun-enabled: ${{ steps.image.outputs.aliyun-enabled }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,14 +72,12 @@ jobs:
             type=sha
 
       - name: Build and publish to GHCR
-        id: build
         timeout-minutes: 30
         uses: docker/build-push-action@v6
         with:
           context: .
           file: docker_build/Dockerfile
           push: true
-          # Aliyun does not accept Buildx provenance attestation manifests.
           provenance: false
           platforms: linux/amd64
           tags: ${{ steps.meta-ghcr.outputs.tags }}
@@ -92,30 +87,8 @@ jobs:
             type=gha,scope=tmc-multiarch
           cache-to: type=gha,scope=tmc-amd64,mode=max,ignore-error=true,timeout=5m
 
-  sync-aliyun:
-    name: Sync published image to Aliyun
-    needs: build-and-push
-    if: needs.build-and-push.outputs.aliyun-enabled == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 50
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install registry copy tool
-        timeout-minutes: 5
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends skopeo
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Log in to Aliyun ACR
+        if: steps.image.outputs.aliyun-enabled == 'true'
         uses: docker/login-action@v3
         with:
           registry: ${{ secrets.ALIYUN_REGISTRY }}
@@ -124,6 +97,7 @@ jobs:
 
       - name: Docker metadata for Aliyun ACR
         id: meta-aliyun
+        if: steps.image.outputs.aliyun-enabled == 'true'
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.ALIYUN_REGISTRY }}/${{ secrets.ALIYUN_REGISTRY_NAMESPACE }}/${{ github.event.repository.name }}
@@ -133,15 +107,18 @@ jobs:
             type=ref,event=tag
             type=sha
 
-      # Copy by immutable digest; rerunning only this failed job never rebuilds.
-      - name: Copy AMD64 image with bounded retries
-        timeout-minutes: 45
-        env:
-          REPOSITORY: ${{ github.repository }}
-          SOURCE_DIGEST: ${{ needs.build-and-push.outputs.digest }}
-          DESTINATION_TAGS: ${{ steps.meta-aliyun.outputs.tags }}
-        # Public repository names can overlap a masked registry username.
-        # Derive the address locally instead of passing it as a job output.
-        run: |
-          export SOURCE_IMAGE="ghcr.io/${REPOSITORY,,}"
-          bash tools/ci/sync-image.sh
+      # Reuse the local Buildx layers instead of downloading them from GHCR.
+      - name: Build and publish to Aliyun ACR
+        if: steps.image.outputs.aliyun-enabled == 'true'
+        timeout-minutes: 40
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker_build/Dockerfile
+          push: true
+          # Aliyun does not accept Buildx provenance attestation manifests.
+          provenance: false
+          platforms: linux/amd64
+          tags: ${{ steps.meta-aliyun.outputs.tags }}
+          labels: ${{ steps.meta-aliyun.outputs.labels }}
+          cache-from: type=gha,scope=tmc-amd64
