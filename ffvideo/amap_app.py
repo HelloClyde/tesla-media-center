@@ -64,7 +64,14 @@ def invoke_helper(payload=None):
                 start, end, road = step.get("start"), step.get("end"), step.get("road")
                 if type(start) is not int or type(end) is not int or not 0 <= start < end < len(path) or not isinstance(road, str) or len(road) > 1024:
                     raise ValueError("invalid route step")
-                safe_steps.append({"start": start, "end": end, "road": road})
+                safe_step = {"start": start, "end": end, "road": road}
+                service_area = step.get('serviceArea')
+                if service_area is not None:
+                    if not isinstance(service_area, str) or not 2 <= len(service_area) <= 100 or \
+                            not service_area.endswith(('服务区', '停车区')) or any(ord(c) < 32 for c in service_area):
+                        raise ValueError('invalid service area')
+                    safe_step['serviceArea'] = service_area
+                safe_steps.append(safe_step)
             labels = route.get("labels", [])
             if not isinstance(labels, list) or any(not isinstance(v, str) or len(v) > 100 for v in labels):
                 raise ValueError("invalid route labels")

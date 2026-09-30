@@ -6,6 +6,7 @@ import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
 const viewActive = ref(true);
 import { navigationVoicePhrase } from './amapVoicePhrases';
+import { upcomingServiceAreas, shouldAnnounceServiceArea, type UpcomingServiceArea } from './amapServiceAreas';
 import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
 import { createLivePositionGate } from './amapLivePosition';
 import AmapNavigation3D from './AmapNavigation3D.vue';
@@ -121,6 +122,10 @@ const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following
 const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
 const current = computed(() => routes.value[selected.value]);
 const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
+const serviceAreas = computed(() => upcomingServiceAreas(current.value, progress.value));
+function serviceAreaDistance(area: UpcomingServiceArea) {
+  return progress.value >= area.from ? '当前路段' : `约 ${formatDistance(area.distance)}后`;
+}
 const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
 let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
@@ -128,6 +133,7 @@ let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
 let simulation: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '';
+const announcedServiceAreas = new Set<string>();
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string) {
   if (muted.value) return;
@@ -202,7 +208,7 @@ function draw(fit = true) {
   appMap?.setRoute(current.value, progress.value);
   if (fit && lines.length) void overview();
 }
-function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; draw(); }
+function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; announcedServiceAreas.clear(); draw(); }
 function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
 function setPoint(point: Point, name: string) {
   cancelSearch();
@@ -259,7 +265,7 @@ async function plan(replan = false) {
     if (response.data.status === 'need_login') { await router.replace('/login'); return; }
     const data = response.data.data;
     if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length) throw new Error(response.data.message || '这条路线暂未成功解析，请更换地点或重试');
-    routes.value = data.routes; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; draw(!replan);
+    routes.value = data.routes; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; announcedServiceAreas.clear(); draw(!replan);
     status.value = replan ? '路线已重新规划' : '路线已就绪，选择方案后开始导航';
     if (replan) speak('已为您重新规划路线');
   } catch (exception) {
@@ -304,6 +310,12 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
     if (key !== spoken) { spoken = key; speak(navigationVoicePhrase(turn, turn.distance < 40)); }
   }
+  const area = serviceAreas.value[0];
+  if (!muted.value && area && !announcedServiceAreas.has(area.key) &&
+      shouldAnnounceServiceArea(area, progress.value, turn?.distance ?? Infinity)) {
+    announcedServiceAreas.add(area.key);
+    speak(`前方有${area.name}，请留意入口`);
+  }
 }
 function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
 let routeFusion: ReturnType<typeof createRouteFusion> | undefined;
@@ -325,6 +337,7 @@ let trackingLocation = false, resumeLocationOnActivate = false;
 watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
   stopFusion();
+  announcedServiceAreas.clear();
   cancelLocalSpeechPreload();
   if (!keepLocation) {
     trackingLocation = false;
@@ -473,6 +486,11 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
       <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
     </header>
     <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
+    <aside v-if="mode !== 'idle' && serviceAreas.length" class="service-area-card glass" aria-label="前方服务区">
+      <strong>前方服务区</strong>
+      <div v-for="area in serviceAreas" :key="area.key" class="service-area-item"><span>{{ area.name }}</span><b>{{ serviceAreaDistance(area) }}</b></div>
+      <small>位置按路线区间估算，请留意道路标志</small>
+    </aside>
     <div class="map-controls">
       <button class="dimension-mode" :class="{ active: use3D }" :disabled="!hasOrigin && !hasDestination" :aria-label="use3D ? '切换为 2D 地图' : '切换为 3D 地图'" :aria-pressed="use3D" @click="toggle3D">{{ use3D ? '3D' : '2D' }}</button>
       <button v-if="!show3D" title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
@@ -528,6 +546,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 </style>
 
 <style scoped>
+.service-area-card{position:absolute;z-index:500;left:16px;bottom:102px;width:min(330px,calc(100% - 90px));padding:11px 15px;display:grid;gap:6px;background:#123f38ed;color:white}.service-area-card>strong{font-size:13px;color:#85dfbd}.service-area-item{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}.service-area-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.service-area-item b{flex-shrink:0;font-size:12px;font-weight:600}.service-area-card small{font-size:10px;color:#c2d7d0}@media(max-width:700px){.service-area-card{left:10px;bottom:82px;width:min(300px,calc(100% - 74px));padding:8px 11px}}
 .map-controls .dimension-mode{font-size:15px;font-weight:700}
 .map-controls .view-mode{display:grid;place-items:center}
 .map-controls .view-mode svg{width:24px;height:24px}

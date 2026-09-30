@@ -1,5 +1,5 @@
 export type Point = [number, number];
-export interface RouteStep { start: number; end: number; road: string }
+export interface RouteStep { start: number; end: number; road: string; serviceArea?: string }
 export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;

@@ -139,6 +139,32 @@ def route_summary(route):
     return {'duration': duration, 'tolls': tolls, 'tollCurrency': currency}
 
 
+def service_area_name(segment):
+    """A route segment's optional facility label, observed on highway samples.
+
+    Other labels in the same field include toll stations. The response does not
+    provide an entrance coordinate here, so callers must treat the whole segment
+    as the location range rather than inventing a precise point.
+    """
+    raw = one(segment, 5, None)
+    if not isinstance(raw, bytes):
+        return None
+    try:
+        info = fields(raw)
+        value = one(info, 4, None)
+    except ValueError:
+        return None
+    if not isinstance(value, bytes) or not 1 <= len(value) <= 300:
+        return None
+    try:
+        name = value.decode('utf-8').strip()
+    except UnicodeError:
+        return None
+    if not 2 <= len(name) <= 100 or any(ord(c) < 32 for c in name):
+        return None
+    return name if name.endswith(('服务区', '停车区')) else None
+
+
 def decode(raw, origin=None, destination=None):
     outer = fields(unpack(raw))
     header = fields(one(outer, 1, b""))
@@ -197,8 +223,10 @@ def decode(raw, origin=None, destination=None):
                     breaks.append(start_index)
                 path.extend(points)
             length = sum(distance(a, b) for a, b in zip(points, points[1:]))
+            service_area = service_area_name(segment)
             steps.append({"road": current_road, "start": start_index, "end": len(path) - 1,
-                          "distance": round(length, 1), "actionCode": one(segment, 1, 0)})
+                          "distance": round(length, 1), "actionCode": one(segment, 1, 0),
+                          **({'serviceArea': service_area} if service_area else {})})
             measured += length
         if not steps or len(path) > 100000:
             raise ValueError("missing/oversized geometry")
