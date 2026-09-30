@@ -1296,6 +1296,7 @@ function initVehicleViewer() {
     vehicleModelPivot?.updateMatrixWorld(true);
     detectVehicleWheelMeshes(model, new THREE.Box3().setFromObject(model));
     updateVehicleVisualState(true);
+    vehicleWeather?.setImpactSurface(model);
     resizeVehicleViewer();
   }, undefined, (error: unknown) => {
     if (vehicleRenderer !== activeRenderer) return;

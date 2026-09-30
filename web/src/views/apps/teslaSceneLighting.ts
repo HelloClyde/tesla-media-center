@@ -17,6 +17,7 @@ export function configureStreetSun(light: THREE.DirectionalLight) {
 
 export function applyStreetLighting(scene: THREE.Scene, sun: THREE.DirectionalLight, fill: THREE.HemisphereLight, night: boolean) {
   scene.environmentIntensity = night ? .025 : .16;
+  sun.castShadow = !night;
   sun.color.set(night ? '#a3baff' : '#fff0db');
   sun.intensity = night ? .16 : 2.8;
   fill.color.set('#c6ddf4');
