@@ -32,8 +32,10 @@ RUN npm ci
 COPY web/*.json web/*.ts web/*.html ./
 COPY web/src/ ./src/
 COPY web/scripts/ ./scripts/
-# These small files are read by the legacy-player version hash in vite.config.ts.
+# Vite resolves these root assets while compiling; the remaining public
+# directories are copied later as independent runtime layers.
 COPY web/public/*.js ./public/
+COPY web/public/tmc-mark.svg web/public/screen-cap.jpg ./public/
 RUN TMC_SEPARATE_PUBLIC=1 npm run build
 
 FROM python:3.11-slim
