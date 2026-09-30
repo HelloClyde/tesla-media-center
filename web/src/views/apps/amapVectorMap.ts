@@ -1,7 +1,8 @@
 import L from 'leaflet';
 import axios from 'axios';
 import { createMapRenderQueue } from './mapRenderQueue';
-import { surroundingTiles } from './amapTilePrefetch';
+import { routeCorridorTiles, surroundingTiles } from './amapTilePrefetch';
+import type { AppRoute } from './amapNavigation';
 import { viewportTiles } from './amapViewport';
 import { layoutPlaceLabels, type PlaceLabel } from './amapPlaceLabels';
 
@@ -19,6 +20,8 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   const renderer = L.canvas({ pane: 'appRoads', padding: .2 });
   const roads = L.layerGroup().addTo(map), labels = L.layerGroup().addTo(map);
   const cache = new Map<string, { time: number; collection?: any; surfaces?: any[]; transit?: any[]; placeLabels?: PlaceLabel[]; missingLayers?: string[] }>();
+  let route: AppRoute | undefined, routeBucket = -1, routeGeneration = 0, routeTiles: number[][] = [];
+  const routeAttempted = new Set<string>();
   let request: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   let disposed = false, generation = 0;
   function visible() {
@@ -145,6 +148,14 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     // filling in intermediate source levels. Drawing still uses source order.
     const missing = tiles.filter(needsTile).sort((a, b) =>
       a[0] === b[0] ? 0 : a[0] === 3 ? -1 : b[0] === 3 ? 1 : b[0] - a[0]);
+    if (!missing.length && routeTiles.length) {
+      const visibleKeys = new Set(tiles.map(tile => tile.join('/')));
+      const ahead = routeTiles.filter(tile => {
+        const key = tile.join('/');
+        return !visibleKeys.has(key) && !cache.has(key) && !routeAttempted.has(key);
+      });
+      if (ahead.length) { void warmRoute(ahead.slice(0, 2)); return; }
+    }
     const prefetch = missing.length === 0;
     const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
     if (!candidates.length) {
@@ -201,6 +212,33 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     }
   }
 
+  async function warmRoute(batch: number[][]) {
+    loading = true;
+    const id = generation, routeId = routeGeneration;
+    const controller = new AbortController(); request = controller;
+    let delay = 750;
+    try {
+      const response = await axios.post('/api/amap-app/map/prefetch',
+        { level: 14, tiles: batch.map(tile => tile.slice(1)) },
+        { signal: controller.signal, timeout: 12000 });
+      if (disposed || id !== generation || routeId !== routeGeneration) return;
+      if (response.status === 202 && response.data.data?.pending) { delay = 2000; return; }
+      // A failed tile is attempted only once per route window. Visible loads
+      // retain their own retry policy if the vehicle reaches that tile.
+      batch.forEach(tile => routeAttempted.add(tile.join('/')));
+    } catch {
+      if (!disposed && id === generation && routeId === routeGeneration)
+        batch.forEach(tile => routeAttempted.add(tile.join('/')));
+    } finally {
+      loading = false;
+      if (request === controller) request = undefined;
+      if (!disposed && active) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => void load(), delay);
+      }
+    }
+  }
+
   function suspend() {
     moving = true;
     // Movement only pauses drawing, never throws away an in-flight download.
@@ -217,7 +255,16 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   map.on('movestart zoomstart', suspend);
   map.on('moveend zoomend rotate', schedule);
   void load();
-  return { setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); suspend(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => { failures.clear(); void load(); }, dispose() {
+  return { setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); suspend(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); },
+    setRoute(nextRoute?: AppRoute, progress = 0) {
+      const bucket = Math.floor(Math.max(0, Number.isFinite(progress) ? progress : 0) / 2000);
+      if (route === nextRoute && routeBucket === bucket) return;
+      if (route !== nextRoute) routeAttempted.clear();
+      route = nextRoute; routeBucket = bucket; routeGeneration++;
+      routeTiles = nextRoute ? routeCorridorTiles(nextRoute, progress) : [];
+      if (active) schedule();
+    },
+    retry: () => { failures.clear(); void load(); }, dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
   } };

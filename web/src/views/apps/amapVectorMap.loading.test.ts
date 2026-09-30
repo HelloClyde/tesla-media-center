@@ -7,6 +7,7 @@ vi.mock('leaflet', () => ({ default: {
 } }));
 vi.mock('./mapRenderQueue', () => ({ createMapRenderQueue: () => ({ start() {}, cancel() {} }) }));
 import { attachAppMap } from './amapVectorMap';
+import type { AppRoute } from './amapNavigation';
 afterEach(() => { vi.useRealTimers(); post.mockReset(); });
 
 function fakeMap() {
@@ -56,5 +57,25 @@ it('loads overview and visible street detail before intermediate levels', async 
   const layer = attachAppMap(map, vi.fn());
   await vi.advanceTimersByTimeAsync(350);
   expect(post.mock.calls.slice(0, 3).map(call => call[1].level)).toEqual([3, 14, 12]);
+  layer.dispose();
+});
+it('warms route tiles only after the visible map and receives no geometry', async () => {
+  vi.useFakeTimers();
+  post.mockImplementation(async (url, batch) => url.endsWith('/prefetch')
+    ? { status: 200, data: { status: 'ok', data: { tiles: batch.tiles.map(([x, y]: number[]) => ({ x, y, ready: true })) } } }
+    : { status: 200, data: { status: 'ok', data: {
+      tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
+    } } });
+  const { map } = fakeMap();
+  const layer = attachAppMap(map, vi.fn());
+  const route: AppRoute = { id: 1, path: [[120.1, 30.2], [120.2, 30.2]],
+    breaks: [], steps: [], distance: 10000, labels: [] };
+  layer.setRoute(route);
+  await vi.advanceTimersByTimeAsync(1500);
+  const urls = post.mock.calls.map(call => call[0]);
+  const firstWarm = urls.findIndex(url => url.endsWith('/prefetch'));
+  expect(firstWarm).toBeGreaterThanOrEqual(6);
+  expect(post.mock.calls[firstWarm][1].tiles.length).toBeLessThanOrEqual(2);
+  expect(post.mock.calls[firstWarm][1].level).toBe(14);
   layer.dispose();
 });

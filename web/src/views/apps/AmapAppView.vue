@@ -199,6 +199,7 @@ function draw(fit = true) {
     }
   });
   endpoints();
+  appMap?.setRoute(current.value, progress.value);
   if (fit && lines.length) void overview();
 }
 function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; draw(); }
@@ -289,6 +290,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     return;
   }
   offCount = 0; progress.value = fusion?.progress ?? (recovered ? match.progress : Math.max(progress.value, match.progress));
+  appMap?.setRoute(current.value, progress.value);
   if (recovered) spoken = '';
   status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置'
     : '实时导航中 · 车机定位';

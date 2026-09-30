@@ -101,6 +101,33 @@ class MapTest(unittest.TestCase):
             self.assertEqual(run.call_count, 1)
             self.assertNotIn((14, 2, 2), self.disk.read([(14, 2, 2)])[0])
 
+    def test_route_prefetch_warms_disk_without_returning_geometry(self):
+        path = '/api/amap-app/map/prefetch'
+        self.assertEqual(self.app.test_client().post(path, json={'level': 14, 'tiles': [[1, 2]]}).json['status'], 'need_login')
+        with patch.object(amap_map.subprocess, 'run') as run:
+            for payload in [dict(level=12, tiles=[[1, 2]]),
+                            dict(level=14, layer='lanes', tiles=[[1, 2]]),
+                            dict(level=14, tiles=[[1, 2], [2, 2], [3, 2]])]:
+                self.assertEqual(self.client.post(path, json=payload).status_code, 400)
+            run.assert_not_called()
+        tile = {'level': 14, 'x': 1, 'y': 2, 'collection': {'type': 'FeatureCollection', 'features': [{'name': 'cached road'}]}}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [tile]}).encode())) as run:
+            first = self.client.post(path, json={'level': 14, 'tiles': [[1, 2]]})
+            second = self.client.post(path, json={'level': 14, 'tiles': [[1, 2]]})
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.kwargs['timeout'], 10)
+        self.assertEqual(first.json['data'], {'tiles': [{'x': 1, 'y': 2, 'ready': True}]})
+        self.assertEqual(first.headers['Cache-Control'], 'private, no-store')
+        self.assertEqual(second.json['data'], first.json['data'])
+        self.assertEqual(self.disk.read([(14, 1, 2)])[0][(14, 1, 2)], tile)
+
+    def test_route_prefetch_does_not_claim_incomplete_tile(self):
+        tile = {'level': 14, 'x': 1, 'y': 2, 'missingLayers': ['surfaces']}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [tile]}).encode())):
+            response = self.client.post('/api/amap-app/map/prefetch', json={'level': 14, 'tiles': [[1, 2]]})
+        self.assertEqual(response.json['data']['tiles'], [{'x': 1, 'y': 2, 'ready': False}])
+        self.assertEqual(self.disk.status()['count'], 0)
+
     def test_zoom_cache_isolation_and_partial_layer_retry(self):
         tile = {'x': 1, 'y': 2, 'collection': {'type': 'FeatureCollection', 'features': []}, 'missingLayers': ['surfaces']}
         with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [tile]}).encode())) as run:
