@@ -42,6 +42,18 @@ it('reports initialization errors and permits a new worker retry',async()=>{
   const next=m.loadLocalSpeech();workers[1].emit({type:'ready'});await next;expect(m.localSpeechState.ready).toBe(true);m.releaseLocalSpeech();
 });
 
+it('keeps the loaded voice available after one unsupported phrase',async()=>{
+  const m=await import('./localSpeech');const loading=m.loadLocalSpeech();
+  workers[0].emit({type:'ready'});await loading;
+  const first=m.speakLocal('G60');await tick();
+  workers[0].emit({type:'error',id:workers[0].messages[0].id,message:'unsupported'});
+  await expect(first).rejects.toThrow('unsupported');
+  expect(m.localSpeechState.ready).toBe(true);
+  const second=m.speakLocal('前方右转');await tick();
+  workers[0].emit({type:'audio',id:workers[0].messages[1].id,samples:new Float32Array([.1]),sampleRate:24000,ms:5});
+  await second;expect(starts).toBe(1);m.releaseLocalSpeech();
+});
+
 it('pre-synthesizes silently and plays cached audio without waiting for another warmup',async()=>{
   const m=await import('./localSpeech');const warm=m.preloadLocalSpeech(['前方右转','请右转']);await tick();
   workers[0].emit({type:'ready'});await tick();

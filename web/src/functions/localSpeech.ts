@@ -66,14 +66,18 @@ export function loadLocalSpeech():Promise<void> {
   loading=new Promise<void>((resolve,reject)=>{
     rejectLoad=reject;
     try {
-      worker=new Worker('/tts/worker.js?v=4');
+      worker=new Worker('/tts/amap-1.0/worker.js?v=1');
       loadTimer=setTimeout(()=>fail('语音资源加载超时，请检查网络后重试'),180000);
       worker.onerror=()=>fail('端侧语音执行失败，请检查 WASM 支持及部署资源');
       worker.onmessage=({data})=>{
         if(data.type==='cache')localSpeechState.modelCacheStatus=data.status;
         if(data.type==='progress')localSpeechState.status=data.status;
         if(data.type==='ready'){clearTimeout(loadTimer);rejectLoad=undefined;localSpeechState.ready=true;localSpeechState.loading=false;localSpeechState.status='端侧中文语音已就绪';resolve();}
-        if(data.type==='error')fail(data.message);
+        if(data.type==='error'){
+          const p=typeof data.id==='number'?pending.get(data.id):undefined;
+          if(p){pending.delete(data.id);clearTimeout(p.timer);p.reject(new Error(data.message));}
+          else if(typeof data.id!=='number')fail(data.message);
+        }
         if(data.type==='audio'){
           const p=pending.get(data.id);if(!p)return;pending.delete(data.id);clearTimeout(p.timer);
           if(!data.samples?.length||!Number.isFinite(data.sampleRate)||data.sampleRate<=0){p.reject(new Error('语音合成结果为空'));return;}

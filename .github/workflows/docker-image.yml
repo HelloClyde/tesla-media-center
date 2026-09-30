@@ -38,17 +38,14 @@ jobs:
         with:
           python-version: '3.11'
           cache: pip
-          cache-dependency-path: tools/tts/requirements.txt
+          cache-dependency-path: tools/amap-app/requirements.txt
 
       - name: Download and verify pinned Amap runtime
         timeout-minutes: 5
         run: python tools/amap-app/release_assets.py
 
-      - name: Download and verify browser Chinese TTS
-        timeout-minutes: 10
-        run: |
-          python -m pip install -r tools/tts/requirements.txt
-          python tools/tts/prepare_assets.py
+      - name: Extract AMap default offline voice
+        run: python web/scripts/amap-tts/extract_assets.py
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

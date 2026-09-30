@@ -3,12 +3,6 @@
 FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS asset-compressor
 COPY web/scripts/precompress-dist.mjs /precompress-dist.mjs
 
-FROM asset-compressor AS tts-assets
-COPY web/public/tts/ /assets/
-RUN test ! -e /assets/matcha-1.13.8/sherpa-onnx-wasm-main-tts.data && \
-    test -s /assets/matcha-1.13.8-q8-v1/sherpa-onnx-wasm-main-tts.data && \
-    node /precompress-dist.mjs /assets
-
 FROM asset-compressor AS model-assets
 COPY web/public/models/ /assets/
 RUN node /precompress-dist.mjs /assets
@@ -38,6 +32,17 @@ COPY web/public/*.js ./public/
 COPY web/public/tmc-mark.svg web/public/screen-cap.jpg ./public/
 COPY web/public/icon/ ./public/icon/
 RUN TMC_SEPARATE_PUBLIC=1 npm run build
+
+FROM asset-compressor AS tts-assets
+COPY web/public/tts/ /assets/
+COPY --from=web-builder /build/web/public/tts/amap-1.0/amap-core.js /assets/amap-1.0/amap-core.js
+RUN test -s /assets/amap-1.0/am_encoder.mnn && \
+    test -s /assets/amap-1.0/am_decoder.mnn && \
+    test -s /assets/amap-1.0/ddspganV2_f0.mnn && \
+    test -s /assets/amap-1.0/ddspganV2_ctrl.mnn && \
+    test -s /assets/amap-1.0/amap-mnn.wasm && \
+    test -s /assets/amap-1.0/amap-core.js && \
+    node /precompress-dist.mjs /assets
 
 FROM python:3.11-slim
 EXPOSE 8080

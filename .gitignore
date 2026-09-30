@@ -47,5 +47,8 @@ docker_build/amap-assets/
 assets/model-y-2022/*.blend1
 web/public/tts/matcha-1.13.8/
 web/public/tts/matcha-1.13.8-q8-v1/
+web/public/tts/amap-1.0/*.mnn
+web/public/tts/amap-1.0/am_dict.json
+web/public/tts/amap-1.0/amap-core.js
 
 /data/
