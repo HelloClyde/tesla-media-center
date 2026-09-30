@@ -36,6 +36,7 @@ COPY web/scripts/ ./scripts/
 # directories are copied later as independent runtime layers.
 COPY web/public/*.js ./public/
 COPY web/public/tmc-mark.svg web/public/screen-cap.jpg ./public/
+COPY web/public/icon/ ./public/icon/
 RUN TMC_SEPARATE_PUBLIC=1 npm run build
 
 FROM python:3.11-slim
