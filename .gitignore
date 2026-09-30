@@ -8,6 +8,8 @@ pnpm-debug.log*
 lerna-debug.log*
 
 web/node_modules
+node_modules/
+**/*.tsbuildinfo
 .DS_Store
 web/dist
 web/dist-ssr

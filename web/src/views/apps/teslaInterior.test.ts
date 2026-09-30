@@ -74,3 +74,24 @@ it('removes the static inner belt rail without removing cabin or roof geometry',
     expect(Math.abs(positions.getX(i)) < .54 || positions.getY(i) > 1.23).toBe(true);
   }
 });
+
+it('anchors each inner door panel into the painted door shell', () => {
+  const model = new T.Group();
+  for (const [i, id] of ['FL', 'FR', 'RL', 'RR'].entries()) {
+    const door = new T.Group(); door.name = 'Door_' + id; door.position.x = i % 2 ? .76 : -.76; model.add(door);
+  }
+  repairVehicleInterior(model);
+  for (const [i, id] of ['FL', 'FR', 'RL', 'RR'].entries()) {
+    const door = model.getObjectByName('Door_' + id)!;
+    const panel = door.getObjectByName('Door_Inner_Trim') as T.Group;
+    expect(panel.parent).toBe(door);
+    const skin = panel.children[0] as T.Mesh;
+    const bounds = new T.Box3().setFromObject(skin);
+    const shellX = (i % 2 ? 1 : -1) * .8;
+    expect(bounds.min.x).toBeLessThan(shellX);
+    expect(bounds.max.x).toBeGreaterThan(shellX);
+    door.rotation.y = i % 2 ? -.8 : .8;
+    model.updateMatrixWorld(true);
+    expect(new T.Box3().setFromObject(skin).isEmpty()).toBe(false);
+  }
+});

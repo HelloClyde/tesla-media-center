@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { navigationEngine, setNavigationEngine, navigationEngineNotice } from '@/functions/navigationEngine';
 import { navigationVoiceVolume, setNavigationVoiceVolume } from '@/functions/navigationVolume';
 import { navigationCoordinateMode, setNavigationCoordinateMode } from '@/functions/navigationCoordinates';
 import MapCacheSettings from '@/components/MapCacheSettings.vue';
@@ -6,6 +7,7 @@ import SimpleView from '@/components/SimpleView.vue';
 import H5Recorder from '@/components/H5Recorder.vue';
 import MediaKeyTest from '@/components/MediaKeyTest.vue';
 import AudioOutputTest from '@/components/AudioOutputTest.vue';
+import MotionSensorTest from '@/components/MotionSensorTest.vue';
 import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import WebGLComputeTest from '@/components/WebGLComputeTest.vue';
@@ -171,6 +173,13 @@ onUnmounted(() => {
 
                 <article class="settings-card">
                     <div class="card-head"><h2>导航设置</h2></div>
+                    <label>定位引擎</label>
+                    <el-select :model-value="navigationEngine" aria-label="导航定位引擎" @update:model-value="setNavigationEngine($event)">
+                        <el-option label="浏览器定位（默认）" value="browser" />
+                        <el-option label="路线融合（精度下降时推算）" value="route-fusion" />
+                    </el-select>
+                    <p class="console-hint">{{ navigationEngineNotice }} 选择自动保存在当前浏览器。</p>
+                    <p v-if="navigationEngine === 'route-fusion'" class="console-hint">开始导航后生效。速度持续有效时支持长隧道推算；速度停更后逐渐减速，最多推算 12 秒或 120 米。始终无法确认持续速度时限于 30 秒或 500 米。连续可靠定位恢复后平滑校正，真实偏航会重新规划。</p>
                     <label for="navigation-volume">导航语音音量：{{ navigationVoiceVolume }}%</label>
                     <input id="navigation-volume" type="range" min="0" max="300" step="10" :value="navigationVoiceVolume" @input="setNavigationVoiceVolume(Number(($event.target as HTMLInputElement).value))" style="width:100%;accent-color:var(--color-accent)" />
                     <p class="console-hint">默认 150%，100% 为原始音量。调整立即生效并自动保存在当前浏览器，仅影响导航和端侧语音测试。</p>
@@ -226,6 +235,7 @@ onUnmounted(() => {
                 </article>
             </el-tab-pane>
             <el-tab-pane label="WebGL 算力" name="webgl"><WebGLComputeTest v-if="activeTab === 'webgl'" /></el-tab-pane>
+            <el-tab-pane label="惯性传感器" name="motion"><MotionSensorTest v-if="activeTab === 'motion'" /></el-tab-pane>
             <el-tab-pane label="布局诊断" name="layout"><ViewportDiagnostics /></el-tab-pane>
             <el-tab-pane label="设备诊断" name="diagnostics">
             <section class="diagnostics-panel">

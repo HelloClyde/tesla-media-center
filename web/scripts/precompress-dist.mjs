@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 const gzipAsync = promisify(gzip);
 const brotliAsync = promisify(brotliCompress);
 
-const rootDir = path.resolve(process.cwd(), 'dist');
+const rootDir = path.resolve(process.cwd(), process.argv[2] || 'dist');
 const compressibleExtensions = new Set([
   '.js',
   '.mjs',

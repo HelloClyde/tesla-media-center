@@ -15,6 +15,8 @@ import type { ICompressionOptions } from "rollup-plugin-compression";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Docker assembles independently cached public assets in the runtime image.
+  build: { copyPublicDir: process.env.TMC_SEPARATE_PUBLIC !== '1' },
   plugins: [
     vue(),
     {

@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { navigationEngine, navigationEngineNotice } from '@/functions/navigationEngine';
+import { createRouteFusion, type FusionPosition } from './amapRouteFusion';
 import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
@@ -7,6 +9,7 @@ import { navigationVoicePhrase } from './amapVoicePhrases';
 import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
 import { createLivePositionGate } from './amapLivePosition';
 import AmapNavigation3D from './AmapNavigation3D.vue';
+
 import { prepareLocalSpeech, preloadLocalSpeech, cancelLocalSpeechPreload, speakLocal, stopLocalSpeech, localSpeechState } from '@/functions/localSpeech';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 const geoLocation = useGeoLocationStore();
@@ -265,7 +268,7 @@ async function plan(replan = false) {
     else { routes.value = []; draw(false); }
   } finally { if (id === generation) busy.value = false; }
 }
-function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null, recovered = false) {
+function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null, recovered = false, fusion?: FusionPosition) {
   const direction = movementHeading(headingAnchor, point, accuracy, gpsHeading, speed);
   if (direction !== undefined) { heading.value = smoothHeading(heading.value, direction); headingAnchor = point; }
   else if (!headingAnchor && accuracy <= 60) headingAnchor = point;
@@ -285,12 +288,15 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     }
     return;
   }
-  offCount = 0; progress.value = recovered ? match.progress : Math.max(progress.value, match.progress);
+  offCount = 0; progress.value = fusion?.progress ?? (recovered ? match.progress : Math.max(progress.value, match.progress));
   if (recovered) spoken = '';
-  status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置' : '实时导航中 · 车机定位';
-  if (remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
+  status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置'
+    : '实时导航中 · 车机定位';
+  if (fusion) status.value = fusion.state === 'tracking' ? '实时导航中 · 路线融合' : fusion.state === 'recovering' ? '定位恢复 · 平滑校正中' : fusion.state === 'waiting' ? '推算已暂停 · 等待可靠定位' : `定位精度下降 · 估算位置（${fusion.estimationSeconds ?? 0} 秒）`;
+  if (!fusion?.estimated && remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
     finishNavigationFollow('已到达目的地附近，继续跟随车辆'); arrived.value = true; speak('已到达目的地附近'); return;
   }
+  if (fusion?.state === 'waiting') return;
   const turn = next.value;
   if (turn && turn.distance < 250) {
     const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
@@ -298,8 +304,25 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   }
 }
 function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
+let routeFusion: ReturnType<typeof createRouteFusion> | undefined;
+let fusionTimer: ReturnType<typeof setInterval> | undefined;
+function renderFusion(result?: FusionPosition) {
+  if (!result || disposed || mode.value !== 'live') return;
+  liveSpeed.value = result.speed * 3.6;
+  updatePosition(result.point, 0, result.heading, result.speed, result.state === 'off-route', result);
+}
+function stopFusion() { clearInterval(fusionTimer); fusionTimer = undefined; routeFusion = undefined; }
+function startFusion() {
+  stopFusion();
+  if (navigationEngine.value !== 'route-fusion' || mode.value !== 'live' || !current.value) return;
+  routeFusion = createRouteFusion(current.value);
+  fusionTimer = setInterval(() => renderFusion(routeFusion?.tick(performance.now())), 250);
+}
+watch(current, () => startFusion());
 let trackingLocation = false, resumeLocationOnActivate = false;
+watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
+  stopFusion();
   cancelLocalSpeechPreload();
   if (!keepLocation) {
     trackingLocation = false;
@@ -350,6 +373,7 @@ function locate(navigate = false, preserveRoute = false) {
     // Use the route's initial direction until GPS supplies a usable vehicle heading.
     if (heading.value === undefined && current.value) heading.value = bearingBetween(current.value.path[0], pointAt(current.value, 25));
     applyOrientation(); map.setZoom(17);
+    startFusion();
   }
   const receive = (position: GeoLocation) => {
     if (disposed || id !== locationGeneration) return;
@@ -361,8 +385,14 @@ function locate(navigate = false, preserveRoute = false) {
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
     const point = browserNavigationPoint(position.longitude, position.latitude);
-    liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
     if (mode.value === 'idle') { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first && !preserveRoute && !navigate) map.setView(latLng(point), 16); if (!preserveRoute && !navigate) status.value = '已定位，请选择目的地'; }
+    if (mode.value === 'live' && routeFusion) {
+      const result = routeFusion.accept({ point, accuracy: position.accuracy, speed: position.speed, heading: position.heading, timestamp: position.timestamp }, performance.now());
+      renderFusion(result);
+      if (!result && !location.value) status.value = '路线融合 · 等待可靠定位';
+      return;
+    }
+    liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
     updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
 
   };
@@ -466,6 +496,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
     <footer ref="footerPanel" class="navigation-footer glass">
       <p v-if="show3D ? map3DStatus : mapStatus" class="map-notice">{{ show3D ? map3DStatus : mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="show3D ? map3D?.retry() : appMap?.retry()">重试</button></p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
         <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
         <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
@@ -485,7 +516,6 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 <style>
 .navigation-map.leaflet-container{background:#142b32}.map-day .navigation-map.leaflet-container{background:#e8eced}.map-day .app-road-label{color:#485759;text-shadow:0 1px 3px white,1px 0 3px white}.app-road-label{color:#e1eeed;text-align:center;white-space:nowrap;font-size:11px;text-shadow:0 1px 3px #142b32,1px 0 3px #142b32;pointer-events:none}.map-notice{position:absolute;bottom:calc(100% + 8px);left:0;max-width:100%;font-size:12px;color:#e1eeed;background:#142b32e6;border-radius:9px;padding:5px 9px;margin:0}.navigation-app .map-notice button{min-height:24px;padding:2px 8px;margin-left:6px;font-size:12px}
 </style>
-
 <style>.app-transit-label{text-align:center;white-space:nowrap;font-size:11px;color:#62b7ff;text-shadow:0 1px 2px #142b32}.map-day .app-transit-label{color:#347ec3;text-shadow:0 1px 2px white}.app-transit-label span{border-bottom:2px solid currentColor}</style>
 
 <style>

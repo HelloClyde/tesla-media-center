@@ -18,3 +18,8 @@ shot/
 .local-data/
 
 /data/
+
+.venv/
+web/.env.local
+web/.env.*.local
+**/*.tsbuildinfo

@@ -1,38 +1,68 @@
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder
+# syntax=docker/dockerfile:1
+# Compress each large asset family independently from application source.
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS asset-compressor
+COPY web/scripts/precompress-dist.mjs /precompress-dist.mjs
 
+FROM asset-compressor AS tts-assets
+COPY web/public/tts/ /assets/
+RUN test ! -e /assets/matcha-1.13.8/sherpa-onnx-wasm-main-tts.data && \
+    test -s /assets/matcha-1.13.8-q8-v1/sherpa-onnx-wasm-main-tts.data && \
+    node /precompress-dist.mjs /assets
+
+FROM asset-compressor AS model-assets
+COPY web/public/models/ /assets/
+RUN node /precompress-dist.mjs /assets
+
+FROM asset-compressor AS texture-assets
+COPY web/public/textures/ /assets/
+RUN node /precompress-dist.mjs /assets
+
+FROM asset-compressor AS public-assets
+COPY web/public/*.* /assets/
+COPY web/public/catalogs/ /assets/catalogs/
+COPY web/public/gam4980/ /assets/gam4980/
+COPY web/public/icon/ /assets/icon/
+COPY web/public/vendor/ /assets/vendor/
+RUN node /precompress-dist.mjs /assets
+
+FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
-COPY web/ ./
-RUN test ! -e public/tts/matcha-1.13.8/sherpa-onnx-wasm-main-tts.data
-RUN test -s public/tts/matcha-1.13.8-q8-v1/sherpa-onnx-wasm-main-tts.data
-RUN npm run build
+COPY web/*.json web/*.ts web/*.html ./
+COPY web/src/ ./src/
+COPY web/scripts/ ./scripts/
+# These small files are read by the legacy-player version hash in vite.config.ts.
+COPY web/public/*.js ./public/
+RUN TMC_SEPARATE_PUBLIC=1 npm run build
 
 FROM python:3.11-slim
-
 EXPOSE 8080
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV TMC_DATA_DIR=/data
-
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    TMC_DATA_DIR=/data \
+    TMC_AMAP_APP_ASSETS=/opt/tmc/amap-app
 WORKDIR /root/tesla-media-center
-
 COPY requirement.txt ./
 COPY tools/amap-app/requirements.txt ./amap-requirements.txt
 RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/tmc/ms-playwright
 RUN python -m playwright install --with-deps --no-shell chromium
 
-COPY *.py ./
-COPY ffvideo ./ffvideo
-COPY tools/amap-app ./tools/amap-app
-COPY docker_build/amap-assets /opt/tmc/amap-app
-ENV TMC_AMAP_APP_ASSETS=/opt/tmc/amap-app
-RUN python tools/amap-app/release_assets.py --verify-only --directory /opt/tmc/amap-app
-RUN python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper"
-COPY video ./video
-COPY web/public ./web/public
-COPY --from=web-builder /build/web/dist ./web/dist
+# Linked COPY layers do not depend on earlier code/dependency layers.
+COPY --link docker_build/amap-assets/ /opt/tmc/amap-app/
+COPY --link --from=tts-assets /assets/ ./web/dist/tts/
+COPY --link --from=model-assets /assets/ ./web/dist/models/
+COPY --link --from=texture-assets /assets/ ./web/dist/textures/
+COPY --link --from=public-assets /assets/ ./web/dist/
+COPY --link video/ ./video/
+# Keep the backend catalog path compatible without duplicating public assets.
+RUN ln -s dist web/public
 
+COPY --link *.py ./
+COPY --link ffvideo/ ./ffvideo/
+COPY --link tools/amap-app/ ./tools/amap-app/
+RUN python tools/amap-app/release_assets.py --verify-only --directory /opt/tmc/amap-app && \
+    python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper"
+COPY --link --from=web-builder /build/web/dist/ ./web/dist/
 CMD ["python", "/root/tesla-media-center/flask_app.py"]
