@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { repairSurfaceGeometry, repairHoodEdgeNormals, repairRearQuarterNormals, repairRoofGlassNormals } from './teslaSurfaceRepair';
 function smoothPaintNormals(geometry: THREE.BufferGeometry) {
   const result = geometry.clone();
   const positions = result.getAttribute('position'), original = result.getAttribute('normal'), indices = result.index;
@@ -28,7 +29,7 @@ function smoothPaintNormals(geometry: THREE.BufferGeometry) {
 export const APPEARANCE_KEY = 'tmc.tesla.appearance.v1';
 export const paintFinishes = [
   { value: 'gloss', label: '亮面', metalness: .15, roughness: .2, clearcoat: 1, clearcoatRoughness: .12 },
-  { value: 'metallic', label: '金属', metalness: .8, roughness: .28, clearcoat: .8, clearcoatRoughness: .18 },
+  { value: 'metallic', label: '金属', metalness: .34, roughness: .39, clearcoat: .95, clearcoatRoughness: .2 },
   { value: 'matte', label: '磨砂', metalness: .05, roughness: .88, clearcoat: 0, clearcoatRoughness: .9 },
   { value: 'satin', label: '缎面', metalness: .25, roughness: .52, clearcoat: .2, clearcoatRoughness: .5 },
 ];
@@ -45,24 +46,59 @@ export function normalizeAppearance(value: Partial<VehicleAppearance> | null): V
 
 /** Own one dynamic texture shared by the two Blender-authored plate faces. */
 export function createVehicleAppearance(model: THREE.Object3D) {
+  model.updateWorldMatrix(true, true);
+  const inverseModel = model.matrixWorld.clone().invert();
+  const bakedSurface = model.userData.surfaceRevision === 2 || model.getObjectByName('Model_Y_2022')?.userData.surfaceRevision === 2;
   const paint = new Set<THREE.MeshStandardMaterial>();
   const plates = new Set<THREE.MeshStandardMaterial>();
+  const glass = new Set<THREE.MeshStandardMaterial>();
   model.traverse(obj => {
     if (!(obj as THREE.Mesh).isMesh) return;
     const mesh = obj as THREE.Mesh;
     const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    // Correct inconsistent face winding before rebuilding paint normals.
+    if (materials.every(m => ['Pearl_White_Clearcoat', 'Wheel_Graphite_Alloy', 'Tire_Rubber'].includes(m.name))) {
+      const previous = mesh.geometry;
+      mesh.geometry = repairSurfaceGeometry(previous);
+      previous.dispose();
+    }
+    if (materials.length && materials.every(m => m.name === 'Pearl_White_Clearcoat')) {
+      const previous = mesh.geometry;
+      const toModel = inverseModel.clone().multiply(mesh.matrixWorld);
+      const hood = repairHoodEdgeNormals(previous, toModel);
+      mesh.geometry = repairRearQuarterNormals(hood, toModel);
+      hood.dispose();
+      previous.dispose();
+    }
+    if (materials.length && materials.every(m => m.name === 'Smoked_Panoramic_Glass')) {
+      const previous = mesh.geometry;
+      mesh.geometry = repairRoofGlassNormals(previous, inverseModel.clone().multiply(mesh.matrixWorld));
+      previous.dispose();
+    }
     // Rebuild paint normals across duplicated UV vertices; preserve body creases.
     // GLTF primitives have independent geometry, so glass, trim and wheels stay intact.
-    if (materials.length && materials.every(m => m.name === 'Pearl_White_Clearcoat')) {
+    if (!bakedSurface && materials.length && materials.every(m => m.name === 'Pearl_White_Clearcoat')) {
       const previous = mesh.geometry;
       mesh.geometry = smoothPaintNormals(previous);
       if (mesh.geometry !== previous) previous.dispose();
     }
     for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
       if (!(m as THREE.MeshStandardMaterial).isMeshStandardMaterial) continue;
+      if (m.name === 'Smoked_Panoramic_Glass') glass.add(m as THREE.MeshStandardMaterial);
       if (m.name === 'Pearl_White_Clearcoat') paint.add(m as THREE.MeshStandardMaterial);
       if (obj.userData.partType === 'licensePlate' || m.name === 'LicensePlate_Face') plates.add(m as THREE.MeshStandardMaterial);
     }
+  });
+  // The imported glass is too mirror-like: bright surroundings create white blobs.
+  // Retain a dark, translucent windshield with broad, subdued reflections.
+  glass.forEach(m => {
+    m.color.set('#263745');
+    m.metalness = .02;
+    m.roughness = .78;
+    m.envMapIntensity = .03;
+    m.opacity = .9;
+    m.transparent = true;
+    m.needsUpdate = true;
   });
   const canvas = document.createElement('canvas'); canvas.width = 1024; canvas.height = 326;
   const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;

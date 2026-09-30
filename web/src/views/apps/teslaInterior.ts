@@ -32,7 +32,9 @@ export function repairVehicleInterior(model: T.Object3D) {
       values:names.map(n=>{const attr=source.getAttribute(n);return Array.from({length:attr.itemSize},(_,c)=>attr.getComponent(index,c));})});
     const interpolate=(a:Vertex,b:Vertex,t:number):Vertex=>({p:a.p.clone().lerp(b.p,t),values:a.values.map((v,i)=>v.map((x,c)=>x+(b.values[i][c]-x)*t))});
     const emit=(polygon:Vertex[])=>{for(let i=1;i<polygon.length-1;i++)for(const v of [polygon[0],polygon[i],polygon[i+1]])v.values.forEach((values,k)=>output[k].push(...values));};
-    const boxes=[[-.80,-.54,.49,1.14,-1.28,.9],[.54,.80,.49,1.14,-1.28,.9]];
+    // The static inner belt rail reaches ~1.21 m, above the old 1.14 m
+    // cutoff. Remove it with the old inner panel; the hinged trim replaces it.
+    const boxes=[[-.80,-.54,.49,1.23,-1.28,.9],[.54,.80,.49,1.23,-1.28,.9]];
     const count=source.index?.count ?? source.getAttribute('position').count;
     for(let i=0;i<count;i+=3) {
       let pieces:Vertex[][]=[[0,1,2].map(j=>make(source.index ? source.index.getX(i+j) : i+j))];
@@ -102,7 +104,11 @@ export function repairFramelessRearDoors(model: T.Object3D) {
       const outputs = [names.map(() => [] as number[]), names.map(() => [] as number[])];
       const make = (index: number): Vertex => {
         const p = new T.Vector3().fromBufferAttribute(source.getAttribute('position'), index).applyMatrix4(transform);
-        return { distance: p.y - 1.12, values: names.map(name => {
+        // The rear belt line rises towards the tail (z < 0). A flat 1.12 m
+        // cut classified the entire lower rail as a body seal, leaving a bar
+        // across the open doorway. Keep the sloping lower rail on the hinge.
+        const beltLine = 1.158 - .05 * p.z;
+        return { distance: p.y - beltLine, values: names.map(name => {
           const attribute = source.getAttribute(name);
           return Array.from({ length: attribute.itemSize }, (_, c) => attribute.getComponent(index, c));
         }) };

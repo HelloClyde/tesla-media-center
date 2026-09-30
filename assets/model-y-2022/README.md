@@ -62,3 +62,25 @@ node tools/vehicle-model/optimize-model.cjs
 The source decoding intermediate is placed under ignored `.local-data/model-y`.
 The build writes the editable asset, preview PNGs and runtime GLB. Blender backup
 files (`*.blend1`) are not part of the deliverable.
+
+## Surface repair (revision 2)
+
+The runtime GLB now includes offline local quadratic normal fitting for painted
+panels and alloy wheels. The fit uses an orientation-filtered neighborhood and
+bounded normal change; it preserves positions, UVs, material assignments, door
+hinges, wheel axles and animation channels. Bumper crease regions are excluded.
+This improves triangulation-related reflections, but does not make the original
+approximate model an exact CAD surface. The editable Blender file remains the
+unbaked source.
+
+After exporting/optimizing the unbaked model, run:
+
+```text
+# Python needs numpy; PYTHON can select the interpreter.
+node tools/vehicle-model/repair-surfaces.cjs path/to/unbaked-model.glb
+```
+
+The candidate is written to `.local-data/model-y/surface-repaired.glb`. Inspect it
+before copying it to `web/public/models/2022_tesla_model_y.glb`, then run
+`node tools/vehicle-model/validate-model.cjs`. Already baked inputs are rejected.
+The runtime recognizes `surfaceRevision: 2` and avoids overwriting baked normals.

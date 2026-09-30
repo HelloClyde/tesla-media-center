@@ -61,6 +61,7 @@ paint = material('Pearl_White_Clearcoat', (.82, .86, .9), .12, .3)
 paint.node_tree.nodes['Principled BSDF'].inputs['Coat Weight'].default_value = .5
 glass = material('Smoked_Panoramic_Glass', (.014, .029, .04), .36, .13)
 trim = material('Satin_Black_Trim', (.018, .021, .025), .25, .32)
+wiper_black = material('Wiper_Matte_Black', (.006, .007, .008), .05, .8)
 rubber = material('Tire_Rubber', (.022, .025, .028), 0, .78)
 metal = material('Wheel_Graphite_Alloy', (.21, .24, .28), .78, .24)
 
@@ -128,6 +129,8 @@ for obj in list(bpy.context.scene.objects):
     if obj.type != 'MESH':
         continue
     name = obj.name
+    if name in {f'Object_2.{n:03}' for n in range(252, 260)}:
+        assign(obj, wiper_black)
     if name in paint_names:
         assign(obj, paint)
     if name in trim_names:
