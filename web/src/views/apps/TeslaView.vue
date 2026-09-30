@@ -117,8 +117,7 @@ let vehicleModelPivot: THREE.Group | null = null;
 let vehicleRoadMesh: THREE.Mesh | null = null;
 let vehicleModelBasePositionY = 0;
 let vehicleControls: OrbitControls | null = null;
-let vehicleInteractionTimer: number | null = null;
-let vehicleInteractiveResolution = false;
+let vehicleCameraDirty = false;
 let resizeHandler: (() => void) | null = null;
 let vehicleViewerInitialized = false;
 let vehicleResetViewTimer: number | null = null;
@@ -155,6 +154,11 @@ const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
 const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
+const VEHICLE_MAX_RENDER_PIXELS = 1_400_000;
+
+function vehiclePixelRatio(width: number, height: number) {
+  return Math.min(window.devicePixelRatio || 1, 1, Math.sqrt(VEHICLE_MAX_RENDER_PIXELS / Math.max(1, width * height)));
+}
 
 type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
 
@@ -1145,8 +1149,9 @@ function initVehicleViewer() {
   vehicleCamera.lookAt(DEFAULT_VEHICLE_CAMERA_TARGET);
 
   vehicleRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  vehicleRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.25));
-  vehicleRenderer.setSize(container.clientWidth || 640, container.clientHeight || 420);
+  const initialWidth = container.clientWidth || 640, initialHeight = container.clientHeight || 420;
+  vehicleRenderer.setPixelRatio(vehiclePixelRatio(initialWidth, initialHeight));
+  vehicleRenderer.setSize(initialWidth, initialHeight);
   vehicleRenderer.outputColorSpace = THREE.SRGBColorSpace;
   vehicleRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   vehicleRenderer.toneMappingExposure = 1;
@@ -1167,10 +1172,8 @@ function initVehicleViewer() {
   vehicleControls.minPolarAngle = Math.PI / 3.6;
   vehicleControls.maxPolarAngle = Math.PI / 2.05;
   vehicleControls.target.copy(DEFAULT_VEHICLE_CAMERA_TARGET);
+  vehicleControls.addEventListener('change', () => { vehicleCameraDirty = true; });
   vehicleControls.addEventListener('start', () => {
-    if (vehicleInteractionTimer !== null) window.clearTimeout(vehicleInteractionTimer);
-    vehicleInteractionTimer = null;
-    setVehicleInteractiveResolution(true);
     if (vehicleResetViewTimer !== null) {
       window.clearTimeout(vehicleResetViewTimer);
       vehicleResetViewTimer = null;
@@ -1178,11 +1181,6 @@ function initVehicleViewer() {
     stopVehicleViewTween();
   });
   vehicleControls.addEventListener('end', () => {
-    if (vehicleInteractionTimer !== null) window.clearTimeout(vehicleInteractionTimer);
-    vehicleInteractionTimer = window.setTimeout(() => {
-      vehicleInteractionTimer = null;
-      setVehicleInteractiveResolution(false);
-    }, 350);
     scheduleVehicleViewReset();
   });
 
@@ -1319,18 +1317,12 @@ function resizeVehicleViewer() {
   }
   const width = vehicleVisualRef.value.clientWidth || 640;
   const height = vehicleVisualRef.value.clientHeight || 420;
+  const ratio = vehiclePixelRatio(width, height);
+  if (Math.abs(vehicleRenderer.getPixelRatio() - ratio) > .01) vehicleRenderer.setPixelRatio(ratio);
   vehicleRenderer.setSize(width, height);
   vehicleCamera.aspect = width / height;
   vehicleCamera.updateProjectionMatrix();
   renderVehicleViewer();
-}
-
-function setVehicleInteractiveResolution(active: boolean) {
-  if (!vehicleRenderer || vehicleInteractiveResolution === active) return;
-  vehicleInteractiveResolution = active;
-  const baseRatio = Math.min(window.devicePixelRatio || 1, 1.25);
-  vehicleRenderer.setPixelRatio(active ? baseRatio * .75 : baseRatio);
-  if (!active) renderVehicleViewer(false);
 }
 
 let lastShadowUpdate = 0;
@@ -1427,7 +1419,9 @@ function startVehicleRenderLoop() {
     const now = performance.now();
     updateVehiclePoseTween(now);
     updateVehicleMotion(now);
-    const cameraChanged = vehicleControls?.update();
+    const cameraUpdated = vehicleControls?.update();
+    const cameraChanged = cameraUpdated || vehicleCameraDirty;
+    vehicleCameraDirty = false;
     const doorsMoving = vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
     const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween;
     const weatherMoving = activeWeather.value === 'rain' || activeWeather.value === 'snow' || wipersMoving;
@@ -1577,9 +1571,7 @@ function resetVehicleView() {
 }
 
 function disposeVehicleViewer() {
-  if (vehicleInteractionTimer !== null) window.clearTimeout(vehicleInteractionTimer);
-  vehicleInteractionTimer = null;
-  vehicleInteractiveResolution = false;
+  vehicleCameraDirty = false;
   vehicleLights?.dispose(); vehicleLights = undefined;
   vehicleWeather?.dispose();vehicleWeather=undefined;
   vehicleWipers = undefined; wipersMoving = false;

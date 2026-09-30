@@ -75,7 +75,7 @@ it('removes the static inner belt rail without removing cabin or roof geometry',
   }
 });
 
-it('anchors each inner door panel into the painted door shell', () => {
+it('keeps each inner door panel behind the painted door shell', () => {
   const model = new T.Group();
   for (const [i, id] of ['FL', 'FR', 'RL', 'RR'].entries()) {
     const door = new T.Group(); door.name = 'Door_' + id; door.position.x = i % 2 ? .76 : -.76; model.add(door);
@@ -88,8 +88,7 @@ it('anchors each inner door panel into the painted door shell', () => {
     const skin = panel.children[0] as T.Mesh;
     const bounds = new T.Box3().setFromObject(skin);
     const shellX = (i % 2 ? 1 : -1) * .8;
-    expect(bounds.min.x).toBeLessThan(shellX);
-    expect(bounds.max.x).toBeGreaterThan(shellX);
+    expect(Math.max(Math.abs(bounds.min.x), Math.abs(bounds.max.x))).toBeLessThan(Math.abs(shellX));
     door.rotation.y = i % 2 ? -.8 : .8;
     model.updateMatrixWorld(true);
     expect(new T.Box3().setFromObject(skin).isEmpty()).toBe(false);

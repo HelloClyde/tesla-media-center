@@ -75,9 +75,9 @@ export function repairVehicleInterior(model: T.Object3D) {
       const object=new T.Mesh(new RoundedBoxGeometry(w,h,d,2,Math.min(w,h,d)*.35),mat);
       object.position.set(x,y,z);object.castShadow=true;object.receiveShadow=true;panelGroup.add(object);
     }
-    // The inner skin must reach the painted door shell; a thin floating slab
-    // leaves a visible air gap when viewed through the open doorway.
-    part(side*.755,.77,(z0+z1)/2,.15,.58,z1-z0,leather);
+    // Keep the inner skin behind the painted shell. Its former outer edge at
+    // 0.83 m pierced both front doors near the handles when they were closed.
+    part(side*.72,.77,(z0+z1)/2,.12,.58,z1-z0,leather);
     part(side*.672,.88,(z0+z1)/2,.03,.19,(z1-z0)*.86,insert);
     part(side*.64,.73,(z0+z1)/2,.15,.065,(z1-z0)*.65,leather);
     part(side*.669,.97,z1-.18,.02,.035,.14,metal);
