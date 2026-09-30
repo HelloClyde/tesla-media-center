@@ -1,5 +1,6 @@
 """Isolated bounded App BMD download -> named geographic line DTO."""
 import hashlib
+import base64
 import json
 import sys
 import traceback
@@ -35,6 +36,7 @@ def main(payload):
         from tmc_lane_helper import main as lane_main
         return lane_main(payload)
     tiles = payload['tiles']
+    raw_mode = payload.get('format') == 'bmd'
     level = payload.get('level', 14)
     if type(level) is not int or level not in (3, 6, 8, 10, 12, 14, 15):
         raise ValueError('invalid level')
@@ -52,7 +54,7 @@ def main(payload):
                    dict(channel=channel, diu='', sign=sign, output='bin', isolTag=162500, cSrc=1))
     versions = catalog(raw)
     paints = load_paints(ASSETS / 'amap-release.apk', 8 if level == 15 else 2)
-    road_paints = load_paints(ASSETS / 'amap-release.apk', 1) if level != 15 else {}
+    road_paints = load_paints(ASSETS / 'amap-release.apk', 1) if level != 15 and not raw_mode else {}
     host = one(fields(raw), 5).decode()
     # The version service cannot redirect this helper to an arbitrary host.
     if host not in {'https://render-prod-tile.amap.com', 'https://render-prod-backup-tile.amap.com'}:
@@ -72,7 +74,9 @@ def main(payload):
                 response = download(host + '/ws/render/bmd/tile', dict(version=versions[kind], tileType=kind, tileId=identity,
                                     i18nVer=0, ct=1, isolTag=162500, cSrc=1))
                 data = unpack(response, identity, kind)
-                if kind == 5:
+                if raw_mode:
+                    result[field + 'Bmd'] = base64.b64encode(data).decode('ascii')
+                elif kind == 5:
                     result['buildings'], skipped = geographic_buildings(data, (level, x, y), paints) if data else ([], 0)
                     if skipped:
                         result['unsupportedBuildingParts'] = skipped
@@ -94,7 +98,11 @@ def main(payload):
             result['missingLayers'] = failures
         return result
     with ThreadPoolExecutor(max_workers=4) as pool:
-        return {'tiles': list(pool.map(fetch, tiles))}
+        result = {'tiles': list(pool.map(fetch, tiles))}
+        if raw_mode:
+            result['paints'] = {theme: {f'{key[0]}/{key[1]}': stops for key, stops in table.items()}
+                                for theme, table in paints.items()}
+        return result
 
 
 if __name__ == '__main__':

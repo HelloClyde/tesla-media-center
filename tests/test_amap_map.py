@@ -121,6 +121,25 @@ class MapTest(unittest.TestCase):
         self.assertEqual(second.json['data'], first.json['data'])
         self.assertEqual(self.disk.read([(14, 1, 2)])[0][(14, 1, 2)], tile)
 
+    def test_bmd_transport_and_prefetch_share_raw_cache(self):
+        tile = {'level': 14, 'x': 1, 'y': 2, 'collectionBmd': 'YWJj',
+                'surfacesBmd': 'ZGVm', 'transitBmd': '', 'placeLabelsBmd': ''}
+        paints = {'day': {'100/2': [{'color': '#fff'}]}, 'night': {}}
+        output = {'tiles': [tile], 'paints': paints}
+        payload = {'level': 14, 'tiles': [[1, 2]]}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(output).encode())) as run:
+            warm = self.client.post('/api/amap-app/map/bmd/prefetch', json=payload)
+            response = self.client.post('/api/amap-app/map/bmd', json=payload,
+                                        headers={'Accept-Encoding': 'gzip'})
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(json.loads(run.call_args.kwargs['input'])['format'], 'bmd')
+        self.assertEqual(warm.json['data']['tiles'], [{'x': 1, 'y': 2, 'ready': True}])
+        body = json.loads(gzip.decompress(response.data)) if response.headers.get('Content-Encoding') else response.json
+        self.assertEqual(body['data']['tiles'], [tile])
+        self.assertEqual(body['data']['paints'], paints)
+        self.assertEqual(self.disk.read([('raw-v1', 14, 1, 2)])[0][('raw-v1', 14, 1, 2)]['paints'], paints)
+        self.assertEqual(self.client.post('/api/amap-app/map/bmd', json={'level': 15, 'tiles': [[1, 2]]}).status_code, 400)
+
     def test_route_prefetch_does_not_claim_incomplete_tile(self):
         tile = {'level': 14, 'x': 1, 'y': 2, 'missingLayers': ['surfaces']}
         with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [tile]}).encode())):
