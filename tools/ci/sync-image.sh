@@ -5,8 +5,7 @@ set -euo pipefail
 : "${DESTINATION_TAGS:?Missing destination tags}"
 
 # Give the first large upload enough time to complete: interrupted blobs restart
-# on each attempt. Limit concurrent transfers to avoid saturating Aliyun ACR.
-# Existing destination blobs are reused by skopeo.
+# on each attempt. Existing destination blobs are reused by skopeo.
 while IFS= read -r destination; do
   [[ -n "$destination" ]] || continue
   echo "::group::Copy to $destination"
@@ -14,7 +13,7 @@ while IFS= read -r destination; do
   for attempt in 1 2; do
     echo "Attempt $attempt/2 (maximum 20 minutes)"
     if timeout --signal=TERM --kill-after=15s 20m skopeo copy \
-      --preserve-digests --image-parallel-copies 2 --authfile "$HOME/.docker/config.json" \
+      --preserve-digests --authfile "$HOME/.docker/config.json" \
       "docker://$SOURCE_IMAGE@$SOURCE_DIGEST" "docker://$destination"; then
       copied=true
       break
