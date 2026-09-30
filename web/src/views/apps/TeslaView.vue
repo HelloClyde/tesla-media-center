@@ -1257,7 +1257,7 @@ function initVehicleViewer() {
   const loader = new GLTFLoader(manager);
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
-  loader.load('/models/2022_tesla_model_y.glb?v=surface-2-wipers-1', (gltf: { scene: THREE.Group }) => {
+  loader.load('/models/2022_tesla_model_y.glb?v=surface-2-wipers-2', (gltf: { scene: THREE.Group }) => {
     if (vehicleRenderer !== activeRenderer) return;
     const model = gltf.scene;
     repairVehicleInterior(model);
