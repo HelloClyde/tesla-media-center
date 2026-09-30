@@ -16,4 +16,4 @@ The upstream core has no audio output bridge; this port does not claim sound sup
 To rebuild an extracted source.zip independently: `python3 build.py --output ./dist`.
 Browser smoke check: `node tools/gam4980/test.mjs` exercises the bundled ROM boot and an original 6502 diagnostic program (no commercial game required).
 
-The application icon web/public/icon/GAM4980_LOGO.png is the unmodified assets/gam4980-icon.png from the same pinned upstream revision.
+The application icon web/public/icon/GAM4980_LOGO.webp is a 256 px WebP conversion of assets/gam4980-icon.png from the same pinned upstream revision.
