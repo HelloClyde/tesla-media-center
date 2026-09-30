@@ -58,7 +58,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/tmc/ms-playwright
 RUN python -m playwright install --with-deps --no-shell chromium
 
 # Linked COPY layers do not depend on earlier code/dependency layers.
-COPY --link docker_build/amap-assets/ /opt/tmc/amap-app/
+COPY --link docker_build/amap-assets/libserverkey.so docker_build/amap-assets/libamapr.so docker_build/amap-assets/style-day.data docker_build/amap-assets/style-night.data docker_build/amap-assets/signing-certificate.rsa /opt/tmc/amap-app/
 COPY --link --from=tts-assets /assets/ ./web/dist/tts/
 COPY --link --from=model-assets /assets/ ./web/dist/models/
 COPY --link --from=texture-assets /assets/ ./web/dist/textures/

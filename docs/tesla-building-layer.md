@@ -216,7 +216,7 @@ python tools/amap-app/lane_tile_boundaries.py .local-data/amap-app/lane-blocks-b
 
 已接入 Tesla 状态页现有混合地图：底图和建筑先显示，再串行补充当前范围的 level-15 LNDS 车道边界。车辆位置变化触发重载，旧请求取消；离开页面时销毁几何和材质。车道请求失败保留底图，并显示可重试提示。
 
-后端复用 `/api/amap-app/map`，以 `layer: lanes` 区分图层，每次限制一个 level-15 瓦片。`tmc_lane_helper.py` 下载 type-22 块，调用 `lane_native_decoder.py` 执行固定 APK 中的原生解析及几何转换；不是纯 Python 重写。库校验、CRC、堆和执行时间均有界，整个 helper 在独立子进程运行。现有 Release APK 已包含该库，Docker 增加 helper 导入检查，无新增下载资产。
+后端复用 `/api/amap-app/map`，以 `layer: lanes` 区分图层，每次限制一个 level-15 瓦片。`tmc_lane_helper.py` 下载 type-22 块，调用 `lane_native_decoder.py` 执行从固定 APK 单独提取的 `libamapr.so` 原生解析及几何转换；不是纯 Python 重写。库校验、CRC、堆和执行时间均有界，整个 helper 在独立子进程运行。Docker 只复制提取后的库，并检查 helper 导入。
 
 输出仅含去重后的 XY，复用既有磁盘缓存的 TTL、大小限制和清理设置，使用独立 `lanes-v1` 键避免与底图串用。前端将边界裁剪至车辆周围 600 米范围后生成窄带网格。当前为地面上的中性边界线；尚不表达原生虚实线、颜色和高程，不能称为完整高精车道渲染。上节“尚未接入”描述的是离线阶段，已由本节更新；精确坐标配准仍需实车核验。
 

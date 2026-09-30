@@ -25,7 +25,12 @@
 
 ## 本机依赖
 
-Python 3.11+，安装可选依赖 `python -m pip install -r tools/amap-app/requirements.txt`。本机研究资源 `amap-release.apk` 和 `libserverkey.so` 放在 `.local-data/amap-app/`，或设置服务端 `TMC_AMAP_APP_ASSETS`。固定 SHA 校验；不随代码/镜像分发 APK 或反编译产物。WSL 服务环境已安装依赖并启动。
+Python 3.11+，安装可选依赖 `python -m pip install -r tools/amap-app/requirements.txt`。
+研究用完整 APK 放在 `.local-data/amap-app/`；运行时资源用
+`python tools/amap-app/release_assets.py` 提取到 `docker_build/amap-assets/`，
+本地运行默认读取该目录；也可用 `TMC_AMAP_APP_ASSETS` 指定其他目录。
+固定 SHA 校验。
+镜像只包含提取后的运行资源，不包含完整 APK。
 
 ## 验收与限制
 
@@ -79,28 +84,21 @@ Python 3.11+，安装可选依赖 `python -m pip install -r tools/amap-app/requi
 `hashlib.file_digest`），构建时检查辅助模块能否导入。必须重新构建/拉取新版
 镜像并重建容器，仅重启旧容器不会补入文件。
 
-APK 和原生库仍不打进公开镜像。部署前须将经过校验的 `amap-release.apk`
-及 `libserverkey.so` 放到服务器专用目录，并只读挂载。例如将服务器上的
-`/opt/tmc/amap-app` 挂载到容器 `/opt/amap-app`，设置
-`TMC_AMAP_APP_ASSETS=/opt/amap-app`：
-
-```text
---mount type=bind,src=/opt/tmc/amap-app,dst=/opt/amap-app,readonly
--e TMC_AMAP_APP_ASSETS=/opt/amap-app
-```
-
-这两项需合并到已有容器部署参数，保留原有端口、配置和数据卷。
-资源版本必须匹配 `tools/amap-app/tmc_route_helper.py` 中的 SHA-256；
-资源未挂载时，即使脚本及依赖齐全，地图仍不能工作。
+镜像内固定路径 `/opt/tmc/amap-app` 包含五个已校验的运行资源：
+`libserverkey.so`、`libamapr.so`、`style-day.data`、`style-night.data`
+和 `signing-certificate.rsa`。部署时无需挂载 APK。
 
 
 ## Release 依赖打包（替代上面的手工挂载步骤）
 
-镜像工作流现在从固定 Release `amap-runtime-17.00.0.2005` 下载两个运行资源，
-使用 `tmc_route_helper.py` 的固定 SHA-256 校验；缺失或校验不一致立即终止构建。
-Docker 将资源复制至 `/opt/tmc/amap-app` 并再次校验，默认设置
-`TMC_AMAP_APP_ASSETS=/opt/tmc/amap-app`。新版镜像无需再手工挂载资源。
-若旧部署显式设置了该环境变量或挂载资源目录，需移除旧覆盖或确保路径有效。
+镜像工作流从固定 Release `amap-runtime-17.00.0.2005` 下载并验证
+195,437,758 字节的源 APK，保存于不进入 Docker 上下文的 `.local-data/`。
+随后只提取上述四个 APK 内资源，另下载并校验 `libserverkey.so`；
+语音构建读取同一源 APK，提取浏览器需要的模型。Docker 仅复制五个
+服务端资源至 `/opt/tmc/amap-app` 并再次校验，总计 29,464,195 字节
+（约 28.1 MiB）。旧版本完整 APK 为约 186.4 MiB。
+若旧部署显式设置了 `TMC_AMAP_APP_ASSETS` 或挂载旧资源目录，
+需移除旧覆盖或按新版文件清单准备该目录。
 
 本地手工构建前运行（Python 3.11+）：
 
@@ -109,7 +107,8 @@ python tools/amap-app/release_assets.py
 docker build -f docker_build/Dockerfile .
 ```
 
-下载目录 `docker_build/amap-assets/` 不进入 Git，但会进入 Docker 构建上下文。
+提取目录 `docker_build/amap-assets/` 不进入 Git；Dockerfile 只复制
+列明的五个文件。完整 APK 留在被 `.dockerignore` 排除的 `.local-data/`。
 Release 版本与哈希固定，不跟随 latest；升级资源需同时更新版本及校验值。
 
 

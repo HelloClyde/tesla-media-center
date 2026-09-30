@@ -53,8 +53,8 @@ def main(payload):
     raw = download('https://m5.amap.com/ws/render/bmd/version/',
                    dict(channel=channel, diu='', sign=sign, output='bin', isolTag=162500, cSrc=1))
     versions = catalog(raw)
-    paints = load_paints(ASSETS / 'amap-release.apk', 8 if level == 15 else 2)
-    road_paints = load_paints(ASSETS / 'amap-release.apk', 1) if level != 15 and not raw_mode else {}
+    paints = load_paints(ASSETS, 8 if level == 15 else 2)
+    road_paints = load_paints(ASSETS, 1) if level != 15 and not raw_mode else {}
     host = one(fields(raw), 5).decode()
     # The version service cannot redirect this helper to an arbitrary host.
     if host not in {'https://render-prod-tile.amap.com', 'https://render-prod-backup-tile.amap.com'}:

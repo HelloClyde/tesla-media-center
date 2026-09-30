@@ -40,7 +40,7 @@ jobs:
           cache: pip
           cache-dependency-path: tools/amap-app/requirements.txt
 
-      - name: Download and verify pinned Amap runtime
+      - name: Extract and verify pinned AMap server resources
         timeout-minutes: 5
         run: python tools/amap-app/release_assets.py
 
