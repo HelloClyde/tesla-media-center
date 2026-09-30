@@ -17,6 +17,7 @@ import { repairVehicleInterior } from './teslaInterior';
 import { createVehicleLights } from './teslaLights';
 import { createVehicleStreet } from './teslaStreet';
 import { createVehicleRoadMesh, ROAD_TEXTURE_LENGTH } from './teslaRoad';
+import { visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
 function savedAppearance() {
@@ -154,8 +155,6 @@ const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
 const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
-const MOTION_REFERENCE_SPEED_KMH = 60;
-const MOTION_MAX_SPEED_SCALE = 3;
 
 type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
 
@@ -636,23 +635,24 @@ function detectVehicleWheelMeshes(model: THREE.Object3D, modelBounds: THREE.Box3
 }
 
 function getVehicleMotionProfile() {
-  const speedScale = Math.min(currentVehicleSpeedKmh.value / MOTION_REFERENCE_SPEED_KMH, MOTION_MAX_SPEED_SCALE);
+  const speedKmh = currentVehicleSpeedKmh.value;
+  const visualSpeedMps = visualTravelSpeedMps(speedKmh);
   if (currentShiftState.value === 'D') {
     return {
       active: true,
       direction: -1,
-      moving: speedScale > 0,
-      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / ROAD_TEXTURE_LENGTH,
-      wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
+      moving: visualSpeedMps > 0,
+      roadSpeed: visualSpeedMps / ROAD_TEXTURE_LENGTH,
+      wheelSpeed: wheelAngularSpeed(speedKmh),
     };
   }
   if (currentShiftState.value === 'R') {
     return {
       active: true,
       direction: 1,
-      moving: speedScale > 0,
-      roadSpeed: currentVehicleSpeedKmh.value / 3.6 / ROAD_TEXTURE_LENGTH,
-      wheelSpeed: currentVehicleSpeedKmh.value / 3.6 / 0.36,
+      moving: visualSpeedMps > 0,
+      roadSpeed: visualSpeedMps / ROAD_TEXTURE_LENGTH,
+      wheelSpeed: wheelAngularSpeed(speedKmh),
     };
   }
   return {
