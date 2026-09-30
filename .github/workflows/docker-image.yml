@@ -53,11 +53,6 @@ jobs:
           python -m pip install -r tools/tts/requirements.txt
           python tools/tts/prepare_assets.py
 
-      - name: Set up QEMU for the ARM64 backend
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -89,11 +84,13 @@ jobs:
           push: true
           # Aliyun does not accept Buildx provenance attestation manifests.
           provenance: false
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           tags: ${{ steps.meta-ghcr.outputs.tags }}
           labels: ${{ steps.meta-ghcr.outputs.labels }}
-          cache-from: type=gha,scope=tmc-multiarch
-          cache-to: type=gha,scope=tmc-multiarch,mode=max,ignore-error=true,timeout=5m
+          cache-from: |
+            type=gha,scope=tmc-amd64
+            type=gha,scope=tmc-multiarch
+          cache-to: type=gha,scope=tmc-amd64,mode=max,ignore-error=true,timeout=5m
 
   sync-aliyun:
     name: Sync published image to Aliyun
@@ -137,7 +134,7 @@ jobs:
             type=sha
 
       # Copy by immutable digest; rerunning only this failed job never rebuilds.
-      - name: Copy both architectures with bounded retries
+      - name: Copy AMD64 image with bounded retries
         timeout-minutes: 45
         env:
           REPOSITORY: ${{ github.repository }}
