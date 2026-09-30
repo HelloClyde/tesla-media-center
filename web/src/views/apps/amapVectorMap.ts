@@ -141,7 +141,10 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     const tiles = visible();
     draw(tiles);
     if (!tiles.length) { report('路线总览 · 放大后显示道路详情'); return; }
-    const missing = tiles.filter(needsTile);
+    // Show the broad overview first, then the current street detail before
+    // filling in intermediate source levels. Drawing still uses source order.
+    const missing = tiles.filter(needsTile).sort((a, b) =>
+      a[0] === b[0] ? 0 : a[0] === 3 ? -1 : b[0] === 3 ? 1 : b[0] - a[0]);
     const prefetch = missing.length === 0;
     const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
     if (!candidates.length) {

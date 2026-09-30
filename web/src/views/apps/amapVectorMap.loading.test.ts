@@ -47,3 +47,14 @@ it('backs off failed tiles instead of looping on the same request', async () => 
   expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
   layer.dispose();
 });
+it('loads overview and visible street detail before intermediate levels', async () => {
+  vi.useFakeTimers();
+  post.mockImplementation(async (_url, batch) => ({ status: 200, data: { status: 'ok', data: {
+    tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
+  } } }));
+  const { map } = fakeMap();
+  const layer = attachAppMap(map, vi.fn());
+  await vi.advanceTimersByTimeAsync(350);
+  expect(post.mock.calls.slice(0, 3).map(call => call[1].level)).toEqual([3, 14, 12]);
+  layer.dispose();
+});
