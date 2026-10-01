@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+import { GPS_SPEED_MAX_AGE_MS, speedFromGpsFix, visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+
+it('uses fresh GPS metres per second and never substitutes an invalid fix', () => {
+  const now = 100000;
+  expect(speedFromGpsFix(0, now, now)).toBe(0);
+  expect(speedFromGpsFix(5, now - 1000, now)).toBe(18);
+  expect(speedFromGpsFix(null, now, now)).toBeNull();
+  expect(speedFromGpsFix(-1, now, now)).toBeNull();
+  expect(speedFromGpsFix(5, now - GPS_SPEED_MAX_AGE_MS - 1, now)).toBeNull();
+});
 
 describe('wheelAngularSpeed', () => {
   it('stops the wheels at zero speed', () => {

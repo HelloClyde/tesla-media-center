@@ -18,7 +18,8 @@ import { repairVehicleInterior } from './teslaInterior';
 import { createVehicleLights } from './teslaLights';
 import { createVehicleStreet } from './teslaStreet';
 import { createVehicleRoadMesh, ROAD_TEXTURE_LENGTH } from './teslaRoad';
-import { visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+import { GPS_SPEED_MAX_AGE_MS, speedFromGpsFix, visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
 function savedAppearance() {
@@ -242,6 +243,19 @@ const state = reactive({
   pageExposed: true,
 });
 
+const geoLocation = useGeoLocationStore();
+const gpsSpeedKmh = ref<number | null>(null);
+let gpsSpeedExpiry: number | undefined;
+function receiveGpsSpeed(position: GeoLocation) {
+  if (position.source !== 'gps') return;
+  const speed = speedFromGpsFix(position.speed, position.timestamp);
+  if (speed === null) return;
+  gpsSpeedKmh.value = speed;
+  window.clearTimeout(gpsSpeedExpiry);
+  gpsSpeedExpiry = window.setTimeout(() => { gpsSpeedKmh.value = null; },
+    Math.max(0, GPS_SPEED_MAX_AGE_MS - (Date.now() - position.timestamp)));
+}
+
 const selectedVehicle = computed(() => {
   return state.vehicles.find((item: any) => item.vin === state.selectedVin) || null;
 });
@@ -265,8 +279,9 @@ const currentShiftState = computed(() => {
   }
   const shift = String(state.latestSample?.shift_state || '').toUpperCase();
   if (shift === 'D' || shift === 'R' || shift === 'P') {
-    return shift;
+    if (shift !== 'P' || gpsSpeedKmh.value === null || gpsSpeedKmh.value < 2) return shift;
   }
+  if (gpsSpeedKmh.value !== null && gpsSpeedKmh.value >= 2) return 'D';
   if (String(state.latestSample?.vehicle_state || '').toLowerCase() === 'driving') {
     return 'D';
   }
@@ -296,11 +311,7 @@ const vehicleVisualStatus = computed(() => {
 });
 
 const currentVehicleSpeedKmh = computed(() => {
-  const rawSpeed = Number(state.latestSample?.speed);
-  if (!Number.isFinite(rawSpeed)) {
-    return 0;
-  }
-  return Math.max(0, rawSpeed) * (/mph|mi\/h/i.test(String(state.latestSample?.speed_unit)) ? 1.609344 : 1);
+  return gpsSpeedKmh.value ?? 0;
 });
 
 const RAW_COLUMN_ORDER = [
@@ -1777,6 +1788,10 @@ function renderTrackOnMap() {
 }
 
 onMounted(() => {
+  geoLocation.addListener('tesla-status-speed', receiveGpsSpeed);
+  const cachedGps = geoLocation.getCurPosition();
+  if (cachedGps) receiveGpsSpeed(cachedGps);
+  geoLocation.init();
   void refreshWeather();weatherTimer=window.setInterval(()=>void refreshWeather(),15*60*1000);
   document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
   Promise.all([loadSettings(), refreshActiveTabData({ immediate: true })]).finally(() => {
@@ -1795,6 +1810,8 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  geoLocation.removeListener('tesla-status-speed');
+  window.clearTimeout(gpsSpeedExpiry);
   weatherRequest?.abort();weatherRequest=undefined;window.clearInterval(weatherTimer);
   document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
   stopAutoSyncTimer();
@@ -1847,11 +1864,11 @@ watch(currentShiftState, () => {
             <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading" element-loading-text="正在加载车辆、场景与贴图…" element-loading-background="#111c26">
               <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
               <div v-else class="vehicle-visual-shell" :class="{ 'vehicle-visual-shell--loading': state.visualLoading }" :aria-busy="state.visualLoading">
-                <div class="vehicle-speed-hud" aria-label="当前车速">
-                  <span class="vehicle-speed-hud__label">车速</span>
+                <div class="vehicle-speed-hud" aria-label="当前 GPS 车速" :title="gpsSpeedKmh === null ? '等待车机 GPS 速度' : '车机 GPS 速度'">
+                  <span class="vehicle-speed-hud__label">GPS 车速</span>
                   <div class="vehicle-speed-hud__reading">
-                    <strong>{{ state.latestSample?.speed != null && Number.isFinite(Number(state.latestSample.speed)) ? Math.round(Math.max(0, Number(state.latestSample.speed))) : '—' }}</strong>
-                    <span>{{ state.latestSample?.speed_unit || 'km/h' }}</span>
+                    <strong>{{ gpsSpeedKmh === null ? '—' : Math.round(gpsSpeedKmh) }}</strong>
+                    <span>km/h</span>
                   </div>
                 </div>
                 <div class="vehicle-visual-overlay">
