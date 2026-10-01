@@ -92,7 +92,7 @@ async function refreshWeather(){
   finally {window.clearTimeout(timeout);}
 }
 const headlights = ref(false);
-watch(headlights, value => { vehicleLights?.setEnabled(value); renderVehicleViewer(); });
+watch(headlights, value => { vehicleLights?.setEnabled(value); renderVehicleViewer(false); });
 let vehicleStreet: ReturnType<typeof createVehicleStreet> | undefined;
 let sunLight: THREE.DirectionalLight | undefined;
 let skyLight: THREE.HemisphereLight | undefined;
@@ -109,8 +109,8 @@ function updateSceneLighting() {
   vehicleStreet?.setNight(night);
   vehicleWeather?.set(activeWeather.value,night);
   if(vehicleRoadMesh)applyWeatherLighting(vehicleScene,sunLight,vehicleSky,vehicleRoadMesh,activeWeather.value,night);
-  streetReflectionsDirty = true;
-  renderVehicleViewer();
+  // Reuse the captured streetscape; a six-face recapture stalls the UI on each toggle.
+  renderVehicleViewer(false);
 }
 watch(sceneNight, () => { headlights.value = sceneNight.value; updateSceneLighting(); try { localStorage.setItem('tmc.tesla.scene-night', String(sceneNight.value)); } catch { /* Optional persistence. */ } });
 let vehicleCamera: THREE.PerspectiveCamera | null = null;
@@ -1340,7 +1340,6 @@ function renderVehicleViewer(refreshShadows = true) {
     const position=vehicleModelRoot.getWorldPosition(new THREE.Vector3());position.y+=1.3;
     const reflection=captureStreetReflections(vehicleRenderer,vehicleScene,vehicleModelRoot,position);
     vehicleScene.environment=reflection.texture;
-    vehicleScene.environmentIntensity=.7;
     vehicleEnvironment?.dispose();vehicleEnvironment=reflection;
   }
   vehicleRenderer.render(vehicleScene, vehicleCamera);

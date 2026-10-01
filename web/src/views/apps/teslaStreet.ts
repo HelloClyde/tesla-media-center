@@ -72,11 +72,15 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
   const haloMaterial=new T.SpriteMaterial({map:haloTexture,color:'#ffe4b8',transparent:true,opacity:.9,depthWrite:false,blending:T.AdditiveBlending});
   let parked = true, nightMode = false;
   function updateLampVisibility() {
-    // At night the near pair must remain visible; distant poles disappear into fog.
-    for (const lamp of lampGroups) lamp.visible = nightMode || !parked || Math.abs(lamp.position.z) >= 15;
+    // Keep light objects in the scene in both modes so material shaders do not
+    // recompile when night is toggled. Hide only the near poles while parked.
+    for (const lamp of lampGroups) {
+      const showPole = nightMode || !parked || Math.abs(lamp.position.z) >= 15;
+      for (const child of lamp.children) if (child instanceof T.Mesh) child.visible = showPole;
+    }
     // Two shadowless lights are enough to shade the car without multiplying shadow work.
-    const nearest = lamps.filter(light => light.parent?.visible).sort((a,b) => Math.abs(a.parent!.position.z) - Math.abs(b.parent!.position.z)).slice(0,2);
-    for (const light of lamps) light.visible = nightMode && nearest.includes(light);
+    const nearest = [...lamps].sort((a,b) => Math.abs(a.parent!.position.z) - Math.abs(b.parent!.position.z)).slice(0,2);
+    for (const light of lamps) light.visible = nearest.includes(light);
   }
   for (const side of [-1, 1]) {
     parent = group;
