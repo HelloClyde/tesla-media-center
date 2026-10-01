@@ -30,8 +30,8 @@ def packed(values):
     return result
 
 
-def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), facility=None):
-    segment = msg(f1=2, f4=msg(f1=packed(xs), f2=packed(ys)),
+def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), facility=None, assistant_action=0):
+    segment = msg(f1=2, f2=assistant_action, f4=msg(f1=packed(xs), f2=packed(ys)),
                   **({'f5': msg(f1=200, f2=8500, f3=b'G60', f4=facility.encode())} if facility else {}))
     protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500, f10=segment)))
     size = 64 + len(protobuf)
@@ -57,6 +57,11 @@ class RouteV51Test(unittest.TestCase):
 
     def test_negative_delta(self):
         self.assertEqual(decode(fixture(xs=(116.401, 116.4)))[0]['path'][-1][0], 116.4)
+
+    def test_decodes_middle_fork_assistant_action(self):
+        step = decode(fixture(assistant_action=6))[0]['steps'][0]
+        self.assertEqual(step['actionCode'], 2)
+        self.assertEqual(step['assistantActionCode'], 6)
 
     def test_service_area_only_from_facility_label(self):
         self.assertEqual(decode(fixture(facility='长安服务区'))[0]['steps'][0]['serviceArea'], '长安服务区')

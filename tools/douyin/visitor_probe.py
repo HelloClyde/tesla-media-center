@@ -6,6 +6,9 @@ QuickJS context. Cookie values stay in memory and are never printed.
 """
 
 import argparse
+import base64
+import binascii
+import hashlib
 import json
 import re
 from urllib.parse import quote, urlencode
@@ -22,6 +25,30 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+WAF_CHALLENGE = re.compile(r'var\s+wci="_wafchallengeid",cs="([A-Za-z0-9+/=]+)"')
+
+
+def waf_challenge_cookie(page: str) -> str:
+    """Solve the bounded proof-of-work challenge served to some server IPs."""
+    if len(page) > 20_000 or '_wafchallengeid' not in page or 's256(prefix,""+i)' not in page:
+        raise ValueError("Unrecognized WAF challenge")
+    match = WAF_CHALLENGE.search(page)
+    if not match:
+        raise ValueError("Unrecognized WAF challenge")
+    try:
+        challenge = json.loads(base64.b64decode(match[1] + '=' * (-len(match[1]) % 4), validate=True))
+        data = challenge['v']
+        prefix = base64.b64decode(data['a'] + '=' * (-len(data['a']) % 4), validate=True)
+        expected = base64.b64decode(data['c'] + '=' * (-len(data['c']) % 4), validate=True)
+    except (ValueError, KeyError, TypeError, UnicodeDecodeError, binascii.Error) as error:
+        raise ValueError("Malformed WAF challenge") from error
+    if len(prefix) != 32 or len(expected) != 32:
+        raise ValueError("Malformed WAF challenge")
+    for candidate in range(1_000_001):
+        if hashlib.sha256(prefix + str(candidate).encode('ascii')).digest() == expected:
+            challenge['d'] = base64.b64encode(str(candidate).encode('ascii')).decode('ascii')
+            return base64.b64encode(json.dumps(challenge, separators=(',', ':')).encode()).decode('ascii')
+    raise ValueError("WAF challenge could not be solved")
 
 
 def challenge_cookies(html: str, nonce: str) -> dict[str, str]:
@@ -72,6 +99,12 @@ def create_visitor_session():
     response = session.get(HOME, timeout=20)
     if response.status_code != 200 or response.url != HOME:
         raise ValueError("Initial page request was rejected")
+    if '_wafchallengeid' in response.text:
+        session.cookies.set('_wafchallengeid', waf_challenge_cookie(response.text),
+                            domain='www.douyin.com', path='/')
+        response = session.get(HOME, timeout=20)
+        if response.status_code != 200 or response.url != HOME:
+            raise ValueError("WAF challenge retry was rejected")
     nonce = session.cookies.get("__ac_nonce")
     for name, value in challenge_cookies(response.text, nonce).items():
         session.cookies.set(name, value, domain=".douyin.com", path="/")
