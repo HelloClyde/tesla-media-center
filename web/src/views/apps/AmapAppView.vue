@@ -171,7 +171,7 @@ watchEffect(() => {
 });
 onDeactivated(() => {
   cancelPositionAnimation();
-  viewActive.value = false; appMap?.setActive(false); cancelSearch();
+  viewActive.value = false; appMap?.setActive(false); appMap?.releaseMemory(); cancelSearch();
   if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
 });
 watch(show3D, enabled => {

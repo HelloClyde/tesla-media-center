@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -44,6 +44,9 @@ const rawTableWrapRef = ref<HTMLElement | null>(null);
 const rawTableRef = ref<any>(null);
 
 let mapInstance: any = null;
+let teslaPageDisposed = false;
+let trackMapGeneration = 0;
+let trackMapLoading = false;
 let polylines: any[] = [];
 let vehicleMarker: any = null;
 let trackRenderVersion = 0;
@@ -1625,6 +1628,7 @@ function disposeVehicleViewer() {
     vehicleControls = null;
   }
   if (vehicleRenderer) {
+    vehicleRenderer.forceContextLoss();
     vehicleRenderer.dispose();
     vehicleRenderer.domElement.remove();
   }
@@ -1685,7 +1689,11 @@ function logoutTesla() {
 }
 
 function initMap() {
+  if (mapInstance || trackMapLoading || teslaPageDisposed || state.activeTab !== 'track') return;
+  const generation = ++trackMapGeneration;
+  trackMapLoading = true;
   getAMap().then((AMap) => {
+    if (teslaPageDisposed || generation !== trackMapGeneration || state.activeTab !== 'track') return;
     gAMap = AMap;
     if (!mapContainer.value) {
       return;
@@ -1699,9 +1707,23 @@ function initMap() {
     state.mapReady = true;
     renderTrackOnMap();
   }).catch((error) => {
+    if (teslaPageDisposed || generation !== trackMapGeneration) return;
     console.error(error);
     state.mapError = '高德地图初始化失败，请检查 Key 配置';
+  }).finally(() => {
+    if (generation === trackMapGeneration) trackMapLoading = false;
   });
+}
+function destroyTrackMap() {
+  trackMapGeneration++;
+  trackMapLoading = false;
+  trackRenderVersion++;
+  mapInstance?.destroy?.();
+  mapInstance = null;
+  gAMap = null;
+  polylines = [];
+  vehicleMarker = null;
+  state.mapReady = false;
 }
 
 function renderTrackOnMap() {
@@ -1824,7 +1846,7 @@ onMounted(() => {
   Promise.all([loadSettings(), refreshActiveTabData({ immediate: true })]).finally(() => {
     restartAutoSyncTimer();
   });
-  initMap();
+  if (state.activeTab === 'track') nextTick(initMap);
   nextTick(() => {
     if (state.activeTab === 'status') {
       initVehicleViewer();
@@ -1836,7 +1858,9 @@ onMounted(() => {
   });
 });
 
-onUnmounted(() => {
+onBeforeUnmount(() => {
+  teslaPageDisposed = true;
+  destroyTrackMap();
   geoLocation.removeListener('tesla-status-speed');
   if (gpsSpeedWatchId !== undefined) navigator.geolocation?.clearWatch(gpsSpeedWatchId);
   window.clearTimeout(gpsSpeedExpiry);
@@ -1870,12 +1894,13 @@ watch(() => state.activeTab, (tabName) => {
   }
   if (tabName === 'track') {
     nextTick(() => {
+      initMap();
       if (mapInstance && typeof mapInstance.resize === 'function') {
         mapInstance.resize();
       }
       renderTrackOnMap();
     });
-  }
+  } else destroyTrackMap();
 });
 
 watch(currentShiftState, () => {

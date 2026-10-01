@@ -306,7 +306,12 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       routeTiles = nextRoute ? routeCorridorTiles(nextRoute, progress) : [];
       if (active) schedule();
     },
-    retry: () => { failures.clear(); void load(); }, dispose() {
+    retry: () => { failures.clear(); void load(); }, releaseMemory() {
+    renderQueue.cancel();
+    cache.clear(); rendered.clear();
+    surfaces.clearLayers(); roads.clearLayers(); labels.clearLayers();
+    bmdWorker?.terminate(); bmdWorker = undefined;
+  }, dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
     bmdWorker?.terminate(); bmdWorker = undefined;
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
