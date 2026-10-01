@@ -28,6 +28,17 @@ describe('navigation geometry', () => {
     fork.steps[0].maneuver = undefined;
     expect(instruction(fork, 30).text).toBe('继续直行');
   });
+  it('distinguishes the three branches from a straight road', () => {
+    const fork: AppRoute = { ...route, steps: [{ start: 0, end: 1, road: '主路', maneuver: 'fork-middle' },
+      { start: 1, end: 2, road: '中间岔路' }] };
+    expect(instruction(fork, 30).text).toBe('走中间岔路');
+    fork.steps[0].maneuver = 'fork-left';
+    expect(instruction(fork, 30).text).toBe('走左侧岔路');
+    fork.steps[0].maneuver = 'fork-right';
+    expect(instruction(fork, 30).text).toBe('走右侧岔路');
+    const straight: AppRoute = { ...route, path: [[116, 39], [116, 39.001], [116, 39.002]] };
+    expect(instruction(straight, 30).text).toBe('继续直行');
+  });
   it('does not match or interpolate an omitted junction connector', () => {
     const disconnected: AppRoute = { ...route, path: [[116, 39], [116, 39.001], [116.01, 39.001], [116.011, 39.001]], breaks: [2] };
     const lengths = cumulative(disconnected);

@@ -226,6 +226,7 @@ def decode(raw, origin=None, destination=None):
             service_area = service_area_name(segment)
             steps.append({"road": current_road, "start": start_index, "end": len(path) - 1,
                           "distance": round(length, 1), "actionCode": one(segment, 1, 0),
+                          "assistantActionCode": one(segment, 2, 0),
                           **({'serviceArea': service_area} if service_area else {})})
             measured += length
         if not steps or len(path) > 100000:

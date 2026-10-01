@@ -1,5 +1,5 @@
 export type Point = [number, number];
-export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' }
+export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' | 'fork-left' | 'fork-middle' | 'fork-right' }
 export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
@@ -51,7 +51,10 @@ export function instruction(route: AppRoute, progress: number) {
   const angle = ((bearing(c, d) - bearing(a, b) + 540) % 360) - 180;
   const text = step.maneuver === 'left' ? '左转' : step.maneuver === 'right' ? '右转'
     : step.maneuver === 'bear-left' ? '靠左行驶' : step.maneuver === 'bear-right' ? '靠右行驶'
+    : step.maneuver === 'fork-left' ? '走左侧岔路' : step.maneuver === 'fork-middle' ? '走中间岔路'
+    : step.maneuver === 'fork-right' ? '走右侧岔路'
     : Math.abs(angle) > 150 ? '掉头' : angle > 35 ? '右转' : angle < -35 ? '左转' : '继续直行';
-  return { text, arrow: text === '右转' || text === '靠右行驶' ? '↱' : text === '左转' || text === '靠左行驶' ? '↰' : text === '掉头' ? '↶' : '↑', road: next.road,
+  return { text, arrow: text === '右转' || text === '靠右行驶' || text === '走右侧岔路' ? '↱'
+    : text === '左转' || text === '靠左行驶' || text === '走左侧岔路' ? '↰' : text === '掉头' ? '↶' : '↑', road: next.road,
     distance: Math.max(0, values[step.end] - progress), key: stepIndex };
 }

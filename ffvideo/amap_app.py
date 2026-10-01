@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "tools/amap-app/tmc_route_helper.py"
 PROBE_LOCK = threading.Lock()
 MANEUVERS = {1: 'left', 2: 'right', 3: 'bear-left', 4: 'bear-right'}
+FORK_ACTIONS = {6: 'fork-middle', 7: 'fork-right', 8: 'fork-left'}
 
 
 def validate_point(value):
@@ -69,7 +70,11 @@ def invoke_helper(payload=None):
                 # v5.1 segment.1 is the maneuver at this segment's exit.
                 # Only codes verified against live route geometry are exposed.
                 action = step.get('actionCode')
-                if type(action) is int and action in MANEUVERS:
+                assistant_action = step.get('assistantActionCode')
+                # A fork instruction is more specific than its primary straight/turn action.
+                if type(assistant_action) is int and assistant_action in FORK_ACTIONS:
+                    safe_step['maneuver'] = FORK_ACTIONS[assistant_action]
+                elif type(action) is int and action in MANEUVERS:
                     safe_step['maneuver'] = MANEUVERS[action]
                 service_area = step.get('serviceArea')
                 if service_area is not None:
