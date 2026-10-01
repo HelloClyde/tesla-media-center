@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { navigationEngine, navigationEngineNotice } from '@/functions/navigationEngine';
 import { createRouteFusion, type FusionPosition } from './amapRouteFusion';
+import { navigationViewport } from './amapNavigationViewport';
+import { remainingRouteSections } from './amapRemainingRoute';
 import { findParallelRoute, type RoadKind } from './amapParallelRoad';
 import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
@@ -52,6 +54,26 @@ const heading = ref<number>();
 const displayedPosition = ref<Point>(), displayedHeading = ref(0);
 const positionTransition = createPositionTransition();
 let positionFrame: number | undefined;
+let lastAutoZoomAt = -Infinity;
+function followPosition(point: Point, now: number) {
+  if (!map || !following.value) return;
+  applyOrientation();
+  const navigation = mode.value !== 'idle' && !overviewActive.value;
+  const headingUp = navigation && orientation.value === 'heading';
+  if (navigation) {
+    const target = navigationViewport(liveSpeed.value).zoom;
+    const current = map.getZoom();
+    if (Math.abs(target - current) >= .3 && now - lastAutoZoomAt >= 1200) {
+      map.setZoom(current + Math.max(-.5, Math.min(.5, target - current)), { animate: false });
+      lastAutoZoomAt = now;
+    }
+  }
+  const size = map.getSize();
+  const wanted = L.point(size.x / 2, size.y * (headingUp ? navigationViewport(liveSpeed.value).vehicleY : .5));
+  const actual = map.latLngToContainerPoint(latLng(point));
+  const shift = actual.subtract(wanted);
+  if (Math.abs(shift.x) > 1 || Math.abs(shift.y) > 1) map.panBy(shift, { animate: false });
+}
 function cancelPositionAnimation() {
   if (positionFrame !== undefined) cancelAnimationFrame(positionFrame);
   positionFrame = undefined;
@@ -66,8 +88,7 @@ function animatePosition(point: Point, snap = false) {
     displayedPosition.value = value.point; displayedHeading.value = value.heading;
     marker?.setLatLng(latLng(value.point));
     if (following.value) {
-      applyOrientation();
-      map.panTo(latLng(value.point), { animate: false });
+      followPosition(value.point, now);
     } else marker?.setRotation(value.heading * Math.PI / 180);
     if (!positionTransition.done(now)) positionFrame = requestAnimationFrame(frame);
   };
@@ -110,7 +131,11 @@ function followLocation() {
     heading.value = bearingBetween(pointAt(current.value, progress.value), ahead);
   }
   applyOrientation();
-  if (map && (location.value || hasOrigin.value)) map.setView(latLng(location.value || current.value?.path[0] || origin.value), 17);
+  if (map && (location.value || hasOrigin.value)) {
+    map.setView(latLng(location.value || current.value?.path[0] || origin.value),
+      mode.value !== 'idle' ? navigationViewport(liveSpeed.value).zoom : 17, { animate: false });
+    lastAutoZoomAt = performance.now();
+  }
   if (location.value) animatePosition(location.value, true);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
@@ -131,6 +156,19 @@ function serviceAreaDistance(area: UpcomingServiceArea) {
 }
 const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
 let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
+let renderedLineProgress = -Infinity;
+type LineState = 'past' | 'active' | 'future';
+let lineStates: LineState[] = [];
+function routeLineStates(route: AppRoute, distance: number): LineState[] {
+  const lengths = cumulative(route), bounds = [0, ...route.breaks, route.path.length];
+  const states: LineState[] = [];
+  for (let index = 1; index < bounds.length; index++) {
+    const from = bounds[index - 1], to = bounds[index];
+    if (to - from < 2) continue;
+    states.push(distance >= lengths[to - 1] ? 'past' : distance <= lengths[from] ? 'future' : 'active');
+  }
+  return states;
+}
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -240,18 +278,31 @@ function endpoints() {
 function draw(fit = true) {
   if (!map || !viewActive.value) return;
   lines.forEach(line => line.remove()); lines = [];
+  lineStates = [];
   routes.value.forEach((route, index) => {
-    const chunks = [0, ...route.breaks, route.path.length];
-    for (let i = 1; i < chunks.length; i++) {
-      const path = route.path.slice(chunks[i - 1], chunks[i]);
-      if (path.length < 2) continue;
+    if (mode.value !== 'idle' && index !== selected.value) return;
+    const sections = remainingRouteSections(route, mode.value === 'idle' ? 0 : progress.value);
+    if (mode.value !== 'idle') lineStates = routeLineStates(route, progress.value);
+    for (const path of sections) {
       lines.push(L.polyline(path.map(latLng), { color: index === selected.value ? '#12bc87' : '#8aa1b3', weight: index === selected.value ? 8 : 5,
         opacity: index === selected.value ? 1 : .55, lineJoin: 'round', lineCap: 'round' }).addTo(map));
     }
   });
+  renderedLineProgress = progress.value;
   endpoints();
   appMap?.setRoute(current.value, progress.value);
   if (fit && lines.length) void overview();
+}
+function trimDrivenRoute() {
+  if (mode.value === 'idle' || !current.value || Math.abs(progress.value - renderedLineProgress) < 8) return;
+  const sections = remainingRouteSections(current.value, progress.value);
+  if (sections.length !== lines.length) { draw(false); return; }
+  const states = routeLineStates(current.value, progress.value);
+  sections.forEach((section, index) => {
+    if (states[index] === 'active' || states[index] !== lineStates[index]) lines[index].setLatLngs(section.map(latLng));
+  });
+  lineStates = states;
+  renderedLineProgress = progress.value;
 }
 function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; announcedServiceAreas.clear(); draw(); }
 function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
@@ -341,6 +392,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     return;
   }
   offCount = 0; progress.value = fusion?.progress ?? (recovered ? match.progress : Math.max(progress.value, match.progress));
+  trimDrivenRoute();
   appMap?.setRoute(current.value, progress.value);
   if (recovered) spoken = '';
   status.value = mode.value === 'demo' ? '模拟导航 · 非车辆实时位置'
@@ -403,7 +455,7 @@ function startDemo() {
   if (!current.value) return;
   stop(); orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
   headingAnchor = current.value.path[0]; heading.value = bearingBetween(headingAnchor, pointAt(current.value, 25));
-  map.setZoom(17); updatePosition(current.value.path[0]);
+  map.setZoom(navigationViewport(liveSpeed.value).zoom); draw(false); updatePosition(current.value.path[0]);
   simulation = setInterval(() => { if (current.value) updatePosition(pointAt(current.value, progress.value + 15)); }, 500);
 }
 function locate(navigate = false, preserveRoute = false) {
@@ -431,9 +483,10 @@ function locate(navigate = false, preserveRoute = false) {
   if (navigate) {
     orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++;
     mode.value = 'live'; following.value = true; arrived.value = false; headingAnchor = undefined;
+    draw(false);
     // Use the route's initial direction until GPS supplies a usable vehicle heading.
     if (heading.value === undefined && current.value) heading.value = bearingBetween(current.value.path[0], pointAt(current.value, 25));
-    applyOrientation(); map.setZoom(17);
+    applyOrientation(); map.setZoom(navigationViewport(liveSpeed.value).zoom);
     startFusion();
   }
   const receive = (position: GeoLocation) => {

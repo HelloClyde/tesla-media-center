@@ -3,7 +3,7 @@ import { onActivated, onDeactivated, onMounted, onBeforeUnmount, ref, watch } fr
 import * as THREE from 'three';
 import { createTeslaMapGround } from './teslaMapGround';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
-import type { AppRoute } from './amapNavigation';
+import { cumulative, type AppRoute } from './amapNavigation';
 const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; progress: number }>();
 const emit = defineEmits<{ status: [string]; failed: []; pick: [MapPoint] }>();
 const host = ref<HTMLElement>();
@@ -15,15 +15,24 @@ const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape), new THREE.Mesh
 arrow.rotation.x = Math.PI / 2; arrow.renderOrder = 20;
 let observer: ResizeObserver | undefined, frame = 0;
 let routeAnchor: MapPoint | undefined, renderedRoute: AppRoute | undefined;
+let routeSectionEnds: number[] = [];
 function clearRoute() {
   for (const child of [...routeGroup.children]) { const mesh = child as THREE.Mesh<THREE.BufferGeometry, THREE.Material>; mesh.geometry.dispose(); mesh.material.dispose(); routeGroup.remove(child); }
+  routeSectionEnds = [];
+}
+function trimDrivenRoute() {
+  const mesh = routeGroup.children[0] as THREE.Mesh<THREE.BufferGeometry> | undefined;
+  if (!mesh) return;
+  let low = 0, high = routeSectionEnds.length;
+  while (low < high) { const middle = (low + high) >> 1; if (routeSectionEnds[middle] <= props.progress) low = middle + 1; else high = middle; }
+  mesh.geometry.setDrawRange(low * 6, (routeSectionEnds.length - low) * 6);
 }
 function update() {
   if (!renderer) return;
   ground?.update(props.center, -180, 0);
   ground?.setRoute(props.route, props.progress);
-  const angle = props.bearing * Math.PI / 180, distance = Math.max(95, Math.min(270, 170 * 2 ** (17 - props.zoom)));
-  camera.position.set(-Math.sin(angle) * distance, distance * .95, Math.cos(angle) * distance);
+  const angle = props.bearing * Math.PI / 180, distance = Math.max(95, Math.min(330, 170 * 2 ** (17 - props.zoom)));
+  camera.position.set(-Math.sin(angle) * distance, distance * (props.zoom < 16 ? 1.1 : .95), Math.cos(angle) * distance);
   camera.lookAt(0, 0, 0);
   const [x,z] = groundOffset(props.position || props.center, props.center);
   arrow.visible = !!props.position; arrow.position.set(x, 3, z); arrow.rotation.z = props.heading * Math.PI / 180;
@@ -33,7 +42,7 @@ function update() {
     renderedRoute = route;
     routeAnchor = [...props.center];
     if (route) {
-      const vertices: number[] = [], breaks = new Set(route.breaks);
+      const vertices: number[] = [], breaks = new Set(route.breaks), lengths = cumulative(route);
       for (let i=1; i<route.path.length; i++) {
         if (breaks.has(i)) continue;
         const a=groundOffset(route.path[i-1],routeAnchor), b=groundOffset(route.path[i],routeAnchor);
@@ -45,8 +54,13 @@ function update() {
         if(low>high) continue;
         const length=Math.hypot(dx,dz); if(length<.01) continue;
         const ox=-dz/length*3, oz=dx/length*3;
-        const ax=a[0]+dx*low, az=a[1]+dz*low, bx=a[0]+dx*high, bz=a[1]+dz*high;
-        vertices.push(ax+ox,1,az+oz, bx+ox,1,bz+oz, ax-ox,1,az-oz, ax-ox,1,az-oz,bx+ox,1,bz+oz,bx-ox,1,bz-oz);
+        const pieces=Math.max(1,Math.ceil((high-low)*length/12));
+        for(let piece=0;piece<pieces;piece++) {
+          const from=low+(high-low)*piece/pieces, to=low+(high-low)*(piece+1)/pieces;
+          const ax=a[0]+dx*from, az=a[1]+dz*from, bx=a[0]+dx*to, bz=a[1]+dz*to;
+          vertices.push(ax+ox,1,az+oz, bx+ox,1,bz+oz, ax-ox,1,az-oz, ax-ox,1,az-oz,bx+ox,1,bz+oz,bx-ox,1,bz-oz);
+          routeSectionEnds.push(lengths[i-1]+(lengths[i]-lengths[i-1])*to);
+        }
       }
       const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
       const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:'#0cbb8a',side:THREE.DoubleSide,depthTest:false})); mesh.renderOrder=10; routeGroup.add(mesh);
@@ -54,6 +68,7 @@ function update() {
   }
   const [routeX, routeZ] = groundOffset(routeAnchor, props.center);
   routeGroup.position.set(routeX, 0, routeZ);
+  trimDrivenRoute();
 }
 function pick(event: MouseEvent) {
   if(!host.value) return;
