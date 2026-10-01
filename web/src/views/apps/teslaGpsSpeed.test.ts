@@ -1,9 +1,16 @@
 import { expect, it } from 'vitest';
-import { createGpsSpeedTracker, type GpsSpeedFix } from './teslaGpsSpeed';
+import { createGpsSpeedTracker, speedFromLiveGpsFix, type GpsSpeedFix } from './teslaGpsSpeed';
 
 const start = 100000;
 const fix = (offset: number, longitude: number, speed: number | null = null, accuracy = 4): GpsSpeedFix => ({
   latitude: 30, longitude, speed, accuracy, timestamp: start + offset,
+});
+
+it('uses the H5 speed value even when the head-unit position timestamp is unusual', () => {
+  expect(speedFromLiveGpsFix(5)).toBe(18);
+  expect(speedFromLiveGpsFix(0)).toBe(0);
+  expect(speedFromLiveGpsFix(null)).toBeNull();
+  expect(speedFromLiveGpsFix(Number.NaN)).toBeNull();
 });
 
 it('uses device GPS speed when present and estimates from positions when it is null', () => {

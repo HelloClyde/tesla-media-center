@@ -12,6 +12,11 @@ const POSITION_WINDOW_MS = 12000;
 const MIN_POSITION_INTERVAL_MS = 4000;
 const MAX_POSITION_ACCURACY_METERS = 30;
 
+/** A freshly delivered H5 fix can have a device-specific timestamp; use its speed as-is. */
+export function speedFromLiveGpsFix(speed: number | null): number | null {
+  return typeof speed === 'number' && Number.isFinite(speed) && speed >= 0 ? speed * 3.6 : null;
+}
+
 function distanceMeters(a: GpsSpeedFix, b: GpsSpeedFix) {
   const radians = Math.PI / 180;
   const latitude = (b.latitude - a.latitude) * radians;

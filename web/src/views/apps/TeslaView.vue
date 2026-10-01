@@ -19,7 +19,7 @@ import { createVehicleLights } from './teslaLights';
 import { createVehicleStreet } from './teslaStreet';
 import { createVehicleRoadMesh, ROAD_TEXTURE_LENGTH } from './teslaRoad';
 import { GPS_SPEED_MAX_AGE_MS, visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
-import { createGpsSpeedTracker } from './teslaGpsSpeed';
+import { createGpsSpeedTracker, speedFromLiveGpsFix } from './teslaGpsSpeed';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
@@ -251,10 +251,12 @@ const gpsSpeedMessage = ref('等待 GPS 定位');
 let gpsSpeedExpiry: number | undefined;
 let gpsSpeedWatchId: number | undefined;
 function receiveGpsSpeed(position: GeoLocation) {
-  if (position.source !== 'gps') return;
-  const speed = gpsSpeedTracker.accept(position);
+  // The Debug page reads this same store value directly. Some head units provide a
+  // valid coords.speed with a position timestamp that does not match Date.now().
+  const nativeSpeedKmh = speedFromLiveGpsFix(position.speed);
+  const speed = nativeSpeedKmh ?? gpsSpeedTracker.accept({ ...position, speed: null, timestamp: Date.now() });
   if (speed === null) {
-    if (gpsSpeedKmh.value === null && Number.isFinite(position.timestamp) && Date.now() - position.timestamp <= GPS_SPEED_MAX_AGE_MS)
+    if (gpsSpeedKmh.value === null)
       gpsSpeedMessage.value = position.accuracy > 30 ? 'GPS 精度不足' : '正在计算 GPS 速度';
     return;
   }
@@ -262,7 +264,7 @@ function receiveGpsSpeed(position: GeoLocation) {
   gpsSpeedMessage.value = '';
   window.clearTimeout(gpsSpeedExpiry);
   gpsSpeedExpiry = window.setTimeout(() => { gpsSpeedKmh.value = null; gpsSpeedMessage.value = 'GPS 信号中断'; },
-    Math.max(0, GPS_SPEED_MAX_AGE_MS - (Date.now() - position.timestamp)));
+    GPS_SPEED_MAX_AGE_MS);
 }
 function handleGpsSpeedError(error: GeolocationPositionError) {
   gpsSpeedMessage.value = !window.isSecureContext ? '定位需要 HTTPS' :
@@ -1803,11 +1805,10 @@ function renderTrackOnMap() {
 onMounted(() => {
   geoLocation.addListener('tesla-status-speed', receiveGpsSpeed);
   geoLocation.addErrorListener('tesla-status-speed', handleGpsSpeedError);
-  const cachedGps = geoLocation.getCurPosition();
-  if (cachedGps) receiveGpsSpeed(cachedGps);
   if (navigator.geolocation) {
     geoLocation.init();
     geoLocation.refresh();
+    // Match the H5 API test on the Debug page, including its high-accuracy watch.
     try {
       gpsSpeedWatchId = navigator.geolocation.watchPosition(position => {
         const { coords } = position;
