@@ -3,6 +3,7 @@ import { navigationEngine, navigationEngineNotice } from '@/functions/navigation
 import { createRouteFusion, type FusionPosition } from './amapRouteFusion';
 import { navigationViewport } from './amapNavigationViewport';
 import { remainingRouteSections } from './amapRemainingRoute';
+import { remainingCongestionPath, routeCongestionRuns, type CongestionRun } from './amapRouteTraffic';
 import { findParallelRoute, type RoadKind } from './amapParallelRoad';
 import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
@@ -24,7 +25,12 @@ import { bearingBetween, movementHeading, smoothHeading } from './amapHeading';
 import type { Place } from './amapSearch';
 import { searchWebPlaces } from './amapWebSearch';
 import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
+import { attachTrafficOverlay, type TrafficRoad } from './amapTrafficOverlay';
 const mapStatus = ref('');
+const trafficStatus = ref('');
+const trafficRoads = ref<TrafficRoad[]>([]);
+const trafficEnabled = ref(true);
+let trafficOverlay: ReturnType<typeof attachTrafficOverlay> | undefined;
 const liveSpeed = ref<number | null>(null);
 let positionWatch: number | undefined;
 const use3D = ref(false), map3DStatus = ref('');
@@ -149,6 +155,10 @@ const status = ref('点击地图选择终点；先定位可使用当前位置作
 const roadSwitchOpen = ref(false);
 const lastGpsPoint = ref<Point>();
 const current = computed(() => routes.value[selected.value]);
+const congestionRuns = computed(() => current.value && trafficEnabled.value ? routeCongestionRuns(current.value, trafficRoads.value) : []);
+const navigationCongestionRuns = computed(() => mode.value === 'idle' ? [] : congestionRuns.value);
+watch([mode, current, trafficEnabled], () => trafficOverlay?.setEnabled(trafficEnabled.value && mode.value !== 'idle' && !!current.value));
+watch(trafficRoads, () => { if (mode.value !== 'idle') draw(false); });
 const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
 const serviceAreas = computed(() => upcomingServiceAreas(current.value, progress.value));
 function serviceAreaDistance(area: UpcomingServiceArea) {
@@ -156,6 +166,7 @@ function serviceAreaDistance(area: UpcomingServiceArea) {
 }
 const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
 let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
+let congestionLines: { run: CongestionRun; line: L.Polyline }[] = [];
 let renderedLineProgress = -Infinity;
 type LineState = 'past' | 'active' | 'future';
 let lineStates: LineState[] = [];
@@ -248,7 +259,7 @@ watchEffect(() => {
 });
 onDeactivated(() => {
   cancelPositionAnimation();
-  viewActive.value = false; appMap?.setActive(false); appMap?.releaseMemory(); cancelSearch();
+  viewActive.value = false; appMap?.setActive(false); appMap?.releaseMemory(); trafficOverlay?.setActive(false); cancelSearch();
   if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
 });
 watch(show3D, enabled => {
@@ -256,12 +267,13 @@ watch(show3D, enabled => {
   // idle so both renderers do not compete for the single map helper.
   appMap?.setActive(!enabled && viewActive.value);
   appMap?.setRoute(enabled ? undefined : current.value, progress.value);
+  trafficOverlay?.setActive(viewActive.value);
 });
 onActivated(async () => {
   viewActive.value = true;
   await nextTick();
   if (disposed || !map || !viewActive.value) return;
-  map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); endpoints(); draw(false);
+  map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); trafficOverlay?.setActive(true); endpoints(); draw(false);
   if (location.value) animatePosition(location.value, true);
   applyOrientation();
   if (resumeLocationOnActivate) { resumeLocationOnActivate = false; locate(false, true); }
@@ -278,19 +290,26 @@ function endpoints() {
 function draw(fit = true) {
   if (!map || !viewActive.value) return;
   lines.forEach(line => line.remove()); lines = [];
+  congestionLines.forEach(({ line }) => line.remove()); congestionLines = [];
   lineStates = [];
   routes.value.forEach((route, index) => {
     if (mode.value !== 'idle' && index !== selected.value) return;
     const sections = remainingRouteSections(route, mode.value === 'idle' ? 0 : progress.value);
     if (mode.value !== 'idle') lineStates = routeLineStates(route, progress.value);
     for (const path of sections) {
-      lines.push(L.polyline(path.map(latLng), { color: index === selected.value ? '#12bc87' : '#8aa1b3', weight: index === selected.value ? 8 : 5,
+      lines.push(L.polyline(path.map(latLng), { color: index === selected.value ? mode.value === 'idle' ? '#12bc87' : '#1688ef' : '#8aa1b3', weight: index === selected.value ? 8 : 5,
         opacity: index === selected.value ? 1 : .55, lineJoin: 'round', lineCap: 'round' }).addTo(map));
     }
   });
+  if (mode.value !== 'idle') for (const run of congestionRuns.value) {
+    const path = remainingCongestionPath(run, progress.value);
+    const line = L.polyline(path.map(latLng), { color: run.status === 3 ? '#e44650' : '#f5a623', weight: 8,
+      opacity: 1, lineJoin: 'round', lineCap: 'round', interactive: false }).addTo(map);
+    congestionLines.push({ run, line });
+  }
   renderedLineProgress = progress.value;
   endpoints();
-  appMap?.setRoute(current.value, progress.value);
+  appMap?.setRoute(show3D.value ? undefined : current.value, progress.value);
   if (fit && lines.length) void overview();
 }
 function trimDrivenRoute() {
@@ -301,6 +320,12 @@ function trimDrivenRoute() {
   sections.forEach((section, index) => {
     if (states[index] === 'active' || states[index] !== lineStates[index]) lines[index].setLatLngs(section.map(latLng));
   });
+  for (const { run, line } of congestionLines) {
+    if (progress.value < run.start) continue;
+    if (progress.value >= run.end) {
+      if ((line.getLatLngs() as L.LatLng[]).length) line.setLatLngs([]);
+    } else line.setLatLngs(remainingCongestionPath(run, progress.value).map(latLng));
+  }
   lineStates = states;
   renderedLineProgress = progress.value;
 }
@@ -555,6 +580,8 @@ onMounted(() => {
   if (!mapElement.value) return;
   mapElement.value.addEventListener('touchstart', beginMapTouch, { passive: true, capture: true });
   map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: true, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
+  trafficOverlay = attachTrafficOverlay(map, message => { trafficStatus.value = message; }, roads => { trafficRoads.value = roads; });
+  trafficOverlay.setEnabled(trafficEnabled.value && mode.value !== 'idle' && !!current.value);
   map.on('move zoom', () => { const center=map.getCenter(); mapCenter.value=[center.lng,center.lat]; mapZoom.value=map.getZoom(); });
   map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
 
@@ -569,13 +596,13 @@ onMounted(() => {
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
   mapReady.value = true; endpoints(); locate(false);
 });
-onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); trafficOverlay?.dispose(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" :traffic-runs="navigationCongestionRuns" :navigating="mode !== 'idle'" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
@@ -593,7 +620,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
     </aside>
     <div class="map-controls">
       <button class="dimension-mode" :class="{ active: use3D }" :disabled="!hasOrigin && !hasDestination" :aria-label="use3D ? '切换为 2D 地图' : '切换为 3D 地图'" :aria-pressed="use3D" @click="toggle3D">{{ use3D ? '3D' : '2D' }}</button>
-      <button v-if="!show3D" title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
+      <button title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
       <button class="view-mode" :class="{ active: overviewActive || following }" :disabled="!mapReady" :title="`${viewModeLabel} · 点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" :aria-label="`视角：${viewModeLabel}，点击${!overviewActive && !following ? '恢复跟随' : '切换为' + nextViewModeLabel}`" @click="cycleViewMode">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <template v-if="overviewActive"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/><path d="m8 16 3-8 5 8"/><circle cx="11" cy="8" r="1"/></template>
@@ -606,15 +633,21 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
     </div>
     <div v-if="layerMenu" class="layer-menu glass" role="group" aria-label="地图图层设置">
       <strong>地图图层</strong>
-      <div class="map-themes"><button :class="{ active: mapAppearance.theme === 'day' }" @click="mapAppearance.theme = 'day'">日间</button><button :class="{ active: mapAppearance.theme === 'night' }" @click="mapAppearance.theme = 'night'">夜间</button></div>
-      <label><input type="checkbox" v-model="mapAppearance.surfaces" />地块与水域</label>
-      <label><input type="checkbox" v-model="mapAppearance.roads" />道路</label>
-      <label><input type="checkbox" v-model="mapAppearance.labels" />道路名称</label>
-      <label><input type="checkbox" v-model="mapAppearance.places" />省市名称</label>
-      <label><input type="checkbox" v-model="mapAppearance.transit" />公共交通标注</label>
+      <div v-if="!show3D" class="map-themes"><button :class="{ active: mapAppearance.theme === 'day' }" @click="mapAppearance.theme = 'day'">日间</button><button :class="{ active: mapAppearance.theme === 'night' }" @click="mapAppearance.theme = 'night'">夜间</button></div>
+      <template v-if="!show3D">
+        <label><input type="checkbox" v-model="mapAppearance.surfaces" />地块与水域</label>
+        <label><input type="checkbox" v-model="mapAppearance.roads" />道路</label>
+        <label><input type="checkbox" v-model="mapAppearance.labels" />道路名称</label>
+        <label><input type="checkbox" v-model="mapAppearance.places" />省市名称</label>
+        <label><input type="checkbox" v-model="mapAppearance.transit" />公共交通标注</label>
+      </template>
+      <label><input type="checkbox" v-model="trafficEnabled" />导航线路路况</label>
+      <div v-if="trafficEnabled" class="traffic-legend"><span><i class="traffic-clear"></i>引导线</span><span><i class="traffic-slow"></i>缓行</span><span><i class="traffic-jam"></i>拥堵</span></div>
+      <small v-if="trafficEnabled && trafficStatus" class="traffic-message">{{ trafficStatus }}</small>
     </div>
     <footer ref="footerPanel" class="navigation-footer glass">
       <p v-if="show3D ? map3DStatus : mapStatus" class="map-notice">{{ show3D ? map3DStatus : mapStatus }} <button v-if="!mapStatus.startsWith('路线总览') && !mapStatus.startsWith('正在加载')" @click="show3D ? map3D?.retry() : appMap?.retry()">重试</button></p>
+      <p v-if="trafficEnabled && trafficStatus && trafficStatus !== '此区域暂无实时路况' && trafficStatus !== '放大地图后显示实时路况'" class="traffic-warning" role="status">路况：{{ trafficStatus }}</p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
@@ -657,6 +690,8 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 .map-controls .view-mode{display:grid;place-items:center}
 .map-controls .view-mode svg{width:24px;height:24px}
 .map-controls .active{background:#e4f8ef;border-color:#19b88b;color:#078161}
+.traffic-legend{display:flex;gap:10px;font-size:11px;white-space:nowrap}.traffic-legend span{display:flex;align-items:center;gap:4px}.traffic-legend i{display:inline-block;width:15px;height:4px;border-radius:3px}.traffic-clear{background:#1688ef}.traffic-slow{background:#f5a623}.traffic-jam{background:#e44650}.traffic-message{max-width:205px;line-height:1.35;color:#a7523e}
+.traffic-warning{margin:0 0 7px;font-size:12px;color:#a7523e}
 </style>
 
 <style scoped>

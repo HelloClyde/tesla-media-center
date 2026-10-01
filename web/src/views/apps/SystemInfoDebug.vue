@@ -42,6 +42,8 @@ const state = reactive({
     mapConfig: {
         amapKey: '',
         securityCode: '',
+        trafficKey: '',
+        trafficConfigured: false,
     },
     mapLoading: false,
 });
@@ -106,6 +108,7 @@ function refreshMapConfig() {
     get('/api/config', '读取配置失败').then((data) => {
         state.mapConfig.amapKey = data.amap_key || '';
         state.mapConfig.securityCode = data.amap_security_js_code || '';
+        state.mapConfig.trafficConfigured = data.amap_traffic_configured === true;
     }).finally(() => {
         state.mapLoading = false;
     });
@@ -116,7 +119,10 @@ function saveMapConfig() {
     post('/api/config', {
         amap_key: state.mapConfig.amapKey.trim(),
         amap_security_js_code: state.mapConfig.securityCode.trim(),
+        ...(state.mapConfig.trafficKey.trim() ? { amap_traffic_key: state.mapConfig.trafficKey.trim() } : {}),
     }, '保存高德 Key 失败').then(() => {
+        if (state.mapConfig.trafficKey.trim()) state.mapConfig.trafficConfigured = true;
+        state.mapConfig.trafficKey = '';
         ElMessage.success('地图配置已保存');
     }).finally(() => {
         state.mapLoading = false;
@@ -169,6 +175,11 @@ onUnmounted(() => {
                     <div class="button-row top-gap">
                         <el-input v-model="state.mapConfig.securityCode" type="password" show-password placeholder="安全密钥 securityJsCode（按 Key 要求填写）" aria-label="高德安全密钥" />
                         <el-button type="primary" round @click="saveMapConfig">保存 Key</el-button>
+                    </div>
+                    <p class="console-hint">实时路况需单独开通高德交通态势查询服务，并填写 Web 服务 API Key。Key 仅由服务端请求高德使用。</p>
+                    <div class="button-row top-gap">
+                        <el-input v-model="state.mapConfig.trafficKey" type="password" show-password :placeholder="state.mapConfig.trafficConfigured ? '路况 Key 已配置；留空则保持不变' : '高德 Web 服务 API Key（实时路况）'" aria-label="高德实时路况 Web 服务 Key" />
+                        <el-button type="primary" round @click="saveMapConfig">保存</el-button>
                     </div>
                 </article>
 
