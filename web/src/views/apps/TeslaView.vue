@@ -9,6 +9,7 @@ import { captureStreetReflections } from './teslaReflections';
 import { createVehicleWipers } from './teslaWipers';
 import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
 import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
+import TeslaWeatherIcon from './TeslaWeatherIcon.vue';
 import { Sky } from 'three/examples/jsm/objects/Sky.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 import { del, get, post } from '@/functions/requests';
@@ -70,6 +71,8 @@ function chooseWeather(value: SceneWeather | 'auto') {
 const automaticWeather=ref<SceneWeather>('clear');
 const weatherStatus=ref('等待车辆位置');
 const activeWeather=computed(()=>weatherMode.value==='auto'?automaticWeather.value:weatherMode.value);
+const weatherAvailable=computed(()=>weatherMode.value!=='auto'||weatherStatus.value.startsWith('当地天气 · '));
+const weatherDisplayLabel=computed(()=>weatherAvailable.value ? weatherLabels[activeWeather.value] : weatherStatus.value==='正在获取天气' ? '获取中' : '暂无天气');
 let vehicleWipers: ReturnType<typeof createVehicleWipers> | undefined;
 let wipersMoving = false;
 let vehicleWeather:ReturnType<typeof createVehicleWeather>|undefined;
@@ -1853,6 +1856,13 @@ watch(currentShiftState, () => {
                   </div>
                 </div>
                 <div class="vehicle-visual-overlay">
+                  <div class="vehicle-overlay-card vehicle-overlay-card--weather" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '手动场景天气'">
+                    <TeslaWeatherIcon :weather="weatherAvailable ? activeWeather : undefined" />
+                    <div class="vehicle-weather-summary">
+                      <span>{{ weatherMode === 'auto' ? '当地天气' : '场景天气' }}</span>
+                      <strong>{{ weatherDisplayLabel }}</strong>
+                    </div>
+                  </div>
                   <div class="vehicle-overlay-card">
                     <span>当前档位</span>
                     <strong :class="vehicleVisualStatus.accent">{{ vehicleVisualStatus.label }}</strong>
@@ -2836,6 +2846,9 @@ watch(currentShiftState, () => {
 .tesla-page--visual .vehicle-overlay-card { flex-direction: row; justify-content: space-between; align-items: baseline; gap: 18px; }
 .tesla-page--visual .vehicle-overlay-card span { color: #ffffffad; text-shadow: none; }
 .tesla-page--visual .vehicle-overlay-card strong { color: #fff; text-shadow: none; font-variant-numeric: tabular-nums; }
+.tesla-page--visual .vehicle-overlay-card--weather { align-items: center; justify-content: flex-end; gap: 8px; padding-bottom: 9px; border-bottom: 1px solid #ffffff26; }
+.vehicle-weather-summary { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.vehicle-overlay-card--weather .vehicle-weather-summary strong { font-size: 16px; }
 @media(max-width: 700px) {
   .vehicle-map-controls { left: 8px; right: 8px; bottom: 8px; justify-content: flex-start; gap: 2px; padding: 6px; }
   .vehicle-map-controls button { padding: 8px; }
