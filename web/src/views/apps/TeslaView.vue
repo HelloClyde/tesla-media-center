@@ -18,7 +18,8 @@ import { repairVehicleInterior } from './teslaInterior';
 import { createVehicleLights } from './teslaLights';
 import { createVehicleStreet } from './teslaStreet';
 import { createVehicleRoadMesh, ROAD_TEXTURE_LENGTH } from './teslaRoad';
-import { GPS_SPEED_MAX_AGE_MS, speedFromGpsFix, visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+import { GPS_SPEED_MAX_AGE_MS, visualTravelSpeedMps, wheelAngularSpeed } from './teslaMotion';
+import { createGpsSpeedTracker } from './teslaGpsSpeed';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
 
@@ -244,16 +245,28 @@ const state = reactive({
 });
 
 const geoLocation = useGeoLocationStore();
+const gpsSpeedTracker = createGpsSpeedTracker();
 const gpsSpeedKmh = ref<number | null>(null);
+const gpsSpeedMessage = ref('等待 GPS 定位');
 let gpsSpeedExpiry: number | undefined;
+let gpsSpeedWatchId: number | undefined;
 function receiveGpsSpeed(position: GeoLocation) {
   if (position.source !== 'gps') return;
-  const speed = speedFromGpsFix(position.speed, position.timestamp);
-  if (speed === null) return;
+  const speed = gpsSpeedTracker.accept(position);
+  if (speed === null) {
+    if (gpsSpeedKmh.value === null && Number.isFinite(position.timestamp) && Date.now() - position.timestamp <= GPS_SPEED_MAX_AGE_MS)
+      gpsSpeedMessage.value = position.accuracy > 30 ? 'GPS 精度不足' : '正在计算 GPS 速度';
+    return;
+  }
   gpsSpeedKmh.value = speed;
+  gpsSpeedMessage.value = '';
   window.clearTimeout(gpsSpeedExpiry);
-  gpsSpeedExpiry = window.setTimeout(() => { gpsSpeedKmh.value = null; },
+  gpsSpeedExpiry = window.setTimeout(() => { gpsSpeedKmh.value = null; gpsSpeedMessage.value = 'GPS 信号中断'; },
     Math.max(0, GPS_SPEED_MAX_AGE_MS - (Date.now() - position.timestamp)));
+}
+function handleGpsSpeedError(error: GeolocationPositionError) {
+  gpsSpeedMessage.value = !window.isSecureContext ? '定位需要 HTTPS' :
+    error.code === 1 ? '请允许位置权限' : error.code === 2 ? 'GPS 暂不可用' : '等待 GPS 定位';
 }
 
 const selectedVehicle = computed(() => {
@@ -1789,9 +1802,22 @@ function renderTrackOnMap() {
 
 onMounted(() => {
   geoLocation.addListener('tesla-status-speed', receiveGpsSpeed);
+  geoLocation.addErrorListener('tesla-status-speed', handleGpsSpeedError);
   const cachedGps = geoLocation.getCurPosition();
   if (cachedGps) receiveGpsSpeed(cachedGps);
-  geoLocation.init();
+  if (navigator.geolocation) {
+    geoLocation.init();
+    geoLocation.refresh();
+    try {
+      gpsSpeedWatchId = navigator.geolocation.watchPosition(position => {
+        const { coords } = position;
+        receiveGpsSpeed({ latitude: coords.latitude, longitude: coords.longitude,
+          accuracy: coords.accuracy, speed: coords.speed, timestamp: position.timestamp, source: 'gps',
+          altitude: coords.altitude, altitudeAccuracy: coords.altitudeAccuracy, heading: coords.heading });
+      }, handleGpsSpeedError, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
+    } catch { gpsSpeedMessage.value = '连续定位不可用'; }
+  }
+  else gpsSpeedMessage.value = window.isSecureContext ? '浏览器不支持定位' : '定位需要 HTTPS';
   void refreshWeather();weatherTimer=window.setInterval(()=>void refreshWeather(),15*60*1000);
   document.addEventListener('visibilitychange', handleDocumentVisibilityChange);
   Promise.all([loadSettings(), refreshActiveTabData({ immediate: true })]).finally(() => {
@@ -1811,6 +1837,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   geoLocation.removeListener('tesla-status-speed');
+  if (gpsSpeedWatchId !== undefined) navigator.geolocation?.clearWatch(gpsSpeedWatchId);
   window.clearTimeout(gpsSpeedExpiry);
   weatherRequest?.abort();weatherRequest=undefined;window.clearInterval(weatherTimer);
   document.removeEventListener('visibilitychange', handleDocumentVisibilityChange);
@@ -1864,12 +1891,13 @@ watch(currentShiftState, () => {
             <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading" element-loading-text="正在加载车辆、场景与贴图…" element-loading-background="#111c26">
               <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
               <div v-else class="vehicle-visual-shell" :class="{ 'vehicle-visual-shell--loading': state.visualLoading }" :aria-busy="state.visualLoading">
-                <div class="vehicle-speed-hud" aria-label="当前 GPS 车速" :title="gpsSpeedKmh === null ? '等待车机 GPS 速度' : '车机 GPS 速度'">
+                <div class="vehicle-speed-hud" aria-label="当前 GPS 车速" :title="gpsSpeedMessage || '车机 GPS 速度'">
                   <span class="vehicle-speed-hud__label">GPS 车速</span>
                   <div class="vehicle-speed-hud__reading">
                     <strong>{{ gpsSpeedKmh === null ? '—' : Math.round(gpsSpeedKmh) }}</strong>
                     <span>km/h</span>
                   </div>
+                  <small v-if="gpsSpeedKmh === null" class="vehicle-speed-hud__hint">{{ gpsSpeedMessage }}</small>
                 </div>
                 <div class="vehicle-visual-overlay">
                   <div class="vehicle-overlay-card vehicle-overlay-card--weather" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '手动场景天气'">
@@ -2812,6 +2840,7 @@ watch(currentShiftState, () => {
 .vehicle-speed-hud__reading{display:flex;align-items:baseline;gap:9px;white-space:nowrap}
 .vehicle-speed-hud__reading strong{font-size:clamp(38px,5vw,64px);font-weight:650;line-height:1.05;letter-spacing:-2px;font-variant-numeric:tabular-nums}
 .vehicle-speed-hud__reading span{font-size:12px;color:rgba(255,255,255,.8)}
+.vehicle-speed-hud__hint{display:block;max-width:160px;margin-top:3px;color:rgba(255,255,255,.8);font-size:10px;line-height:1.3;white-space:normal}
 @media(max-height:600px){.vehicle-speed-hud{top:12px;left:14px;padding:8px 12px;min-width:92px}.vehicle-speed-hud__reading strong{font-size:42px}}
 </style>
 

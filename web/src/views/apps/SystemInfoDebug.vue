@@ -12,6 +12,7 @@ import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import WebGLComputeTest from '@/components/WebGLComputeTest.vue';
 import ViewportDiagnostics from '@/components/ViewportDiagnostics.vue';
+import H5LocationTest from '@/components/H5LocationTest.vue';
 import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import { get, post } from '@/functions/requests';
@@ -260,6 +261,7 @@ onUnmounted(() => {
                         <span class="diagnostic-title">当前定位</span>
                         <pre class="text-block">{{ formatedPostion }}</pre>
                     </article>
+                    <article class="diagnostic-card diagnostic-card--full"><H5LocationTest v-if="activeTab === 'diagnostics'" /></article>
                     <article class="diagnostic-card diagnostic-card--full">
                         <span class="diagnostic-title">媒体设备</span>
                         <pre class="text-block">{{ state.media.devices }}</pre>
