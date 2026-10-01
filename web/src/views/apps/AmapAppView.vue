@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { navigationEngine, navigationEngineNotice } from '@/functions/navigationEngine';
 import { createRouteFusion, type FusionPosition } from './amapRouteFusion';
+import { findParallelRoute, type RoadKind } from './amapParallelRoad';
 import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
@@ -120,6 +121,8 @@ const hasOrigin = ref(false), hasDestination = ref(false);
 const originName = ref('等待车辆定位'), destinationName = ref('请选择目的地');
 const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following = ref(true), muted = ref(false);
 const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
+const roadSwitchOpen = ref(false);
+const lastGpsPoint = ref<Point>();
 const current = computed(() => routes.value[selected.value]);
 const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
 const serviceAreas = computed(() => upcomingServiceAreas(current.value, progress.value));
@@ -161,6 +164,42 @@ function finishNavigationFollow(message: string) {
   draw(false); followLocation();
 }
 function endNavigation() { finishNavigationFollow('导航已结束，继续跟随车辆'); }
+
+async function switchParallelRoad(target: RoadKind) {
+  if (mode.value !== 'live' || busy.value || !current.value || !lastGpsPoint.value) return;
+  const previous = current.value, point = lastGpsPoint.value;
+  const id = ++generation;
+  controller?.abort(); controller = new AbortController();
+  busy.value = true; error.value = '';
+  status.value = '正在查找相邻道路…';
+  try {
+    const response = await axios.post('/api/amap-app/route', { origin: point, destination: destination.value },
+      { signal: controller.signal, timeout: 45000 });
+    if (disposed || id !== generation || mode.value !== 'live') return;
+    const data = response.data.data;
+    if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length)
+      throw new Error(response.data.message || '暂时无法重新规划路线');
+    const index = findParallelRoute(data.routes, previous, point, target);
+    if (index < 0) {
+      status.value = '附近没有可确认的对应道路，继续当前路线';
+      return;
+    }
+    routes.value = data.routes; selected.value = index;
+    const corrected = matchPosition(data.routes[index], point, 0, true);
+    progress.value = corrected.progress;
+    location.value = corrected.point;
+    origin.value = point; originName.value = '当前位置';
+    offCount = 0; spoken = ''; announcedServiceAreas.clear();
+    roadSwitchOpen.value = false;
+    draw(false); followLocation();
+    status.value = '已切换道路，路线已重新规划';
+    speak('已为您重新规划路线');
+  } catch (exception) {
+    if (disposed || id !== generation) return;
+    status.value = '道路切换失败，继续当前路线';
+    error.value = axios.isAxiosError(exception) ? exception.response?.data?.message || '道路切换请求失败，请稍后重试' : (exception as Error).message;
+  } finally { if (id === generation) busy.value = false; }
+}
 
 watchEffect(() => {
   if (mode.value === 'idle' || !current.value) { clearBackgroundNavigation(); return; }
@@ -343,6 +382,7 @@ let trackingLocation = false, resumeLocationOnActivate = false;
 watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
   stopFusion();
+  roadSwitchOpen.value = false;
   announcedServiceAreas.clear();
   cancelLocalSpeechPreload();
   if (!keepLocation) {
@@ -406,6 +446,7 @@ function locate(navigate = false, preserveRoute = false) {
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
     const point = browserNavigationPoint(position.longitude, position.latitude);
+    lastGpsPoint.value = point;
     if (mode.value === 'idle') { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first && !preserveRoute && !navigate) map.setView(latLng(point), 16); if (!preserveRoute && !navigate) status.value = '已定位，请选择目的地'; }
     if (mode.value === 'live' && routeFusion) {
       const result = routeFusion.accept({ point, accuracy: position.accuracy, speed: position.speed, heading: position.heading, timestamp: position.timestamp }, performance.now());
@@ -529,12 +570,18 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button v-if="mode === 'live'" :disabled="busy || !lastGpsPoint" :aria-expanded="roadSwitchOpen" @click="roadSwitchOpen = !roadSwitchOpen">切换道路</button><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-if="mode === 'live' && roadSwitchOpen" class="road-switch" role="group" aria-label="道路切换">
+        <span>当前位置纠偏</span>
+        <button :disabled="busy" @click="switchParallelRoad('main')">主路</button><button :disabled="busy" @click="switchParallelRoad('side')">辅路</button>
+        <button :disabled="busy" @click="switchParallelRoad('elevated')">高架</button><button :disabled="busy" @click="switchParallelRoad('ground')">地面</button>
+      </div>
     </footer>
   </section>
 </template>
 
 <style scoped>
+.road-switch{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.road-switch span{font-size:12px;color:#5c746c;margin-right:4px}.navigation-app .road-switch button{min-width:64px;min-height:42px;background:#e4f8ef;border-color:#b6e7d6;color:#087b5d;font-weight:600}
 .layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:9px}.brand>span{display:grid;place-items:center;background:#10ac82;color:white;border-radius:10px;width:29px;height:29px;font-size:25px}.brand small{color:#80918d;letter-spacing:2px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{width:56px;height:64px;flex-shrink:0;display:block}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{pointer-events:none;position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
 </style>
 <style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
