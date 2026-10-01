@@ -121,6 +121,17 @@ class MapTest(unittest.TestCase):
         self.assertEqual(second.json['data'], first.json['data'])
         self.assertEqual(self.disk.read([(14, 1, 2)])[0][(14, 1, 2)], tile)
 
+    def test_3d_building_prefetch_warms_decoded_cache(self):
+        tile = {'level': 15, 'x': 1, 'y': 2, 'buildings': [{'id': 'building'}]}
+        payload = {'level': 15, 'tiles': [[1, 2]]}
+        with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps({'tiles': [tile]}).encode())) as run:
+            warm = self.client.post('/api/amap-app/map/prefetch', json=payload)
+            visible = self.client.post('/api/amap-app/map', json=payload)
+            self.assertEqual(run.call_count, 1)
+        self.assertEqual(warm.json['data']['tiles'], [{'x': 1, 'y': 2, 'ready': True}])
+        self.assertEqual(visible.json['data']['tiles'], [tile])
+        self.assertEqual(self.client.post('/api/amap-app/map/bmd/prefetch', json=payload).status_code, 400)
+
     def test_bmd_transport_and_prefetch_share_raw_cache(self):
         tile = {'level': 14, 'x': 1, 'y': 2, 'collectionBmd': 'YWJj',
                 'surfacesBmd': 'ZGVm', 'transitBmd': '', 'placeLabelsBmd': ''}

@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { createTeslaMapGround } from './teslaMapGround';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
 import type { AppRoute } from './amapNavigation';
-const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute }>();
+const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; progress: number }>();
 const emit = defineEmits<{ status: [string]; failed: []; pick: [MapPoint] }>();
 const host = ref<HTMLElement>();
 let renderer: THREE.WebGLRenderer | undefined, ground: ReturnType<typeof createTeslaMapGround> | undefined;
@@ -20,6 +20,7 @@ function clearRoute() {
 function update() {
   if (!renderer) return;
   ground?.update(props.center, -180, 0);
+  ground?.setRoute(props.route, props.progress);
   const angle = props.bearing * Math.PI / 180, distance = Math.max(95, Math.min(270, 170 * 2 ** (17 - props.zoom)));
   camera.position.set(-Math.sin(angle) * distance, distance * .95, Math.cos(angle) * distance);
   camera.lookAt(0, 0, 0);
@@ -67,7 +68,7 @@ onMounted(() => {
     const render=(time:number)=>{frame=requestAnimationFrame(render);if(time-last<32||document.hidden)return;last=time;renderer?.render(scene,camera);}; frame=requestAnimationFrame(render);
   } catch { emit('failed'); }
 });
-watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route],update);
+watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress],update);
 defineExpose({retry:()=>ground?.retry()});
 onBeforeUnmount(()=>{cancelAnimationFrame(frame);observer?.disconnect();ground?.dispose();clearRoute();arrow.geometry.dispose();arrow.material.dispose();renderer?.domElement.removeEventListener('webglcontextlost',lost);renderer?.dispose();renderer?.forceContextLoss();});
 </script>

@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { routeCorridorTiles, surroundingTiles } from './amapTilePrefetch';
+import { route3DTiles, routeCorridorTiles, surroundingTiles } from './amapTilePrefetch';
 import type { AppRoute } from './amapNavigation';
 
 it('warms nearby detail tiles without duplicates or overview downloads', () => {
@@ -26,4 +26,16 @@ it('bounds route warm-up to nearby level 14 tiles and advances with progress', (
   expect(start.every(tile => tile[0] === 14)).toBe(true);
   expect(later[0][1]).toBeGreaterThan(start[0][1]);
   expect(routeCorridorTiles({ ...route, path: [[120.1, 30.2]] })).toEqual([]);
+});
+it('bounds 3D route warm-up to decoded road and building tiles near the current progress', () => {
+  const route: AppRoute = { id: 2, path: [[120.1, 30.2], [120.2, 30.2]],
+    breaks: [], steps: [], distance: 10000, labels: [] };
+  const start = route3DTiles(route);
+  const later = route3DTiles(route, 6000);
+  expect(start.some(tile => tile[0] === 14)).toBe(true);
+  expect(start.some(tile => tile[0] === 15)).toBe(true);
+  expect(start.length).toBeLessThanOrEqual(20);
+  expect(new Set(start.map(tile => tile.join('/'))).size).toBe(start.length);
+  expect(later.find(tile => tile[0] === 15)![1]).toBeGreaterThan(start.find(tile => tile[0] === 15)![1]);
+  expect(route3DTiles({ ...route, path: [[120.1, 30.2]] })).toEqual([]);
 });

@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import axios from 'axios';
 import { createBuildingMeshes, type AppBuilding } from './teslaBuildings';
 import { viewportTiles } from './amapViewport';
+import { route3DTiles } from './amapTilePrefetch';
+import type { AppRoute } from './amapNavigation';
 import { groundBounds, groundOffset, type MapPoint } from './teslaMapCoordinates';
 import { roadSpans, roadDeckGeometry, roadWidth } from './teslaRoadLevels';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -26,9 +28,78 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   function clearRoads() { if (roadsMesh) { roadsMesh.removeFromParent(); roadsMesh.geometry.dispose(); roadsMesh.material.dispose(); roadsMesh=undefined; } }
   function clearBuildings() { if (buildingsMesh) { buildingsMesh.removeFromParent(); buildingsMesh.geometry.dispose(); buildingsMesh.material.dispose(); buildingsMesh=undefined; } }
   const cache = new Map<string, { tile: Tile; at: number }>();
+  let visibleKeys = new Set<string>();
+  function pruneCache() {
+    for (const key of cache.keys()) {
+      if (cache.size <= 64) break;
+      if (!visibleKeys.has(key)) cache.delete(key);
+    }
+  }
   let anchor: MapPoint | undefined, latest: MapPoint | undefined;
   let heading = 0, generation = 0, disposed = false, ready = false;
   let request: AbortController | undefined, retryAfter = 0;
+  let route: AppRoute | undefined, routeBucket = -1, warmTiles: number[][] = [];
+  let browserWarmKeys = new Set<string>();
+  const warmAttempted = new Set<string>();
+  const browserAttempted = new Set<string>();
+  let warmTimer: ReturnType<typeof setTimeout> | undefined;
+  let warmRequest: AbortController | undefined, warmGeneration = 0;
+  function cancelWarm() {
+    warmGeneration++;
+    if (warmTimer !== undefined) clearTimeout(warmTimer);
+    warmTimer = undefined;
+    warmRequest?.abort(); warmRequest = undefined;
+  }
+  function scheduleWarm(delay = 750) {
+    if (disposed || !ready || request || !route || warmTimer !== undefined || warmRequest) return;
+    warmTimer = setTimeout(() => { warmTimer = undefined; void warmRoute(); }, delay);
+  }
+  async function warmRoute() {
+    if (disposed || !ready || request || !route || warmRequest) return;
+    const tile = warmTiles.find(t => browserWarmKeys.has(t.join('/')) && !cache.has(t.join('/')) && !browserAttempted.has(t.join('/')))
+      || warmTiles.find(t => !cache.has(t.join('/')) && !warmAttempted.has(t.join('/')));
+    if (!tile) return;
+    const key = tile.join('/'), token = warmGeneration;
+    const controller = new AbortController(); warmRequest = controller;
+    let delay = 750;
+    try {
+      // Bring the nearest few tiles into the car's browser cache. Farther ones
+      // warm only the server and return a tiny cache-status response.
+      const onDevice = browserWarmKeys.has(key);
+      const response = await axios.post('/api/amap-app/map/prefetch',
+        { level: tile[0], tiles: [[tile[1], tile[2]]] },
+        { signal: controller.signal, timeout: 12000 });
+      if (disposed || token !== warmGeneration) return;
+      if (response.status === 202 && response.data.data?.pending) delay = 2000;
+      else {
+        if (onDevice && response.data.status === 'ok' && response.data.data?.tiles?.[0]?.ready) {
+          // The server has finished its short bounded helper. This second
+          // request is a cache hit that transfers the tile to the car early.
+          const geometry = await axios.post('/api/amap-app/map',
+            { level: tile[0], tiles: [[tile[1], tile[2]]] },
+            { signal: controller.signal, timeout: 15000 });
+          if (disposed || token !== warmGeneration) return;
+          if (geometry.status === 202 && geometry.data.data?.pending) { delay = 2000; return; }
+          const result = geometry.data.data?.tiles?.[0] as Tile | undefined;
+          if (result && !result.error && !result.missingLayers?.length &&
+              result.level === tile[0] && result.x === tile[1] && result.y === tile[2]) {
+            cache.set(key, { tile: result, at: Date.now() });
+            pruneCache();
+          }
+        }
+        warmAttempted.add(key);
+        if (onDevice) browserAttempted.add(key);
+      }
+    } catch {
+      if (!disposed && token === warmGeneration) {
+        warmAttempted.add(key);
+        if (browserWarmKeys.has(key)) browserAttempted.add(key);
+      }
+    } finally {
+      if (warmRequest === controller) warmRequest = undefined;
+      if (!disposed && token === warmGeneration) scheduleWarm(delay);
+    }
+  }
   function align() {
     if (!anchor || !latest) return;
     const [x, z] = groundOffset(anchor, latest);
@@ -118,6 +189,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     texture.needsUpdate = true;
   }
   async function load(point: MapPoint) {
+    cancelWarm();
     const id=++generation; request?.abort(); const controller=new AbortController(); request=controller;
     anchor=[...point]; ready=false; group.visible=false; report('正在加载混合地图…',false); align();
     const bounds=groundBounds(point,SIZE/2);
@@ -125,6 +197,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     // Building source is level 15 (type 5), independent of the even road levels.
     const n=2**15, x=(v:number)=>Math.max(0,Math.min(n-1,Math.floor((v+180)/360*n))), y=(v:number)=>Math.max(0,Math.min(n-1,Math.floor((90-v)/180*n)));
     for(let xx=x(bounds[0]);xx<=x(bounds[2]);xx++) for(let yy=y(bounds[1]);yy<=y(bounds[3]);yy++) tiles.push([15,xx,yy]);
+    visibleKeys = new Set(tiles.map(tile => tile.join('/')));
     const collected: Tile[]=[]; let partial=false, buildingFailed=false;
     try {
       for (const level of [...new Set(tiles.map(t=>t[0]))]) {
@@ -160,15 +233,26 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       const detail=roadsMesh?' · 立交层高示意':'';
       const status=(buildingFailed?'混合地图 · 建筑图层不完整，可重试':partial?'混合地图 · 部分图层缺失':buildings.count ? `App 立体建筑 · ${buildings.count} 栋` : '混合地图 · 此处暂无建筑数据')+detail;
       report(status,true);
-      while (cache.size>64) cache.delete(cache.keys().next().value!);
+      pruneCache();
     } catch {
       if (disposed || id!==generation) return;
       report('地图暂不可用 · 已显示示意路面，可重试',false);
     } finally {
-      if (id===generation) { request=undefined; retryAfter=Date.now()+30000; }
+      if (id===generation) { request=undefined; retryAfter=Date.now()+30000; scheduleWarm(); }
     }
   }
   return { group,
+    setRoute(nextRoute?: AppRoute, progress = 0) {
+      const bucket = Math.floor(Math.max(0, Number.isFinite(progress) ? progress : 0) / 500);
+      if (route === nextRoute && routeBucket === bucket) return;
+      cancelWarm();
+      if (route !== nextRoute) { warmAttempted.clear(); browserAttempted.clear(); }
+      route = nextRoute; routeBucket = bucket;
+      warmTiles = route ? route3DTiles(route, progress) : [];
+      browserWarmKeys = new Set([14, 15].flatMap(level => warmTiles.filter(t => t[0] === level).slice(0, 4))
+        .map(tile => tile.join('/')));
+      scheduleWarm();
+    },
     update(point: MapPoint, angle: number, groundY: number) {
       latest=point; if (Number.isFinite(angle)) heading=angle;
       group.position.y=groundY; align();
@@ -176,6 +260,6 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       if (!anchor || Math.hypot(...offset)>120 || (!ready && !request && Date.now()>retryAfter)) void load(point);
     },
     retry() { if (latest) void load(latest); },
-    dispose() { disposed=true; generation++; request?.abort(); clearBuildings(); clearRoads(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); cache.clear(); },
+    dispose() { disposed=true; cancelWarm(); generation++; request?.abort(); clearBuildings(); clearRoads(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); cache.clear(); },
   };
 }

@@ -91,7 +91,8 @@ def add_amap_map_route(app):
             layer = payload.get('layer', 'base')
             if raw_mode and (layer != 'base' or level == 15):
                 raise ValueError('invalid raw map request')
-            if prefetch and (level != 14 or layer != 'base' or len(tiles) > 2):
+            if prefetch and (level not in (14, 15) or (raw_mode and level == 15) or
+                             layer != 'base' or len(tiles) > 2):
                 raise ValueError('invalid prefetch batch')
             prefix = ('lanes-v1', level) if layer == 'lanes' else ('raw-v1', level) if raw_mode else (level,)
             tiles = [(*prefix, *t) for t in tiles]

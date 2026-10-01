@@ -174,11 +174,17 @@ onDeactivated(() => {
   viewActive.value = false; appMap?.setActive(false); cancelSearch();
   if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
 });
+watch(show3D, enabled => {
+  // The 3D ground has its own decoded-tile warm-up. Keep the hidden 2D layer
+  // idle so both renderers do not compete for the single map helper.
+  appMap?.setActive(!enabled && viewActive.value);
+  appMap?.setRoute(enabled ? undefined : current.value, progress.value);
+});
 onActivated(async () => {
   viewActive.value = true;
   await nextTick();
   if (disposed || !map || !viewActive.value) return;
-  map.invalidateSize({ pan: false }); appMap?.setActive(true); endpoints(); draw(false);
+  map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); endpoints(); draw(false);
   if (location.value) animatePosition(location.value, true);
   applyOrientation();
   if (resumeLocationOnActivate) { resumeLocationOnActivate = false; locate(false, true); }
@@ -475,7 +481,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
