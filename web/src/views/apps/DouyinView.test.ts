@@ -40,8 +40,9 @@ async function openFirst() {
 it('automatically opens the first video with WASM and persists only public metadata', async () => {
   await openFirst(); expect(players[0].play).toHaveBeenCalledOnce();
   expect((players[0] as any).chunkSize).toBe(1024 * 1024);
+  expect((players[0] as any).maxAheadSeconds).toBe(24);
   expect(players[0].play.mock.calls[0]).toEqual(['/api/douyin/media/token', expect.anything(), expect.any(Function),
-    524288, false, undefined, ['https://v5.zjcdn.com/test.mp4?secret=temporary', '/api/douyin/media/token']]);
+    524288, false, undefined, ['/api/douyin/media/token']]);
   expect(view!.find('video').exists()).toBe(false);
   expect(localStorage.getItem('tmc.douyin.recent.v1')).not.toMatch(/token|secret/);
 });
@@ -65,7 +66,17 @@ it('switches videos with vertical swipes on the whole video surface', async () =
   await flushPromises();
   expect(players).toHaveLength(3);
 });
-it('remembers the auto-next option and only advances at the end when enabled', async () => {
+it('enables auto-next by default and stops at the end of the queue', async () => {
+  await openFirst();
+  const option = view!.find('.auto-next input');
+  expect((option.element as HTMLInputElement).checked).toBe(true);
+  players[0].finish?.(); await flushPromises();
+  expect(players).toHaveLength(2);
+  players[1].finish?.(); await flushPromises();
+  expect(players).toHaveLength(2);
+});
+it('respects a saved disabled choice and persists re-enabling auto-next', async () => {
+  localStorage.setItem('tmc.douyin.auto-next.v1', 'false');
   await openFirst();
   const option = view!.find('.auto-next input');
   expect((option.element as HTMLInputElement).checked).toBe(false);
@@ -74,8 +85,6 @@ it('remembers the auto-next option and only advances at the end when enabled', a
   await option.setValue(true);
   expect(localStorage.getItem('tmc.douyin.auto-next.v1')).toBe('true');
   players[0].finish?.(); await flushPromises();
-  expect(players).toHaveLength(2);
-  players[1].finish?.(); await flushPromises();
   expect(players).toHaveLength(2);
 });
 it('aborts outstanding playback and ignores source responses after exit', async () => {

@@ -3,14 +3,14 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { expect, it, vi } from 'vitest';
 
-function setup() {
+function setup(timeout: typeof setTimeout = setTimeout, interval: typeof setInterval = setInterval) {
   const workerUrls: string[] = [];
   const context = vm.createContext({ URL,
     document: { currentScript: { src: 'https://example.test/player.js?v=build-hash' } },
     Logger: class { logInfo() {} }, kProtoHttp: 0, kProtoStream: 2, kDownloadFileReq: 9,
     kAudioFrame: 4, kVideoFrame: 5,
     Worker: class { constructor(url: string) { workerUrls.push(url); } },
-    requestAnimationFrame: vi.fn(), console,
+    requestAnimationFrame: vi.fn(), setTimeout: timeout, clearTimeout, setInterval: interval, clearInterval, console,
   });
   vm.runInContext(readFileSync(new URL('../../public/player.js', import.meta.url), 'utf8'), context);
   const player = vm.runInContext('new Player()', context);
@@ -69,6 +69,78 @@ it('bounds Douyin range prefetch when its playback clock is not advancing', () =
   p.downloadOneChunk();
   expect(p.downloadWorker.postMessage).toHaveBeenCalledOnce();
 });
+it('continues a bounded range prefetch while buffering has paused the audio clock', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false; p.maxAheadSeconds = 12;
+  p.decoderState = 2; p.duration = 379000; p.waitHeaderLength = 1700000;
+  p.fileInfo = { offset: 5 * 1024 * 1024, size: 80 * 1024 * 1024, chunkSize: 1024 * 1024 };
+  p.pcmPlayer.getTimestamp = () => 0;
+  p.downloadWorker.postMessage = vi.fn(); p.downloading = false; p.buffering = true;
+  p.downloadOneChunk();
+  expect(p.downloadWorker.postMessage).toHaveBeenCalledOnce();
+  p.downloading = false; p.fileInfo.offset = 25 * 1024 * 1024;
+  p.downloadOneChunk();
+  expect(p.downloadWorker.postMessage).toHaveBeenCalledOnce();
+});
+it('requests a new range as soon as the decoder runs out of input', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = false; p.justSeeked = false;
+  p.fileInfo = { offset: 2 * 1024 * 1024, size: 10 * 1024 * 1024, chunkSize: 1024 * 1024 };
+  p.downloadOneChunk = vi.fn();
+  p.onRequestData(-1, 0);
+  expect(p.downloadOneChunk).toHaveBeenCalledOnce();
+});
+it('immediately replenishes ranges when the decoder is ready but playback is buffering', () => {
+  const { player: p } = setup();
+  p.buffering = true; p.downloadOneChunk = vi.fn();
+  p.onFileDataUnderDecoderReady();
+  expect(p.downloadOneChunk).toHaveBeenCalledOnce();
+  p.buffering = false;
+  p.onFileDataUnderDecoderReady();
+  expect(p.downloadOneChunk).toHaveBeenCalledOnce();
+});
+it('prefetches the next range before buffering when a bounded lookahead is enabled', () => {
+  const { player: p } = setup();
+  p.buffering = false; p.maxAheadSeconds = 24; p.downloadOneChunk = vi.fn();
+  p.onFileDataUnderDecoderReady();
+  expect(p.downloadOneChunk).toHaveBeenCalledOnce();
+});
+it('checks a bounded lookahead frequently even when average bitrate sets a slow interval', () => {
+  const schedule = vi.fn(() => 1) as unknown as typeof setInterval;
+  const { player: p } = setup(setTimeout, schedule);
+  p.maxAheadSeconds = 24; p.chunkInterval = 5500;
+  p.startDownloadTimer();
+  expect(schedule).toHaveBeenCalledWith(expect.any(Function), 500);
+  p.stopDownloadTimer();
+});
+it('does not clear an active range request when an old seek response arrives', () => {
+  const { player: p } = setup();
+  p.downloadSeqNo = 2; p.downloading = true;
+  p.onFileData(new ArrayBuffer(4), 0, 3, 1);
+  expect(p.downloading).toBe(true);
+});
+it('keeps only one download timer for the active range sequence', () => {
+  const { player: p } = setup();
+  p.downloadOneChunk = vi.fn();
+  p.startDownloadTimer();
+  const seq = p.downloadSeqNo;
+  const timer = p.downloadTimer;
+  p.startDownloadTimer();
+  expect(p.downloadSeqNo).toBe(seq);
+  expect(p.downloadTimer).toBe(timer);
+  p.stopDownloadTimer();
+});
+it('accepts an in-flight range when decoder initialization starts the timer', () => {
+  const { player: p } = setup();
+  p.downloadSeqNo = 3;
+  p.downloading = true;
+  p.startDownloadTimer();
+  expect(p.downloadSeqNo).toBe(3);
+  expect(p.downloading).toBe(true);
+  p.stopDownloadTimer();
+  expect(p.downloadSeqNo).toBe(4);
+  expect(p.downloading).toBe(false);
+});
 it('pauses downloads until a blocked audio clock is resumed by a click', async () => {
   const { player: p } = setup();
   const state = vi.fn(); p.setAudioBlockedCallback(state);
@@ -87,6 +159,7 @@ it('pauses downloads until a blocked audio clock is resumed by a click', async (
 it('keeps decoding incoming ranges while buffering and stops downloads on manual pause', () => {
   const { player: p } = setup();
   p.browserSource = null; p.isStream = false; p.pcmPlayer.pause = vi.fn(); p.pcmPlayer.resume = vi.fn();
+  p.startBuffering = Object.getPrototypeOf(p).startBuffering;
   p.showLoading = vi.fn(); p.hideLoading = vi.fn(); p.stopTrackTimer = vi.fn(); p.startTrackTimer = vi.fn();
   p.pauseDecoding = vi.fn(); p.stopDownloadTimer = vi.fn(); p.startDownloadTimer = vi.fn();
   p.fileInfo = { size: 100, offset: 0, chunkSize: 10 }; p.decoderState = 2;
@@ -101,6 +174,27 @@ it('keeps decoding incoming ranges while buffering and stops downloads on manual
   expect(p.stopDownloadTimer).toHaveBeenCalledOnce();
   p.resume();
   expect(p.startDownloadTimer).toHaveBeenCalledOnce();
+});
+it('reports a sustained buffer stall instead of leaving the loading indicator forever', () => {
+  let watchdog: (() => void) | undefined;
+  const timeout = ((callback: () => void, delay: number) => {
+    expect(delay).toBe(30000);
+    watchdog = callback;
+    return 1;
+  }) as typeof setTimeout;
+  const { player: p } = setup(timeout);
+  p.browserSource = null; p.isStream = false;
+  p.startBuffering = Object.getPrototypeOf(p).startBuffering;
+  p.pcmPlayer.pause = vi.fn(); p.showLoading = vi.fn(); p.stopTrackTimer = vi.fn();
+  p.reportPlayError = vi.fn();
+  p.startBuffering();
+  expect(watchdog).toBeTypeOf('function');
+  expect(p.buffering).toBe(true);
+  expect(p.playerState).toBe(1);
+  watchdog?.();
+  expect(p.reportPlayError).toHaveBeenCalledWith(-1, 0, '视频缓冲超时，请重试');
+  p.pcmPlayer.resume = vi.fn(); p.hideLoading = vi.fn(); p.startTrackTimer = vi.fn();
+  p.stopBuffering();
 });
 it('anchors the first audio timestamp to its actual scheduled start', () => {
   const { player: p } = setup();
