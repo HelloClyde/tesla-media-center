@@ -3,9 +3,10 @@ import { onActivated, onDeactivated, onMounted, onBeforeUnmount, ref, watch } fr
 import * as THREE from 'three';
 import { createTeslaMapGround } from './teslaMapGround';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
+import { navigationSceneCenter, positionNavigationCamera } from './amapNavigationCamera';
 import { cumulative, meters, type AppRoute } from './amapNavigation';
 import type { CongestionRun } from './amapRouteTraffic';
-const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; progress: number; trafficRuns: CongestionRun[]; navigating: boolean }>();
+const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; progress: number; trafficRuns: CongestionRun[]; navigating: boolean; following: boolean; headingUp: boolean }>();
 const emit = defineEmits<{ status: [string]; failed: []; pick: [MapPoint] }>();
 const host = ref<HTMLElement>();
 let renderer: THREE.WebGLRenderer | undefined, ground: ReturnType<typeof createTeslaMapGround> | undefined;
@@ -19,6 +20,7 @@ let observer: ResizeObserver | undefined, frame = 0;
 let routeAnchor: MapPoint | undefined, renderedRoute: AppRoute | undefined, renderedNavigating = false;
 let trafficAnchor: MapPoint | undefined, renderedTraffic: CongestionRun[] | undefined;
 const trafficEnds = new Map<THREE.Mesh, number[]>();
+function sceneCenter() { return navigationSceneCenter(props.center, props.position, props.following); }
 function clearTraffic() {
   for (const child of [...trafficGroup.children]) {
     const mesh = child as THREE.Mesh<THREE.BufferGeometry, THREE.Material>;
@@ -27,10 +29,11 @@ function clearTraffic() {
   trafficEnds.clear();
 }
 function updateTraffic() {
-  if (props.trafficRuns !== renderedTraffic || !trafficAnchor || Math.hypot(...groundOffset(props.center, trafficAnchor)) > 120) {
+  const center = sceneCenter();
+  if (props.trafficRuns !== renderedTraffic || !trafficAnchor || Math.hypot(...groundOffset(center, trafficAnchor)) > 120) {
     clearTraffic();
     renderedTraffic = props.trafficRuns;
-    trafficAnchor = [...props.center];
+    trafficAnchor = [...center];
     for (const run of props.trafficRuns) {
       const vertices: number[] = [], ends: number[] = [];
       let lengthAlong = run.start;
@@ -52,7 +55,7 @@ function updateTraffic() {
       mesh.renderOrder = 11; trafficGroup.add(mesh); trafficEnds.set(mesh, ends);
     }
   }
-  const [x, z] = groundOffset(trafficAnchor!, props.center);
+  const [x, z] = groundOffset(trafficAnchor!, center);
   trafficGroup.position.set(x, 0, z);
   for (const [mesh, ends] of trafficEnds) {
     let low = 0, high = ends.length;
@@ -74,19 +77,18 @@ function trimDrivenRoute() {
 }
 function update() {
   if (!renderer) return;
-  ground?.update(props.center, -180, 0);
+  const center = sceneCenter();
+  ground?.update(center, -180, 0);
   ground?.setRoute(props.route, props.progress);
-  const angle = props.bearing * Math.PI / 180, distance = Math.max(95, Math.min(330, 170 * 2 ** (17 - props.zoom)));
-  camera.position.set(-Math.sin(angle) * distance, distance * (props.zoom < 16 ? 1.1 : .95), Math.cos(angle) * distance);
-  camera.lookAt(0, 0, 0);
-  const [x,z] = groundOffset(props.position || props.center, props.center);
+  const [x,z] = groundOffset(props.position || center, center);
+  positionNavigationCamera(camera, props.bearing, props.zoom, [x, z], props.following && !!props.position, props.headingUp);
   arrow.visible = !!props.position; arrow.position.set(x, 3, z); arrow.rotation.z = props.heading * Math.PI / 180;
   const route = props.route;
-  if (route !== renderedRoute || props.navigating !== renderedNavigating || !routeAnchor || Math.hypot(...groundOffset(props.center, routeAnchor)) > 120) {
+  if (route !== renderedRoute || props.navigating !== renderedNavigating || !routeAnchor || Math.hypot(...groundOffset(center, routeAnchor)) > 120) {
     clearRoute();
     renderedRoute = route;
     renderedNavigating = props.navigating;
-    routeAnchor = [...props.center];
+    routeAnchor = [...center];
     if (route) {
       const vertices: number[] = [], breaks = new Set(route.breaks), lengths = cumulative(route);
       for (let i=1; i<route.path.length; i++) {
@@ -112,7 +114,7 @@ function update() {
       const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:props.navigating?'#1688ef':'#0cbb8a',side:THREE.DoubleSide,depthTest:false})); mesh.renderOrder=10; routeGroup.add(mesh);
     }
   }
-  const [routeX, routeZ] = groundOffset(routeAnchor, props.center);
+  const [routeX, routeZ] = groundOffset(routeAnchor, center);
   routeGroup.position.set(routeX, 0, routeZ);
   trimDrivenRoute();
   updateTraffic();
@@ -122,7 +124,8 @@ function pick(event: MouseEvent) {
   const rect=host.value.getBoundingClientRect(), ray=new THREE.Raycaster();
   ray.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
   const point=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
-  if(point && Math.abs(point.x)<280 && Math.abs(point.z)<280) emit('pick',[props.center[0]+point.x/(111319.49079327358*Math.cos(props.center[1]*Math.PI/180)),props.center[1]-point.z/111319.49079327358]);
+  const center = sceneCenter();
+  if(point && Math.abs(point.x)<280 && Math.abs(point.z)<280) emit('pick',[center[0]+point.x/(111319.49079327358*Math.cos(center[1]*Math.PI/180)),center[1]-point.z/111319.49079327358]);
 }
 function lost(event: Event) { event.preventDefault(); emit('failed'); }
 function initialize() {
@@ -156,7 +159,7 @@ function dispose() {
 onMounted(initialize);
 onActivated(initialize);
 onDeactivated(dispose);
-watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.navigating],update);
+watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.navigating,props.following,props.headingUp],update);
 defineExpose({retry:()=>ground?.retry()});
 onBeforeUnmount(()=>{dispose();arrow.geometry.dispose();arrow.material.dispose();});
 </script>

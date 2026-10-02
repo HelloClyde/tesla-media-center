@@ -602,7 +602,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" :traffic-runs="navigationCongestionRuns" :navigating="mode !== 'idle'" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" :traffic-runs="navigationCongestionRuns" :navigating="mode !== 'idle'" :following="following" :heading-up="mode !== 'idle' && orientation === 'heading'" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
