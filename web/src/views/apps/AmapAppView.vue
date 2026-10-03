@@ -206,8 +206,9 @@ const junctionRequested = new Set<string>();
 const junctionKey = computed(() => `${routeToken.value}:${selected.value}:${next.value?.key ?? -1}`);
 const junctionCandidate = computed(() => {
   if (mode.value === 'idle' || !viewActive.value || !routeToken.value || !next.value || !current.value) return false;
-  const maneuver = current.value.steps[next.value.key]?.maneuver;
-  return maneuver === 'bear-left' || maneuver === 'bear-right' || maneuver?.startsWith('fork-') === true;
+  // The App may supply a raster junction view for turns as well as forks.
+  // Ask once for each actual maneuver; a vector-only/no-picture answer stays hidden.
+  return next.value.key < current.value.steps.length - 1 && next.value.text !== '继续直行';
 });
 const visibleJunction = computed(() => junctionCandidate.value && !overviewActive.value
   && next.value!.distance <= 450 && junctionPicture.value?.key === junctionKey.value ? junctionPicture.value.picture : undefined);

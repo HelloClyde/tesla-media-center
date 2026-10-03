@@ -11,7 +11,7 @@ separate JPEG road scenery and palette PNG route guidance. The decoder makes
 the PNG's magenta color-key transparent and checks the navigation ID before
 the authenticated endpoint exposes the two image layers.
 
-The navigation view requests a picture once when a bear/fork instruction is
+The navigation view requests a picture once when a turn or fork instruction is
 within 700 m, displays it within 450 m in either 2D or 3D navigation, and
 hides it after passing the maneuver or entering route overview. The observed
 Hangzhou elevated fork returned 500×320 layers from a fresh Python-planned
