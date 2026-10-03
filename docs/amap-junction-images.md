@@ -144,3 +144,16 @@ payload from real neighboring road objects. A controlled request adding
 variants with `reqstr` or `xml`, all returned `code=3, Params error`.
 No valid original vector or raster response has been obtained, so no
 original-image rendering path is connected to TMC yet.
+
+## Route-link ID check (2026-10-03)
+
+The three link wrapper vtables at `f68f70`, `f695a8`, and `f6a0d0` all
+forward road ID, class, form and coordinate getters to an underlying link
+object. The public v5.1 route response does include per-link data, but field 1 has
+not been verified as the road ID: the sampled Hangzhou route mixes 0,
+small values such as 2 and 1401, and packed-looking 64-bit values such as
+`0x2b00000017`. It would be unsafe to insert that field into `<road id=…>`
+without tracing the underlying getter. This is the missing data boundary
+between the decoded route and the original junction request. Green-wave
+arrival advice uses the separately verified live signal phases and does not
+depend on this image endpoint.
