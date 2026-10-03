@@ -157,3 +157,30 @@ without tracing the underlying getter. This is the missing data boundary
 between the decoded route and the original junction request. Green-wave
 arrival advice uses the separately verified live signal phases and does not
 depend on this image endpoint.
+
+## Emulator capture attempt (2026-10-03)
+
+The local BlueStacks instance entered real navigation on a short Hangzhou
+route, confirming the App can run its native guidance path on this machine.
+An `adb reverse` tunnel carried an Android `wget` control request through a
+local HTTP proxy, so host-to-emulator proxy connectivity was verified.
+After setting Android's global proxy and restarting the App, route planning
+and navigation produced no intercepted AMap HTTP flow. This observation does
+not prove that the junction endpoint was requested: the vehicle remained near
+the first turn, and the App may bypass the system proxy or use cached data.
+No original junction request or response was captured.
+
+A separate host-process memory probe could enumerate the BlueStacks process
+regions but `ReadProcessMemory` returned access denied for committed regions;
+it did not expose the in-memory XML. The proxy setting and `adb reverse`
+tunnel were removed after the experiment. The next useful step is still to
+derive a valid original cross payload from native road objects and obtain a
+successful `new_vector_cross` response, then port its decoder and display
+timing. Neither the screenshot of native navigation nor a route polyline is
+an original junction-image asset.
+
+The APK evidence command now checks the instruction sites for request kind 7,
+the `cross_ver=4.0` parameter addition, and shared AOS submission. It emits
+these as `cross_http_contract` alongside the endpoint profiles, making that
+part of the native call chain reproducible. This still does not supply the
+route-specific body or a valid response.

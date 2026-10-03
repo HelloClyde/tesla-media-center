@@ -77,6 +77,22 @@ def request_evidence(apk):
     sources = {name: [f'{i.address:#x} {i.mnemonic} {i.op_str}'
                      for i in decoder.disasm(read(address, size), address)]
                for name, (address, size) in ranges.items()}
+    # These literals are passed to the request object immediately before the
+    # shared AOS submission call. Check the instruction sites as well as the
+    # strings so another APK revision cannot silently inherit this contract.
+    submission = sources['cross_http_submission']
+    required = ('0x78f314 mov w0, #7', '0x78f358 bl #0x635724',
+                '0x78f3c8 bl #0x673354')
+    if any(line not in submission for line in required):
+        raise ValueError('cross HTTP contract changed in this APK')
+    cross_http_contract = {
+        'request_kind': 7,
+        'parameter': read(0xa823a, 32).split(b'\0', 1)[0].decode('ascii'),
+        'value': read(0x95ac3, 16).split(b'\0', 1)[0].decode('ascii'),
+        'submit_function': '0x673354',
+        'response_callback': '0x78f65c',
+        'response_decoder': '0x78ff38',
+    }
     call_targets = {0xb6f830, 0xb6fd70, 0xb73ff0, 0xb74fb4,
                     0xb77584, 0xb72634, 0xb72be8}
     call_sites = {hex(target): [] for target in sorted(call_targets)}
@@ -95,6 +111,7 @@ def request_evidence(apk):
             if target in call_targets:
                 call_sites[hex(target)].append(hex(base + offset))
     return {'templates': templates, 'endpoint_profiles': endpoint_profiles,
+            'cross_http_contract': cross_http_contract,
             'request_builder': instructions,
             'road_record_sources': sources,
             'native_call_sites': call_sites,
