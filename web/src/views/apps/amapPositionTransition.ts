@@ -7,18 +7,22 @@ export function createPositionTransition() {
   function sample(now: number): DisplayPosition | undefined {
     if (!target || !from) return target;
     const t = duration ? Math.max(0, Math.min(1, (now - started) / duration)) : 1;
-    const eased = t * t * (3 - 2 * t);
     const angle = ((target.heading - from.heading + 540) % 360) - 180;
-    return { point: [from.point[0] + (target.point[0] - from.point[0]) * eased,
-      from.point[1] + (target.point[1] - from.point[1]) * eased],
-      heading: (from.heading + angle * eased + 360) % 360 };
+    // GPS and route-fusion updates are retargeted repeatedly. Easing to zero
+    // at every fix makes the camera visibly stop and start between fixes.
+    return { point: [from.point[0] + (target.point[0] - from.point[0]) * t,
+      from.point[1] + (target.point[1] - from.point[1]) * t],
+      heading: (from.heading + angle * t + 360) % 360 };
   }
   return {
     sample,
     move(next: DisplayPosition, now: number, snap = false) {
       from = sample(now) || next;
       const interval = lastUpdate === undefined ? 600 : now - lastUpdate;
-      duration = !target || snap || meters(from.point, next.point) > 250 ? 0 : Math.max(100, Math.min(900, interval));
+      // Stay in motion across the next expected update instead of finishing
+      // early and waiting for the following GPS callback.
+      duration = !target || snap || meters(from.point, next.point) > 250 ? 0
+        : Math.max(160, Math.min(2200, interval * 1.3));
       target = { point: [...next.point], heading: next.heading };
       started = now; lastUpdate = now;
     },

@@ -20,6 +20,10 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   const roads = L.layerGroup().addTo(map), labels = L.layerGroup().addTo(map);
   const cache = new Map<string, { time: number; collection?: any; surfaces?: any[]; transit?: any[]; placeLabels?: PlaceLabel[]; missingLayers?: string[] }>();
   let request: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  function queueLoad(delay: number) {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = undefined; void load(); }, delay);
+  }
   let disposed = false, generation = 0;
   function visible() {
     const b = map.getBounds();
@@ -27,9 +31,14 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   }
 
   const renderQueue = createMapRenderQueue(() => report('地图绘制失败，请重试'));
-  let moving = false, active = true;
-  function draw(tiles: number[][]) {
-    if (!disposed && !moving && active) renderQueue.start(drawSteps(tiles));
+  let moving = false, active = true, following = false;
+  let drawnView = '';
+  function draw(tiles: number[][], force = false) {
+    if (disposed || moving || !active) return;
+    const view = `${Math.floor(map.getZoom())}:${tiles.map(tile => tile.join('/')).join('|')}`;
+    if (!force && view === drawnView) return;
+    drawnView = view;
+    renderQueue.start(drawSteps(tiles));
   }
   const rendered = new Map<string, { data: unknown; style: string; layer: L.Layer; group: L.LayerGroup }>();
   function retain(key: string, data: unknown, style: string, group: L.LayerGroup, create: () => L.Layer, wanted: Set<string>) {
@@ -146,7 +155,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
     if (!candidates.length) {
       const retryTimes = [...failures.values()].filter(f => f.count < 3 && f.retryAt > Date.now()).map(f => f.retryAt);
-      if (retryTimes.length) timer = setTimeout(() => void load(), Math.max(100, Math.min(...retryTimes) - Date.now()));
+      if (retryTimes.length) queueLoad(Math.max(100, Math.min(...retryTimes) - Date.now()));
       report(tiles.some(t => failures.has(t.join('/'))) ? '部分图层加载失败，可重试补齐' : '');
       return;
     }
@@ -185,36 +194,46 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         if (cache.size <= 128) break;
         if (!protectedKeys.has(key)) cache.delete(key);
       }
-      draw(visible());
+      draw(visible(), true);
     } catch {
       if (!disposed && id === generation) batch.forEach(markFailed);
     } finally {
       loading = false;
       if (request === controller) request = undefined;
       if (!disposed && active) {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(() => void load(), 100);
+        queueLoad(100);
       }
     }
   }
 
-  function suspend() {
+  function pauseDrawing() {
     moving = true;
+    drawnView = '';
     // Movement only pauses drawing, never throws away an in-flight download.
     renderQueue.cancel();
     if (timer) clearTimeout(timer);
+    timer = undefined;
+  }
+  function suspend() {
+    if (!following) pauseDrawing();
   }
   function schedule() {
     if (!active || disposed) return;
     moving = false;
+    // Following issues a succession of tiny pans. Keep the pending draw/load
+    // instead of restarting its 100 ms timer on every Leaflet moveend.
+    if (following) {
+      if (!timer) queueLoad(150);
+      return;
+    }
     renderQueue.cancel();
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(() => void load(), 100);
+    queueLoad(100);
   }
   map.on('movestart zoomstart', suspend);
   map.on('moveend zoomend rotate', schedule);
   void load();
-  return { setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); suspend(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible()); }, retry: () => { failures.clear(); void load(); }, dispose() {
+  return { setFollowing(value: boolean) { following = value; if (value) { moving = false; schedule(); } },
+    setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); pauseDrawing(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible(), true); }, retry: () => { failures.clear(); drawnView = ''; void load(); }, dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
   } };

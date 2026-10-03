@@ -1,7 +1,9 @@
 import threading
 import time
+import types
+import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from flask import Flask
 with patch('os.mkfifo', create=True):
     from ffvideo.douyin import add_routes
@@ -65,6 +67,33 @@ class DouyinAuthTests(unittest.TestCase):
             response = self.client.post('/api/douyin/auth/qrcode', headers=self.headers)
             self.assertEqual(response.json['data']['state'], 'loading')
             worker.return_value.start.assert_called_once()
+
+    def test_http_auth_accepts_confirmed_session_cookie(self):
+        entry = self.seed()
+        cookie = types.SimpleNamespace(name='sessionid', value='secret', domain='.douyin.com',
+                                       path='/', secure=True, has_nonstandard_attr=lambda _: True)
+        http_client = MagicMock()
+        http_client.cookies.jar = [cookie]
+        http_module = types.ModuleType('tools.douyin.visitor_probe')
+        http_module.create_visitor_session = MagicMock(return_value=http_client)
+        http_module.get_qrcode = MagicMock(return_value={'qrcode': 'aGVsbG8=', 'token': 'qr-token'})
+        http_module.check_qrcode = MagicMock(return_value={'status': 'confirmed'})
+        self.accounts.slots.acquire()
+        with patch.dict('sys.modules', {'tools.douyin.visitor_probe': http_module}):
+            self.accounts.run_http(entry)
+        self.assertEqual(entry['state'], 'confirmed')
+        self.assertTrue(entry['qrcode'] == '')
+        self.assertEqual(entry['cookies'][0]['name'], 'sessionid')
+        http_client.close.assert_called_once()
+
+    def test_http_auth_is_selected_by_default(self):
+        entry = self.seed()
+        with patch.dict(os.environ):
+            os.environ.pop('TMC_DOUYIN_HTTP_AUTH', None)
+            with patch.object(self.accounts, 'run_http') as run_http:
+                self.accounts.run(entry)
+                run_http.assert_called_once_with(entry)
+
     def test_browser_cache_separates_accounts(self):
         from ffvideo import douyin_browser as browser
         with browser._cache_lock: browser._cache.clear()

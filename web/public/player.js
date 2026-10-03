@@ -32,6 +32,10 @@ function FileInfo(url) {
 function Player() {
     this.destroyed = false;
     this.fileInfo           = null;
+    this.chunkSize          = defaultChunkSize;
+    this.maxAheadSeconds    = 0;
+    this.audioBlocked       = false;
+    this.audioBlockedCallback = null;
     this.pcmPlayer          = null;
     this.canvas             = null;
     this.webglPlayer        = null;
@@ -253,6 +257,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
         }
 
         this.fileInfo = new FileInfo(url);
+        this.fileInfo.chunkSize = this.chunkSize;
         this.mp4HeaderProbe = { offset: 0, header: [], active: true, identified: false };
         this.canvas = canvas;
         this.callback = callback;
@@ -371,7 +376,8 @@ Player.prototype.pause = function () {
     //Stop track timer.
     this.stopTrackTimer();
 
-    //Do not stop downloader for background buffering.
+    // Manual pause must not keep fetching and discarding the same range.
+    this.stopDownloadTimer();
     var ret = {
         e: 0,
         m: "Success"
@@ -436,6 +442,9 @@ Player.prototype.resume = function (fromSeek) {
 
     //Restart decoding.
     this.startDecoding();
+    if (!this.downloadTimer && this.fileInfo && this.decoderState === decoderStateReady) {
+        this.startDownloadTimer();
+    }
 
     //Restart track timer.
     if (!this.seeking) {
@@ -499,6 +508,7 @@ Player.prototype.stop = function () {
     this.downloadSwitch     = true;
     this.finishNotified     = false;
     this.sourceEnded        = false;
+    this.audioBlocked       = false;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -683,6 +693,25 @@ Player.prototype.setFinishCallback = function (callback) {
 
 Player.prototype.setTimeCallback = function (callback) {
     this.timeCallback = callback;
+};
+
+Player.prototype.setAudioBlockedCallback = function (callback) {
+    this.audioBlockedCallback = callback;
+};
+
+Player.prototype.resumeBlockedAudio = function () {
+    if (!this.audioBlocked || !this.pcmPlayer) return Promise.resolve(false);
+    var self = this;
+    return this.pcmPlayer.audioCtx.resume().then(function () {
+        if (self.destroyed || !self.audioBlocked || self.pcmPlayer.audioCtx.state !== 'running') return false;
+        self.audioBlocked = false;
+        if (self.audioBlockedCallback) self.audioBlockedCallback(false);
+        if (self.decoderState === decoderStateReady) {
+            self.startDecoding();
+            if (!self.downloadTimer) self.startDownloadTimer();
+        }
+        return true;
+    });
 };
 
 Player.prototype.onGetFileInfo = function (info) {
@@ -931,6 +960,12 @@ Player.prototype.onOpenDecoder = function (objData) {
         this.onAudioParam(objData.a);
         this.decoderState = decoderStateReady;
         this.logger.logInfo("Decoder ready now.");
+        if (this.pcmPlayer && this.pcmPlayer.audioCtx.state === 'suspended') {
+            this.audioBlocked = true;
+            this.stopDownloadTimer();
+            if (this.audioBlockedCallback) this.audioBlockedCallback(true);
+            return;
+        }
         this.startDecoding();
     } else {
         if (this.browserSource && this.sourceEnded) {
@@ -1168,7 +1203,7 @@ Player.prototype.displayVideoFrame = function (frame, deferRender) {
         );
     }
 
-    if (audioTimestamp <= 0 || delay <= 0) {
+    if (delay <= 0 || (audioTimestamp <= 0 && frame.s <= 0.05)) {
         if (!deferRender) this.renderVideoFrame(new Uint8Array(frame.d));
         return true;
     }
@@ -1226,7 +1261,7 @@ Player.prototype.displayLoop = function() {
     // AAC + 30 fps video needs ~77 packets/s, exceeding that quota of 60.
     // Drain due packets and render only the newest due video frame per refresh.
     var pendingVideo = null;
-    var frameBudget = this.browserSource ? 128 : 2;
+    var frameBudget = 128;
     for (var i = 0; i < frameBudget; ++i) {
         var frame = this.frameBuffer[0];
         var consumed = false;
@@ -1239,10 +1274,10 @@ Player.prototype.displayLoop = function() {
                 }
                 break;
             case kVideoFrame:
-                if (this.displayVideoFrame(frame, !!this.browserSource)) {
+                if (this.displayVideoFrame(frame, true)) {
                     this.frameBuffer.shift();
                     consumed = true;
-                    if (this.browserSource) pendingVideo = frame;
+                    pendingVideo = frame;
                 }
                 break;
             default:
@@ -1286,7 +1321,9 @@ Player.prototype.startBuffering = function () {
         if (this.browserSource && this.pcmPlayer) this.pcmPlayer.pause();
         return;
     }
-    this.pause();
+    // Buffering still needs the decoder and downloader to accept new data.
+    if (this.pcmPlayer) this.pcmPlayer.pause();
+    this.stopTrackTimer();
 }
 
 Player.prototype.stopBuffering = function () {
@@ -1296,7 +1333,8 @@ Player.prototype.stopBuffering = function () {
         if (this.browserSource && this.pcmPlayer) this.pcmPlayer.resume();
         return;
     }
-    this.resume();
+    if (this.pcmPlayer) this.pcmPlayer.resume();
+    if (this.playerState === playerStatePlaying && !this.trackTimer) this.startTrackTimer();
 }
 
 Player.prototype.renderVideoFrame = function (data) {
@@ -1323,6 +1361,13 @@ Player.prototype.downloadOneChunk = function () {
     
 
     var start = this.fileInfo.offset;
+    if (this.maxAheadSeconds > 0 && this.decoderState === decoderStateReady && !this.urgent &&
+        this.duration > 0 && this.pcmPlayer) {
+        var elapsed = Math.max(0, this.pcmPlayer.getTimestamp() + this.beginTimeOffset);
+        var bytesPerSecond = this.fileInfo.size * 1000 / this.duration;
+        var aheadLimit = this.waitHeaderLength + bytesPerSecond * (elapsed + this.maxAheadSeconds);
+        if (start >= aheadLimit) return;
+    }
     if (start >= this.fileInfo.size) {
         this.logger.logError("Reach file end.");
         this.stopDownloadTimer();

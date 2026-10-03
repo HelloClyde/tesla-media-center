@@ -1247,6 +1247,19 @@ function initVehicleViewer() {
       resizeVehicleViewer();
       // Render the complete scene and its reflections before revealing it.
       renderVehicleViewer();
+      // The first visible headlight switch otherwise compiles spotlight/lens
+      // shaders and allocates its shadow map on the user's click. Warm that
+      // path while the loading cover is still shown, then restore daylight.
+      if (!headlights.value && vehicleLights && vehicleScene && vehicleCamera) {
+        vehicleLights.setEnabled(true);
+        try {
+          activeRenderer.shadowMap.needsUpdate = true;
+          activeRenderer.render(vehicleScene, vehicleCamera);
+        } finally {
+          vehicleLights.setEnabled(false);
+        }
+        renderVehicleViewer(false);
+      }
       state.visualLoading = false;
     } catch (error) {
       console.error(error);
@@ -1896,12 +1909,12 @@ watch(currentShiftState, () => {
                   <el-popover v-model:visible="weatherMenuOpen" trigger="click" placement="top-end" :width="188" :offset="12" :show-arrow="false" popper-class="vehicle-weather-popper">
                     <template #reference>
                       <button class="vehicle-weather-trigger" type="button" aria-label="选择场景天气" aria-haspopup="menu" :aria-expanded="weatherMenuOpen" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '场景天气'">
-                        天气 · {{ weatherMode === 'auto' ? '自动' : weatherLabels[weatherMode] }} <span aria-hidden="true">▴</span>
+                        天气 · {{ weatherMode === 'auto' ? '自动' : weatherLabels[weatherMode] }} <span class="vehicle-weather-chevron" aria-hidden="true"></span>
                       </button>
                     </template>
                     <div class="vehicle-weather-options" role="menu" aria-label="场景天气">
                       <button v-for="choice in weatherChoices" :key="choice.value" type="button" role="menuitemradio" :aria-checked="weatherMode === choice.value" @click="chooseWeather(choice.value)">
-                        {{ choice.label }} <span v-if="weatherMode === choice.value" aria-hidden="true">✓</span>
+                        {{ choice.label }} <span v-if="weatherMode === choice.value" class="vehicle-weather-selected" aria-hidden="true"></span>
                       </button>
                     </div>
                   </el-popover>
@@ -2835,7 +2848,7 @@ watch(currentShiftState, () => {
   outline: 2px solid #89c7ff; outline-offset: -2px;
 }
 .vehicle-map-controls .vehicle-weather-trigger { min-height: 48px; padding: 10px 16px; font-size: 14px; background: #ffffff20; border-color: #ffffff30; }
-.vehicle-weather-trigger span { margin-left: 8px; font-size: 16px; }
+.vehicle-weather-chevron { display: inline-block; width: 8px; height: 8px; margin: 0 2px 2px 8px; border-top: 2px solid currentColor; border-left: 2px solid currentColor; transform: rotate(45deg); }
 .tesla-page--visual .vehicle-visual-overlay {
   top: 76px; right: 20px; width: auto; padding: 12px 14px; gap: 9px;
   border-radius: 12px; background: #101a2575; backdrop-filter: blur(12px);
@@ -2887,6 +2900,7 @@ watch(currentShiftState, () => {
   text-align: left;
   cursor: pointer;
 }
+.vehicle-weather-selected { display: inline-block; width: 8px; height: 13px; margin-right: 4px; border-right: 2px solid currentColor; border-bottom: 2px solid currentColor; transform: rotate(45deg); }
 .vehicle-weather-options button:hover,
 .vehicle-weather-options button[aria-checked="true"] { background: #ffffff26; }
 .vehicle-weather-options button:focus-visible { outline: 2px solid #89c7ff; outline-offset: -2px; }

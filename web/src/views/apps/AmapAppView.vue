@@ -42,6 +42,7 @@ import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
+import { upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 const router = useRouter();
 const mapElement = ref<HTMLElement>();
 const topPanel = ref<HTMLElement>(), footerPanel = ref<HTMLElement>();
@@ -65,7 +66,12 @@ function animatePosition(point: Point, snap = false) {
     marker?.setLatLng(latLng(value.point));
     if (following.value) {
       applyOrientation();
-      map.panTo(latLng(value.point), { animate: false });
+      const center = map.getCenter();
+      const next = L.latLng(latLng(value.point));
+      const offset = map.project(next).subtract(map.project(center));
+      // Leaflet truncates subpixel pan offsets but still emits moveend for them.
+      // Skip those no-op moves so the vector map does not redraw every frame.
+      if (Math.max(Math.abs(offset.x), Math.abs(offset.y)) >= 1) map.panTo(next, { animate: false });
     } else marker?.setRotation(value.heading * Math.PI / 180);
     if (!positionTransition.done(now)) positionFrame = requestAnimationFrame(frame);
   };
@@ -112,17 +118,54 @@ function followLocation() {
   if (location.value) animatePosition(location.value, true);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
+const routeToken = ref('');
+const liveLights = ref<LiveTrafficLight[]>([]), liveUpdatedAt = ref(0), signalClock = ref(Date.now());
+let signalTimer: ReturnType<typeof setInterval> | undefined;
+let signalBusy = false, signalLastRequest = 0, signalGeneration = 0;
+const upcomingSignal = computed(() => mode.value === 'live' && current.value
+  ? upcomingTrafficSignal(current.value, progress.value, liveLights.value, liveUpdatedAt.value, signalClock.value) : null);
+const signalLabel = computed(() => upcomingSignal.value?.color === 'red' ? '红灯'
+  : upcomingSignal.value?.color === 'green' ? '绿灯' : '黄灯');
+async function refreshSignals() {
+  if (signalBusy || mode.value !== 'live' || !routeToken.value || !location.value || Date.now() - signalLastRequest < 12000) return;
+  signalBusy = true; signalLastRequest = Date.now();
+  const generation = signalGeneration;
+  try {
+    const response = await axios.post('/api/amap-app/traffic-signals', {
+      routeToken: routeToken.value, routeIndex: selected.value, position: location.value,
+      speed: liveSpeed.value === null ? 0 : liveSpeed.value / 3.6, heading: heading.value || 0,
+    }, { timeout: 30000 });
+    if (generation !== signalGeneration || mode.value !== 'live') return;
+    const result = response.data?.data;
+    if (response.data?.status === 'ok' && result?.state === 'ready' && Array.isArray(result.lights)) {
+      liveLights.value = result.lights; liveUpdatedAt.value = result.updatedAt;
+    }
+  } catch { /* A missing live signal never blocks route guidance. */ }
+  finally { signalBusy = false; }
+}
+function stopSignals() {
+  signalGeneration++; clearInterval(signalTimer); signalTimer = undefined;
+  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
+}
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
 const origin = ref<Point>([0, 0]), destination = ref<Point>([0, 0]);
 const hasOrigin = ref(false), hasDestination = ref(false);
 const originName = ref('等待车辆定位'), destinationName = ref('请选择目的地');
 const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following = ref(true), muted = ref(false);
+watch(following, value => appMap?.setFollowing(value), { flush: 'sync' });
 const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
 const current = computed(() => routes.value[selected.value]);
+watch([mode, routeToken, selected], () => {
+  stopSignals();
+  if (mode.value === 'live' && routeToken.value) {
+    signalTimer = setInterval(() => { signalClock.value = Date.now(); void refreshSignals(); }, 1000);
+    void refreshSignals();
+  }
+});
 const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
 const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
-let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
+let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [], lightMarkers: L.CircleMarker[] = [];
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
@@ -180,7 +223,10 @@ onActivated(async () => {
 
 function endpoints() {
   if (!map || !viewActive.value) return;
-  if ((hasOrigin.value || hasDestination.value) && !appMap) appMap = attachAppMap(map, message => { mapStatus.value = message; });
+  if ((hasOrigin.value || hasDestination.value) && !appMap) {
+    appMap = attachAppMap(map, message => { mapStatus.value = message; });
+    appMap.setFollowing(following.value);
+  }
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
   if (hasOrigin.value) startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
@@ -189,6 +235,7 @@ function endpoints() {
 function draw(fit = true) {
   if (!map || !viewActive.value) return;
   lines.forEach(line => line.remove()); lines = [];
+  lightMarkers.forEach(light => light.remove()); lightMarkers = [];
   routes.value.forEach((route, index) => {
     const chunks = [0, ...route.breaks, route.path.length];
     for (let i = 1; i < chunks.length; i++) {
@@ -198,11 +245,15 @@ function draw(fit = true) {
         opacity: index === selected.value ? 1 : .55, lineJoin: 'round', lineCap: 'round' }).addTo(map));
     }
   });
+  for (const point of current.value?.trafficLights || []) {
+    lightMarkers.push(L.circleMarker(latLng(point), { radius: 4, color: '#fff', weight: 1.5,
+      fillColor: '#f08265', fillOpacity: 1, interactive: false }).addTo(map));
+  }
   endpoints();
   if (fit && lines.length) void overview();
 }
 function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; draw(); }
-function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
+function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; routeToken.value = ''; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
 function setPoint(point: Point, name: string) {
   cancelSearch();
   clearRoute();
@@ -258,14 +309,14 @@ async function plan(replan = false) {
     if (response.data.status === 'need_login') { await router.replace('/login'); return; }
     const data = response.data.data;
     if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length) throw new Error(response.data.message || '这条路线暂未成功解析，请更换地点或重试');
-    routes.value = data.routes; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; draw(!replan);
+    routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; draw(!replan);
     status.value = replan ? '路线已重新规划' : '路线已就绪，选择方案后开始导航';
     if (replan) speak('已为您重新规划路线');
   } catch (exception) {
     if (id !== generation || disposed) return;
     error.value = axios.isAxiosError(exception) ? exception.response?.data?.message || '路线请求失败，请重试' : (exception as Error).message;
     if (replan) status.value = '偏离路线，重算失败；请稍后重试';
-    else { routes.value = []; draw(false); }
+    else { routes.value = []; routeToken.value = ''; draw(false); }
   } finally { if (id === generation) busy.value = false; }
 }
 function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, speed?: number | null, recovered = false, fusion?: FusionPosition) {
@@ -273,6 +324,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (direction !== undefined) { heading.value = smoothHeading(heading.value, direction); headingAnchor = point; }
   else if (!headingAnchor && accuracy <= 60) headingAnchor = point;
   location.value = point;
+  if (mode.value === 'live') void refreshSignals();
   if (viewActive.value) {
   if (!marker) marker = L.marker(latLng(point), { icon: L.divIcon({ className: '', html: '<div class="amap-vehicle">▲</div>', iconSize: [36,36], iconAnchor: [18,18] }), rotateWithView: true, zIndexOffset: 1000 }).addTo(map);
   animatePosition(point);
@@ -322,6 +374,7 @@ watch(current, () => startFusion());
 let trackingLocation = false, resumeLocationOnActivate = false;
 watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
+  stopSignals();
   stopFusion();
   cancelLocalSpeechPreload();
   if (!keepLocation) {
@@ -460,7 +513,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
-    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
+    <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :following="following" :heading-up="mode !== 'idle' && orientation === 'heading'" @status="map3DStatus = $event" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
     <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass">
       <div class="brand"><span>↗</span><strong>高德导航</strong><small>TMC</small></div>
@@ -471,6 +524,9 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
       <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
     </header>
     <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
+    <div v-if="upcomingSignal" class="signal-card glass" :class="`signal-${upcomingSignal.color}`" role="status">
+      <span class="signal-orb" aria-hidden="true"></span><div><strong>{{ signalLabel }} {{ upcomingSignal.seconds }} 秒</strong><small>前方 {{ Math.round(upcomingSignal.distance) }} 米</small></div>
+    </div>
     <div class="map-controls">
       <button class="dimension-mode" :class="{ active: use3D }" :disabled="!hasOrigin && !hasDestination" :aria-label="use3D ? '切换为 2D 地图' : '切换为 3D 地图'" :aria-pressed="use3D" @click="toggle3D">{{ use3D ? '3D' : '2D' }}</button>
       <button v-if="!show3D" title="地图图层"  aria-label="地图图层" :aria-expanded="layerMenu" @click="layerMenu = !layerMenu">▱</button>
@@ -499,17 +555,19 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
         <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
-        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small>{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
+        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><small v-if="route.trafficLightCount !== undefined" class="route-lights">红绿灯 {{ route.trafficLightCount }} 处</small><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small class="route-label">{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template><template v-if="current?.trafficLightCount !== undefined"> · 全程红绿灯 {{ current.trafficLightCount }} 处</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
     </footer>
   </section>
 </template>
 
 <style scoped>
 .layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.brand{display:flex;align-items:center;gap:10px;margin-bottom:9px}.brand>span{display:grid;place-items:center;background:#10ac82;color:white;border-radius:10px;width:29px;height:29px;font-size:25px}.brand small{color:#80918d;letter-spacing:2px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{width:56px;height:64px;flex-shrink:0;display:block}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{pointer-events:none;position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
+.route-options button{flex:1 0 180px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;text-align:left;align-items:center}.route-options .route-lights{justify-self:end}.route-options .route-cost,.route-options .route-label{grid-column:1/-1;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap}
+.signal-card{position:absolute;z-index:501;top:120px;left:16px;display:flex;align-items:center;gap:12px;padding:10px 14px;color:#213c36}.signal-card strong{display:block;font-size:19px;font-variant-numeric:tabular-nums}.signal-card small{display:block;color:#6f837b;font-size:12px}.signal-orb{width:22px;height:22px;border-radius:50%;background:#e45d55;box-shadow:0 0 0 5px #e45d5522}.signal-green .signal-orb{background:#20b87c;box-shadow:0 0 0 5px #20b87c22}.signal-yellow .signal-orb{background:#e7af32;box-shadow:0 0 0 5px #e7af3222}@media(max-width:700px){.signal-card{top:100px;left:10px}}
 </style>
 <style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
 

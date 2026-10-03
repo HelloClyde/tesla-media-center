@@ -151,7 +151,7 @@ def decode(raw, origin=None, destination=None):
     routes = []
     for route_raw in message.get(7, []):
         route = fields(route_raw)
-        path, steps, measured, breaks = [], [], 0.0, []
+        path, steps, measured, breaks, traffic_lights = [], [], 0.0, [], []
         current_road = "道路"
         for segment_raw in route.get(10, []):
             segment = fields(segment_raw)
@@ -175,6 +175,14 @@ def decode(raw, origin=None, destination=None):
                 if start != covered or count < 2 or start + count > len(points):
                     raise ValueError("link coordinate coverage")
                 covered = start + count - 1
+                # Link flag 0x4 is a signalized crossing. Its count matches the
+                # App endpoint's independent JSON `trafficlights` summary across
+                # short urban and intercity routes. The crossing is at link end.
+                flags = one(link, 6, 0)
+                if type(flags) is not int:
+                    raise ValueError("invalid link flags")
+                if flags & 4:
+                    traffic_lights.append(points[covered])
             if links and covered != len(points) - 1:
                 raise ValueError("unused segment coordinates")
             for link in links:
@@ -211,6 +219,7 @@ def decode(raw, origin=None, destination=None):
             raise ValueError("route distance mismatch")
         labels = [one(fields(item), 2, b"").decode("utf-8") for item in route.get(12, [])]
         routes.append({"id": len(routes), "labels": labels, "path": path, "steps": steps, "breaks": breaks,
+                       "trafficLights": traffic_lights, "trafficLightCount": len(traffic_lights),
                        **route_summary(route), "distance": round(measured), "roads": list(dict.fromkeys(step["road"] for step in steps))})
     if not 1 <= len(routes) <= 10:
         raise ValueError("route count")

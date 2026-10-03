@@ -1,6 +1,10 @@
+import base64
 import json
 import subprocess
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -31,7 +35,8 @@ class AmapAppTest(unittest.TestCase):
         route = {'path': [[116.4, 39.9], [116.401, 39.9]], 'steps': [
             {'start': 0, 'end': 1, 'road': '示例路', 'private': 'hidden'}],
             'distance': 85, 'labels': ['方案一'], 'breaks': [], 'key': 'hidden',
-            'duration': 8460, 'tolls': 71, 'tollCurrency': 'CNY'}
+            'duration': 8460, 'tolls': 71, 'tollCurrency': 'CNY',
+            'trafficLights': [[116.401, 39.9]], 'trafficLightCount': 1}
         data = {'state': 'ready', 'routes': [route], 'secret': 'hidden'}
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             result = amap_app.invoke_helper(self.payload)
@@ -39,11 +44,18 @@ class AmapAppTest(unittest.TestCase):
         self.assertNotIn('hidden', json.dumps(result))
         self.assertEqual(result['routes'][0]['duration'], 8460)
         self.assertEqual(result['routes'][0]['tolls'], 71)
+        self.assertEqual(result['routes'][0]['trafficLightCount'], 1)
+        self.assertEqual(result['routes'][0]['trafficLights'], [[116.401, 39.9]])
         route.update(duration=-1, tolls=True)
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             invalid = amap_app.invoke_helper(self.payload)['routes'][0]
         self.assertIsNone(invalid['duration'])
         self.assertIsNone(invalid['tolls'])
+        route['trafficLightCount'] = 2
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+            with self.assertRaises(ValueError):
+                amap_app.invoke_helper(self.payload)
+        route['trafficLightCount'] = 1
         route['steps'][0]['end'] = 10
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             with self.assertRaises(ValueError):
@@ -119,6 +131,33 @@ class AmapAppTest(unittest.TestCase):
             with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
                 with self.assertRaises(ValueError):
                     amap_app.invoke_helper(self.payload)
+
+    def test_route_session_is_opaque_and_live_signals_are_allowlisted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(amap_app, 'SESSION_DIR', Path(directory)):
+                route = {'state': 'ready', 'rawRoute': base64.b64encode(b'route response').decode(),
+                         'routes': [{'path': [[120, 30], [120.01, 30.01]],
+                                     'steps': [{'start': 0, 'end': 1, 'road': '路'}],
+                                     'distance': 1500, 'labels': [], 'trafficLights': [],
+                                     'trafficLightCount': 0}]}
+                live = {'state': 'ready', 'updatedAt': time.time() * 1000,
+                        'lights': [{'point': [120.005, 30.005], 'phases': [
+                            {'start': 1700000000, 'end': 1700000020, 'color': 'red'}],
+                            'nodeId': 'hidden', 'linkId': 'hidden'}]}
+                with patch.object(amap_app.subprocess, 'run', side_effect=[
+                    SimpleNamespace(stdout=json.dumps(route).encode()),
+                    SimpleNamespace(stdout=json.dumps(live).encode())]):
+                    planned = self.client.post('/api/amap-app/route', json=self.payload)
+                    token = planned.json['data']['routeToken']
+                    self.assertNotIn('rawRoute', planned.get_data(as_text=True))
+                    self.assertEqual(amap_app.load_route_session(token), route['rawRoute'])
+                    signals = self.client.post('/api/amap-app/traffic-signals', json={
+                        'routeToken': token, 'routeIndex': 0, 'position': [120, 30]})
+                self.assertEqual(signals.status_code, 200)
+                self.assertEqual(signals.json['data']['lights'][0]['phases'][0]['color'], 'red')
+                self.assertNotIn('hidden', signals.get_data(as_text=True))
+                self.assertEqual(self.client.post('/api/amap-app/traffic-signals', json={
+                    'routeToken': '../other', 'routeIndex': 0, 'position': [120, 30]}).status_code, 400)
 
 
 if __name__ == '__main__':

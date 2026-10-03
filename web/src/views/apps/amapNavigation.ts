@@ -1,6 +1,6 @@
 export type Point = [number, number];
 export interface RouteStep { start: number; end: number; road: string }
-export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null }
+export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
   return Math.hypot((b[0] - a[0]) * Math.cos(lat), b[1] - a[1]) * rad * 6371000;

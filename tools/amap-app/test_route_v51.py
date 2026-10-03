@@ -30,8 +30,9 @@ def packed(values):
     return result
 
 
-def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9)):
-    segment = msg(f1=2, f4=msg(f1=packed(xs), f2=packed(ys)))
+def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None):
+    links = {} if link_flags is None else {'f3': msg(f6=link_flags, f8=msg(f1=0, f2=2))}
+    segment = msg(f1=2, f4=msg(f1=packed(xs), f2=packed(ys)), **links)
     protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500, f10=segment)))
     size = 64 + len(protobuf)
     body = struct.pack('<IHI', 31, 1, size).ljust(32, b'\0')
@@ -56,6 +57,12 @@ class RouteV51Test(unittest.TestCase):
 
     def test_negative_delta(self):
         self.assertEqual(decode(fixture(xs=(116.401, 116.4)))[0]['path'][-1][0], 116.4)
+
+    def test_signalized_link_uses_bit_four_and_link_end(self):
+        route = decode(fixture(link_flags=1028))[0]
+        self.assertEqual(route['trafficLightCount'], 1)
+        self.assertEqual(route['trafficLights'], [[116.401, 39.9]])
+        self.assertEqual(decode(fixture(link_flags=8))[0]['trafficLightCount'], 0)
 
     def test_rejects_truncation(self):
         raw = fixture()

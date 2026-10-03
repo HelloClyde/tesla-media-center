@@ -1,9 +1,11 @@
 import unittest
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 from flask import Flask
 with patch('os.mkfifo', create=True):
     from ffvideo.douyin import add_routes, video_id, relay
-    from ffvideo.douyin_browser import allowed_media, DouyinUnavailable, catalog_items
+    from ffvideo.douyin_browser import allowed_media, DouyinUnavailable, catalog_items, _source_from_render
 
 VID = '7674149236469451482'
 MEDIA = 'https://v95-test.douyinvod.com/test.mp4'
@@ -31,6 +33,34 @@ class DouyinTests(unittest.TestCase):
             cards = catalog_items(response)
             self.assertEqual(len(cards), 1); self.assertEqual(cards[0]['vid'], VID)
         self.assertEqual(catalog_items({'aweme_id': VID, 'desc': 'image post'}), [])
+        camel = {'awemeId': VID, 'desc': 'server-rendered', 'video': {
+            'cover': {'urlList': ['https://test.byteimg.com/cover.jpg']}}}
+        self.assertEqual(catalog_items({'app': {'videoDetail': camel}})[0]['vid'], VID)
+
+    def test_server_rendered_video_source_checks_identity_and_media(self):
+        import json
+        from urllib.parse import quote
+        detail = {'awemeId': VID, 'desc': 'test clip', 'video': {
+            'duration': 123000, 'playAddr': [{'src': 'https://evil.test/video'}, {'src': MEDIA}]}}
+        page = '<script id="RENDER_DATA" type="application/json">' + quote(json.dumps({'app': {'videoDetail': detail}})) + '</script>'
+        self.assertEqual(_source_from_render(page, VID), {'title': 'test clip', 'duration': 123.0, 'urls': [MEDIA]})
+        with self.assertRaises(DouyinUnavailable):
+            _source_from_render(page, '7690564262636408115')
+
+    def test_selects_smaller_avc_mp4_for_canvas_player(self):
+        import json
+        from urllib.parse import quote
+        small = 'https://v96-test.douyinvod.com/small.mp4'
+        detail = {'awemeId': VID, 'desc': 'clip', 'video': {'duration': 30000,
+            'playAddr': [{'src': MEDIA}], 'bitRateList': [
+                {'height': 1920, 'bitRate': 1500000, 'videoFormat': 'mp4', 'isH265': 0,
+                 'playAddr': [{'src': MEDIA}]},
+                {'height': 1024, 'bitRate': 700000, 'videoFormat': 'mp4', 'isH265': 0,
+                 'playAddr': [{'src': small}]},
+                {'height': 1280, 'bitRate': 300000, 'videoFormat': 'mp4', 'isH265': 1,
+                 'playAddr': [{'src': 'https://v97-test.douyinvod.com/hevc.mp4'}]}]}}
+        page = '<script id="RENDER_DATA">' + quote(json.dumps({'app': {'videoDetail': detail}})) + '</script>'
+        self.assertEqual(_source_from_render(page, VID)['urls'], [small])
 
     def test_short_link_rejects_external_redirect(self):
         remote = Mock(status_code=302, headers={'Location': 'http://127.0.0.1/private'})
@@ -86,3 +116,48 @@ class DouyinTests(unittest.TestCase):
             self.assertEqual(self.client.get('/api/douyin/search', query_string={'q': 'a/b?c'}).status_code, 200)
             self.assertEqual(read.call_args.args[0], 'https://www.douyin.com/search/a%2Fb%3Fc?type=video')
         self.assertEqual(self.client.get('/api/douyin/search?q=').status_code, 400)
+
+    def test_simultaneous_devices_share_one_page_load(self):
+        from ffvideo import douyin_browser as browser
+        started, release = threading.Event(), threading.Event()
+        def load(*_args):
+            started.set()
+            self.assertTrue(release.wait(3))
+            return {'items': ['shared']}
+        with patch.object(browser, '_read_page', side_effect=load) as read:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(browser.read_page, 'https://example.test/shared')
+                self.assertTrue(started.wait(2))
+                second = pool.submit(browser.read_page, 'https://example.test/shared')
+                try:
+                    self.assertEqual(second.result(timeout=.05), {'items': ['shared']})
+                except TimeoutError:
+                    pass
+                finally:
+                    release.set()
+                self.assertEqual(first.result(timeout=3), {'items': ['shared']})
+                self.assertEqual(second.result(timeout=3), {'items': ['shared']})
+            read.assert_called_once()
+
+    def test_distinct_devices_can_load_in_parallel(self):
+        from ffvideo import douyin_browser as browser
+        both_active, release = threading.Event(), threading.Event()
+        lock = threading.Lock()
+        active = 0
+        def load(url, *_args):
+            nonlocal active
+            with lock:
+                active += 1
+                if active == 2: both_active.set()
+            self.assertTrue(release.wait(3))
+            return {'items': [url]}
+        with patch.object(browser, '_read_page', side_effect=load):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                first = pool.submit(browser.read_page, 'https://example.test/one')
+                second = pool.submit(browser.read_page, 'https://example.test/two')
+                try:
+                    self.assertTrue(both_active.wait(2))
+                finally:
+                    release.set()
+                self.assertEqual(first.result(timeout=3)['items'], ['https://example.test/one'])
+                self.assertEqual(second.result(timeout=3)['items'], ['https://example.test/two'])

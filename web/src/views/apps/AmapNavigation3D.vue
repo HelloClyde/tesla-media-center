@@ -3,8 +3,9 @@ import { onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import * as THREE from 'three';
 import { createTeslaMapGround } from './teslaMapGround';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
+import { navigationSceneCenter, positionNavigationCamera } from './amapNavigationCamera';
 import type { AppRoute } from './amapNavigation';
-const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute }>();
+const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; following: boolean; headingUp: boolean }>();
 const emit = defineEmits<{ status: [string]; failed: []; pick: [MapPoint] }>();
 const host = ref<HTMLElement>();
 let renderer: THREE.WebGLRenderer | undefined, ground: ReturnType<typeof createTeslaMapGround> | undefined;
@@ -14,16 +15,16 @@ const arrowShape = new THREE.Shape(); arrowShape.moveTo(0, -9); arrowShape.lineT
 const arrow = new THREE.Mesh(new THREE.ShapeGeometry(arrowShape), new THREE.MeshBasicMaterial({ color: '#078cda', side: THREE.DoubleSide, depthTest: false }));
 arrow.rotation.x = Math.PI / 2; arrow.renderOrder = 20;
 let observer: ResizeObserver | undefined, frame = 0;
+function sceneCenter() { return navigationSceneCenter(props.center, props.position, props.following); }
 function clearRoute() {
   for (const child of [...routeGroup.children]) { const mesh = child as THREE.Mesh<THREE.BufferGeometry, THREE.Material>; mesh.geometry.dispose(); mesh.material.dispose(); routeGroup.remove(child); }
 }
 function update() {
   if (!renderer) return;
-  ground?.update(props.center, -180, 0);
-  const angle = props.bearing * Math.PI / 180, distance = Math.max(95, Math.min(270, 170 * 2 ** (17 - props.zoom)));
-  camera.position.set(-Math.sin(angle) * distance, distance * .95, Math.cos(angle) * distance);
-  camera.lookAt(0, 0, 0);
-  const [x,z] = groundOffset(props.position || props.center, props.center);
+  const center = sceneCenter();
+  ground?.update(center, -180, 0);
+  const [x,z] = groundOffset(props.position || center, center);
+  positionNavigationCamera(camera, props.bearing, props.zoom, [x, z], props.following && !!props.position, props.headingUp);
   arrow.visible = !!props.position; arrow.position.set(x, 3, z); arrow.rotation.z = props.heading * Math.PI / 180;
   clearRoute();
   const route = props.route;
@@ -31,7 +32,7 @@ function update() {
     const vertices: number[] = [], breaks = new Set(route.breaks);
     for (let i=1; i<route.path.length; i++) {
       if (breaks.has(i)) continue;
-      const a=groundOffset(route.path[i-1],props.center), b=groundOffset(route.path[i],props.center);
+      const a=groundOffset(route.path[i-1],center), b=groundOffset(route.path[i],center);
       // Clip each segment to the loaded local map square, including long crossing segments.
       let low=0, high=1; const dx=b[0]-a[0], dz=b[1]-a[1];
       for (const [p,q] of [[-dx,a[0]+280],[dx,280-a[0]],[-dz,a[1]+280],[dz,280-a[1]]]) {
@@ -45,6 +46,13 @@ function update() {
     }
     const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));
     const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color:'#0cbb8a',side:THREE.DoubleSide,depthTest:false})); mesh.renderOrder=10; routeGroup.add(mesh);
+    for (const point of route.trafficLights || []) {
+      const [lx, lz] = groundOffset(point, center);
+      if (Math.abs(lx) > 280 || Math.abs(lz) > 280) continue;
+      const light = new THREE.Mesh(new THREE.CircleGeometry(3.5, 16),
+        new THREE.MeshBasicMaterial({ color: '#f08265', side: THREE.DoubleSide, depthTest: false }));
+      light.position.set(lx, 2, lz); light.rotation.x = -Math.PI / 2; light.renderOrder = 12; routeGroup.add(light);
+    }
   }
 }
 function pick(event: MouseEvent) {
@@ -52,7 +60,8 @@ function pick(event: MouseEvent) {
   const rect=host.value.getBoundingClientRect(), ray=new THREE.Raycaster();
   ray.setFromCamera(new THREE.Vector2((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2),camera);
   const point=ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,1,0),0),new THREE.Vector3());
-  if(point && Math.abs(point.x)<280 && Math.abs(point.z)<280) emit('pick',[props.center[0]+point.x/(111319.49079327358*Math.cos(props.center[1]*Math.PI/180)),props.center[1]-point.z/111319.49079327358]);
+  const center = sceneCenter();
+  if(point && Math.abs(point.x)<280 && Math.abs(point.z)<280) emit('pick',[center[0]+point.x/(111319.49079327358*Math.cos(center[1]*Math.PI/180)),center[1]-point.z/111319.49079327358]);
 }
 function lost(event: Event) { event.preventDefault(); emit('failed'); }
 onMounted(() => {
@@ -67,7 +76,7 @@ onMounted(() => {
     const render=(time:number)=>{frame=requestAnimationFrame(render);if(time-last<32||document.hidden)return;last=time;renderer?.render(scene,camera);}; frame=requestAnimationFrame(render);
   } catch { emit('failed'); }
 });
-watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route],update);
+watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.following,props.headingUp],update);
 defineExpose({retry:()=>ground?.retry()});
 onBeforeUnmount(()=>{cancelAnimationFrame(frame);observer?.disconnect();ground?.dispose();clearRoute();arrow.geometry.dispose();arrow.material.dispose();renderer?.domElement.removeEventListener('webglcontextlost',lost);renderer?.dispose();renderer?.forceContextLoss();});
 </script>

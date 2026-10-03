@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-const { post } = vi.hoisted(() => ({ post: vi.fn() }));
+const { post, cancelDraw } = vi.hoisted(() => ({ post: vi.fn(), cancelDraw: vi.fn() }));
 vi.mock('axios', () => ({ default: { post } }));
 vi.mock('leaflet', () => ({ default: {
   canvas: () => ({ remove() {} }),
   layerGroup: () => ({ addTo() { return this; }, remove() {} }),
 } }));
-vi.mock('./mapRenderQueue', () => ({ createMapRenderQueue: () => ({ start() {}, cancel() {} }) }));
+vi.mock('./mapRenderQueue', () => ({ createMapRenderQueue: () => ({ start() {}, cancel: cancelDraw }) }));
 import { attachAppMap } from './amapVectorMap';
-afterEach(() => { vi.useRealTimers(); post.mockReset(); });
+afterEach(() => { vi.useRealTimers(); post.mockReset(); cancelDraw.mockReset(); });
 
 function fakeMap() {
   const events: Record<string, () => void> = {};
@@ -45,5 +45,14 @@ it('backs off failed tiles instead of looping on the same request', async () => 
   expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(1);
   await vi.advanceTimersByTimeAsync(1500);
   expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
+  layer.dispose();
+});
+it('does not repeatedly cancel drawing while following successive GPS pans', () => {
+  post.mockImplementation(() => new Promise(() => {}));
+  const { map, events } = fakeMap();
+  const layer = attachAppMap(map, vi.fn());
+  layer.setFollowing(true);
+  for (let i = 0; i < 10; i++) { events.movestart(); events.moveend(); }
+  expect(cancelDraw).not.toHaveBeenCalled();
   layer.dispose();
 });
