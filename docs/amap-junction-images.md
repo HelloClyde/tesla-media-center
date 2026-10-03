@@ -240,6 +240,15 @@ deltas expand to exact contiguous windows of 19, 27 and 22 IDs within the
 `firstSegIndex` to 0, 1 and 2 respectively. This is direct runtime evidence
 for the selected fork windows, not a guessed road list.
 
+The App's `mainActions` arrays also match the 5.1 route's per-segment action
+codes **at every link** in all three windows (19/19, 27/27, 22/22).
+`assistActions` match except for one boundary value in each window (18/19,
+26/27, 21/22); the native request changes these boundary values to 126 or
+130. The `segments` arrays are `[1,18]`, `[18,9]`, `[9,13]`, and each sum
+equals that request's link count. This makes link and main-action construction
+reproducible from the route while leaving the cross-window grouping and
+assistant-boundary rule to resolve.
+
 The original JSON contains `protocolVer`, `dataVer`, `sdkVer`, `naviID`,
 `width`, `height`, `crossType`, `needGridData`, `needStreetImage`, and
 `pathInfo`. The latter contains `pathID`, `firstSegIndex`, `firstLinkID`,
@@ -263,8 +272,14 @@ accepted.
 Replaying the observed segment-1 JSON with a captured signed URL, and the
 same JSON with a leading `0` transport byte, returned HTTP 400 `code=2`.
 Replaying the segment-0 JSON with an adjacent virtual-disk URL also returned
-`code=2`. The cause is not yet isolated: possible remaining differences are
-the live session, common headers or native body transport encoding. No valid
+`code=2`. The same result held when a fresh 5.1 route supplied `naviID` and
+`pathID`, when the two placeholders were changed to `auto` and `0` or `1`,
+and when optional old App query fields were omitted with a recomputed sign.
+As a control, changing one character of the signed query returned the
+distinct `code=4, Signature verification failed`. This separates the
+accepted signing path from the still-failing business request. The cause is
+not yet isolated: possible remaining differences are the route session,
+body representation or native transport headers. No valid
 response bytes or original image are available to TMC yet. The next work is
 to reproduce a fresh complete request during a new route session, capture
 its accepted binary response, and port `libamaptbt.so+78ff38` decoding plus

@@ -22,6 +22,34 @@ ENDPOINT = b"https://m5.amap.com/ws/transfer/auth/new_vector_cross/"
 ELEVATED = ("高架", "快速", "立交")
 
 
+def route_link_records(route_path):
+    """Decode ordered link IDs and action values from each 5.1 route."""
+    envelope = fields(unpack(route_path.read_bytes()))
+    message = fields(one(envelope, 2, b""))
+    results = []
+    for route_blob in message.get(7, []):
+        route = fields(route_blob)
+        base = int.from_bytes(one(route, 9, b""), "little")
+        deltas = []
+        main_actions = []
+        assist_actions = []
+        segment_link_counts = []
+        for segment_blob in route.get(10, []):
+            segment = fields(segment_blob)
+            links = segment.get(3, [])
+            if not links:
+                raise ValueError("route segment without links")
+            deltas.extend(one(fields(link_blob), 1) for link_blob in links)
+            main_actions.extend([0] * (len(links) - 1) + [one(segment, 1, 0)])
+            assist_actions.extend([0] * (len(links) - 1) + [one(segment, 2, 0)])
+            segment_link_counts.append(len(links))
+        results.append({"ids": decode_v51_link_deltas(base, deltas),
+                        "main_actions": main_actions,
+                        "assist_actions": assist_actions,
+                        "segment_link_counts": segment_link_counts})
+    return results
+
+
 def inspect_route(path):
     routes = decode_route(path.read_bytes())
     return [
@@ -82,18 +110,7 @@ def compare_live_link_windows(route_path, heap_path):
     response. A contiguous identity check confirms the underlying link IDs
     without exposing their values or conflating the two endpoints.
     """
-    envelope = fields(unpack(route_path.read_bytes()))
-    message = fields(one(envelope, 2, b""))
-    route_ids = []
-    for route_blob in message.get(7, []):
-        route = fields(route_blob)
-        base = int.from_bytes(one(route, 9, b""), "little")
-        deltas = [
-            one(fields(link_blob), 1)
-            for segment_blob in route.get(10, [])
-            for link_blob in fields(segment_blob).get(3, [])
-        ]
-        route_ids.append(decode_v51_link_deltas(base, deltas))
+    route_ids = [route["ids"] for route in route_link_records(route_path)]
     data = heap_path.read_bytes()
     windows = set()
     for match in re.finditer(rb"\x1f\x8b\x08", data):
@@ -129,16 +146,7 @@ def inspect_original_v4_bodies(route_path, disk_path):
     decoded route-link IDs without publishing account, device or session IDs.
     This does not imply that the matching HTTP response was captured.
     """
-    envelope = fields(unpack(route_path.read_bytes()))
-    message = fields(one(envelope, 2, b""))
-    route_ids = []
-    for route_blob in message.get(7, []):
-        route = fields(route_blob)
-        base = int.from_bytes(one(route, 9, b""), "little")
-        deltas = [one(fields(link_blob), 1)
-                  for segment_blob in route.get(10, [])
-                  for link_blob in fields(segment_blob).get(3, [])]
-        route_ids.append(decode_v51_link_deltas(base, deltas))
+    routes = route_link_records(route_path)
 
     needle = b'{"protocolVer":"4.0"'
     unique = set()
@@ -173,17 +181,27 @@ def inspect_original_v4_bodies(route_path, disk_path):
             if key in unique:
                 continue
             unique.add(key)
-            for route_index, route in enumerate(route_ids):
-                start = next((index for index in range(len(route) - len(ids) + 1)
-                              if route[index:index + len(ids)] == ids), None)
+            for route_index, route in enumerate(routes):
+                route_ids = route["ids"]
+                start = next((index for index in range(len(route_ids) - len(ids) + 1)
+                              if route_ids[index:index + len(ids)] == ids), None)
                 if start is not None:
+                    main = path.get("mainActions")
+                    assist = path.get("assistActions")
+                    main_expected = route["main_actions"][start:start + len(ids)]
+                    assist_expected = route["assist_actions"][start:start + len(ids)]
                     matches.append({"route": route_index,
-                                    "route_links": len(route),
+                                    "route_links": len(route_ids),
                                     "cross_request_links": len(ids),
                                     "start_link": start,
                                     "first_segment": path.get("firstSegIndex"),
+                                    "segment_link_counts": path.get("segments"),
                                     "cross_type": body.get("crossType"),
                                     "dimensions": [body.get("width"), body.get("height")],
+                                    "main_actions_exact": main == main_expected,
+                                    "assistant_actions_matching": sum(
+                                        x == y for x, y in zip(assist, assist_expected))
+                                        if isinstance(assist, list) and len(assist) == len(ids) else 0,
                                     "body_fields": sorted(body),
                                     "path_fields": sorted(path),
                                     "exact_contiguous_match": True})
