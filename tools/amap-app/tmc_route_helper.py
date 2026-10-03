@@ -151,6 +151,47 @@ def traffic(payload):
     return {"state": "ready", **live}
 
 
+def junction(payload):
+    import requests
+    from cross_v4_request import CROSS_URL, build_cross_for_step, cross_query
+    from cross_v4_response import MAX_RESPONSE, decode_cross_picture
+    from native_body_codec import encode_binary
+    from native_signer import load_material
+    from route_v51 import decode
+
+    encoded = payload.get("rawRoute")
+    if not isinstance(encoded, str) or len(encoded) > 6 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    raw = base64.b64decode(encoded, validate=True)
+    if not 0 < len(raw) <= 4 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    routes = decode(raw)
+    index, step = payload.get("routeIndex"), payload.get("stepIndex")
+    if type(index) is not int or not 0 <= index < len(routes):
+        raise ValueError("invalid-route-index")
+    if type(step) is not int or not 0 <= step < len(routes[index]["steps"]) - 1:
+        raise ValueError("invalid-junction-step")
+    body, navi_id = build_cross_for_step(raw, index, step)
+    material = load_material(ASSETS)
+    query = cross_query(material, ASSETS)
+    encoded_body = encode_binary(body, ASSETS)
+    with requests.post(CROSS_URL, params=query, data=encoded_body,
+                       timeout=(8, 20), allow_redirects=False, stream=True) as response:
+        if response.status_code != 200:
+            return {"state": "unavailable"}
+        answer = response.raw.read(MAX_RESPONSE + 1, decode_content=True)
+        if len(answer) > MAX_RESPONSE:
+            raise ValueError("cross-response-too-large")
+    try:
+        picture = decode_cross_picture(answer, expected_navigation_id=navi_id)
+    except ValueError:
+        # Most ordinary turns have no original raster illustration.
+        return {"state": "unavailable"}
+    return {"state": "ready", "width": picture.width, "height": picture.height,
+            "roadJpeg": base64.b64encode(picture.road_jpeg).decode("ascii"),
+            "arrowPng": base64.b64encode(picture.arrow_png).decode("ascii")}
+
+
 def main():
     try:
         if sys.argv[1:] == ["--check"]:
@@ -162,8 +203,9 @@ def main():
                 raise ValueError("invalid-request")
             # A traffic token can only come from a previously verified route
             # response, so skip rehashing the ~400 MB APK on every poll.
-            check_assets(validate_digest=payload.get("action") != "traffic")
-            result = traffic(payload) if payload.get("action") == "traffic" else probe(payload)
+            action = payload.get("action")
+            check_assets(validate_digest=action not in ("traffic", "junction"))
+            result = traffic(payload) if action == "traffic" else junction(payload) if action == "junction" else probe(payload)
     except Exception:
         # Exception messages from requests may contain signed URLs. Never emit them.
         result = {"state": "unavailable", "navigationAvailable": False,

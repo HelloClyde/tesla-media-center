@@ -18,6 +18,7 @@ from ffvideo.utils import login_check, json_ok, json_fail
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "tools/amap-app/tmc_route_helper.py"
 PROBE_LOCK = threading.Lock()
+JUNCTION_SLOTS = threading.BoundedSemaphore(2)
 SESSION_LOCK = threading.Lock()
 SESSION_DIR = Path(tempfile.gettempdir()) / "tmc-amap-route-sessions"
 SESSION_TTL = 2 * 60 * 60
@@ -75,6 +76,24 @@ def invoke_helper(payload=None):
                 valid_phases.append({"start": start, "end": end, "color": phase["color"]})
             safe.append({"point": coordinate, "phases": valid_phases})
         return {"state": "ready", "updatedAt": updated, "lights": safe}
+    if payload and payload.get("action") == "junction":
+        if result["state"] != "ready":
+            return {"state": "unavailable"}
+        width, height = result.get("width"), result.get("height")
+        if (type(width) is not int or type(height) is not int
+                or not 0 < width <= 4096 or not 0 < height <= 4096):
+            raise ValueError("invalid junction dimensions")
+        picture = {"state": "ready", "width": width, "height": height}
+        for field, signature, limit in (("roadJpeg", b"\xff\xd8\xff", 2 * 1024 * 1024),
+                                         ("arrowPng", b"\x89PNG\r\n\x1a\n", 2 * 1024 * 1024)):
+            encoded = result.get(field)
+            if not isinstance(encoded, str) or len(encoded) > 3 * 1024 * 1024:
+                raise ValueError("invalid junction layer")
+            decoded = base64.b64decode(encoded, validate=True)
+            if not decoded.startswith(signature) or len(decoded) > limit:
+                raise ValueError("invalid junction layer")
+            picture[field] = encoded
+        return picture
     if result["state"] == "ready":
         routes = result.get("routes")
         if not isinstance(routes, list) or not 1 <= len(routes) <= 10:
@@ -202,6 +221,32 @@ def load_route_session(token):
 
 
 def add_amap_app_route(app):
+    @app.post("/api/amap-app/junction-image")
+    @login_check
+    def amap_app_junction_image():
+        if request.content_length and request.content_length > 4096:
+            return json_fail(message="请求内容过大"), 413
+        payload = request.get_json(silent=True)
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            raw_route = load_route_session(payload.get("routeToken"))
+            index, step = payload.get("routeIndex"), payload.get("stepIndex")
+            if (type(index) is not int or not 0 <= index <= 9
+                    or type(step) is not int or not 0 <= step <= 9999):
+                raise ValueError("invalid junction index")
+        except (ValueError, OSError):
+            return json_fail(message="路线会话已过期，请重新规划路线"), 400
+        if not JUNCTION_SLOTS.acquire(blocking=False):
+            return json_ok({"state": "unavailable"})
+        try:
+            return json_ok(invoke_helper({"action": "junction", "rawRoute": raw_route,
+                                          "routeIndex": index, "stepIndex": step}))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return json_ok({"state": "unavailable"})
+        finally:
+            JUNCTION_SLOTS.release()
+
     @app.get("/api/amap-app/status")
     @login_check
     def amap_app_status():

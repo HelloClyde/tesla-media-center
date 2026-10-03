@@ -14,6 +14,7 @@ import { upcomingServiceAreas, shouldAnnounceServiceArea, type UpcomingServiceAr
 import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
 import { createLivePositionGate } from './amapLivePosition';
 import AmapNavigation3D from './AmapNavigation3D.vue';
+import AmapJunctionPreview from './AmapJunctionPreview.vue';
 
 import { prepareLocalSpeech, preloadLocalSpeech, cancelLocalSpeechPreload, speakLocal, stopLocalSpeech, localSpeechState } from '@/functions/localSpeech';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
@@ -199,6 +200,33 @@ const navigationCongestionRuns = computed(() => mode.value === 'idle' ? [] : con
 watch([mode, current, trafficEnabled], () => trafficOverlay?.setEnabled(trafficEnabled.value && mode.value !== 'idle' && !!current.value));
 watch(trafficRoads, () => { if (mode.value !== 'idle') draw(false); });
 const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
+type JunctionPicture = { state: 'ready'; width: number; height: number; roadJpeg: string; arrowPng: string };
+const junctionPicture = ref<{ key: string; picture: JunctionPicture }>();
+const junctionRequested = new Set<string>();
+const junctionKey = computed(() => `${routeToken.value}:${selected.value}:${next.value?.key ?? -1}`);
+const junctionCandidate = computed(() => {
+  if (mode.value === 'idle' || !viewActive.value || !routeToken.value || !next.value || !current.value) return false;
+  const maneuver = current.value.steps[next.value.key]?.maneuver;
+  return maneuver === 'bear-left' || maneuver === 'bear-right' || maneuver?.startsWith('fork-') === true;
+});
+const visibleJunction = computed(() => junctionCandidate.value && !overviewActive.value
+  && next.value!.distance <= 450 && junctionPicture.value?.key === junctionKey.value ? junctionPicture.value.picture : undefined);
+watch(routeToken, () => { junctionRequested.clear(); junctionPicture.value = undefined; });
+watch([junctionKey, junctionCandidate, () => next.value?.distance], () => {
+  if (!junctionCandidate.value || !next.value || next.value.distance > 700) return;
+  const key = junctionKey.value;
+  if (junctionRequested.has(key)) return;
+  junctionRequested.add(key);
+  void axios.post('/api/amap-app/junction-image', {
+    routeToken: routeToken.value, routeIndex: selected.value, stepIndex: next.value.key,
+  }, { timeout: 35000 }).then(response => {
+    const picture = response.data?.data as JunctionPicture | undefined;
+    if (!disposed && key === junctionKey.value && response.data?.status === 'ok'
+        && picture?.state === 'ready' && picture.roadJpeg && picture.arrowPng) {
+      junctionPicture.value = { key, picture };
+    }
+  }).catch(() => { /* Missing original image does not interrupt navigation. */ });
+});
 const serviceAreas = computed(() => upcomingServiceAreas(current.value, progress.value));
 function serviceAreaDistance(area: UpcomingServiceArea) {
   return progress.value >= area.from ? '当前路段' : `约 ${formatDistance(area.distance)}后`;
@@ -272,7 +300,7 @@ async function switchParallelRoad(target: RoadKind) {
       status.value = '附近没有可确认的对应道路，继续当前路线';
       return;
     }
-    routes.value = data.routes; selected.value = index;
+    routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = index;
     const corrected = matchPosition(data.routes[index], point, 0, true);
     progress.value = corrected.progress;
     location.value = corrected.point;
@@ -663,6 +691,7 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
       <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
     </header>
     <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
+    <AmapJunctionPreview v-if="visibleJunction && next" :road-jpeg="visibleJunction.roadJpeg" :arrow-png="visibleJunction.arrowPng" :width="visibleJunction.width" :height="visibleJunction.height" :distance="next.distance" :instruction="next.text" />
     <div v-if="upcomingSignal" class="signal-card glass" :class="`signal-${upcomingSignal.color}`" role="status">
       <span class="signal-orb" aria-hidden="true"></span><div><strong>{{ signalLabel }} {{ upcomingSignal.seconds }} 秒</strong><small>前方 {{ Math.round(upcomingSignal.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
     </div>

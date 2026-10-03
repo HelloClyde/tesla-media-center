@@ -179,6 +179,27 @@ class AmapAppTest(unittest.TestCase):
                 self.assertEqual(self.client.post('/api/amap-app/traffic-signals', json={
                     'routeToken': '../other', 'routeIndex': 0, 'position': [120, 30]}).status_code, 400)
 
+    def test_junction_image_uses_route_session_and_exposes_only_picture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(amap_app, 'SESSION_DIR', Path(directory)):
+                token = amap_app.save_route_session(base64.b64encode(b'route response').decode())
+                picture = {'state': 'ready', 'width': 500, 'height': 320,
+                           'roadJpeg': base64.b64encode(b'\xff\xd8\xffexample\xff\xd9').decode(),
+                           'arrowPng': base64.b64encode(b'\x89PNG\r\n\x1a\nexample').decode(),
+                           'naviId': 'private'}
+                with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(
+                        stdout=json.dumps(picture).encode())):
+                    response = self.client.post('/api/amap-app/junction-image', json={
+                        'routeToken': token, 'routeIndex': 0, 'stepIndex': 4})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['data']['width'], 500)
+                self.assertNotIn('private', response.get_data(as_text=True))
+                with patch.object(amap_app, 'invoke_helper') as helper:
+                    invalid = self.client.post('/api/amap-app/junction-image', json={
+                        'routeToken': token, 'routeIndex': 0, 'stepIndex': True})
+                    self.assertEqual(invalid.status_code, 400)
+                    helper.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

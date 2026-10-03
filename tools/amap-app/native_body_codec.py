@@ -66,9 +66,16 @@ def transform(value: str | bytes, address: int, asset_dir: Path | None = None) -
             hooks[stub] = (kind, index)
             uc.mem_write(table + 8 * index, struct.pack("<Q", stub))
             stub += 4
-    with zipfile.ZipFile(root / "amap-release.apk") as archive:
-        cert_name = next(n for n in archive.namelist() if n.startswith("META-INF/") and n.endswith(".RSA"))
-        cert = pkcs7.load_der_pkcs7_certificates(archive.read(cert_name))[0].public_bytes(Encoding.DER)
+    staged_certificate = root / "signing-certificate.rsa"
+    if staged_certificate.is_file():
+        certificate_data = staged_certificate.read_bytes()
+    else:
+        # Legacy local research layout. Production stages just this certificate,
+        # the pinned native library and other small verified assets, not the APK.
+        with zipfile.ZipFile(root / "amap-release.apk") as archive:
+            cert_name = next(n for n in archive.namelist() if n.startswith("META-INF/") and n.endswith(".RSA"))
+            certificate_data = archive.read(cert_name)
+    cert = pkcs7.load_der_pkcs7_certificates(certificate_data)[0].public_bytes(Encoding.DER)
     assert sum(b if b < 128 else b - 256 for b in cert) == 0x3576
     cert_ptr, input_ptr = 0x140000, 0x150000
     uc.mem_write(cert_ptr, cert)

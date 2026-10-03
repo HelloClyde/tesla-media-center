@@ -1,5 +1,30 @@
 # Original Amap junction-image integration
 
+## Working integration (2026-10-03)
+
+The pinned App's `new_vector_cross` V4 endpoint now returns the original
+elevated-fork illustration from a fresh TMC App 5.1 route. The Python helper
+derives adjacent segment link IDs and turn actions from the verified route,
+encodes the JSON with the pinned `libserverkey.so` body codec, and signs the
+minimal query with the existing pinned AOS material. The response contains
+separate JPEG road scenery and palette PNG route guidance. The decoder makes
+the PNG's magenta color-key transparent and checks the navigation ID before
+the authenticated endpoint exposes the two image layers.
+
+The navigation view requests a picture once when a bear/fork instruction is
+within 700 m, displays it within 450 m in either 2D or 3D navigation, and
+hides it after passing the maneuver or entering route overview. The observed
+Hangzhou elevated fork returned 500×320 layers from a fresh Python-planned
+route; they were byte-identical to the official App's captured layers. Other
+intersections may return vector data only and therefore show no picture.
+The emulator capture files and navigation-session tokens remain local and
+are not part of the build or repository. The body codec reads the staged
+certificate, so the deployed backend does not need the full APK.
+
+The notes below record the earlier investigation chronologically. Statements
+about missing response decoding or production display describe that earlier
+state, not the integration above.
+
 User explicitly requests the original junction illustration, not a zoomed map.
 The substitute preview was detached from AmapAppView on 2026-09-30.
 
