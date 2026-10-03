@@ -184,3 +184,31 @@ the `cross_ver=4.0` parameter addition, and shared AOS submission. It emits
 these as `cross_http_contract` alongside the endpoint profiles, making that
 part of the native call chain reproducible. This still does not supply the
 route-specific body or a valid response.
+
+## Elevated-fork runtime observation (2026-10-03)
+
+A fresh App 5.1 route from `(120.1974, 30.2924)` to
+`(120.165, 30.335)` includes 秋石高架路, 石石立交桥 and 留石高架路. The route's
+elevated fork is around `(120.19355, 30.33128)` (GCJ-02). The official
+17.00 App entered **real navigation** in BlueStacks and received continuous
+WGS-84 GPS fixes transformed from that route's GCJ-02 vertices. It displayed
+its original large three-dimensional road-fork illustration, yellow branch
+arrow and lane arrows. One frame showed a fork illustration about 134 m
+ahead; another showed the 留石高架路上塘高架路 exit illustration about 265 m ahead.
+These were visually observed, not inferred from route labels. Local ignored
+screenshots are `fork-live-now.png` and `fork-live-later.png`.
+
+An App Java heap captured during the route contained live
+`https://m5.amap.com/ws/transfer/auth/new_vector_cross/` request URLs. Their
+outer query has `ent`, `in`, `csid`, `is_bin`. Decoding `in` with the APK's
+known query codec yielded 36 named fields, including `cross_ver=4.0` and
+`sdk_version=17.00.0.1007`. This resolves the active endpoint choice to the
+**transfer** variant for this session. The heap contained no plaintext
+`<cross` XML; the route-specific body and successful binary response remain
+to be captured or reconstructed. Replaying one captured URL with an empty
+body returned HTTP 400, so it is not a standalone image URL.
+
+Run `inspect_junction_runtime.py --route ROUTE.bin --heap APP.hprof` to
+reproduce the sanitized route/request summary. It never prints signed query
+values or device identifiers. The on-screen App picture remains a research
+reference; TMC does not yet display this original data.
