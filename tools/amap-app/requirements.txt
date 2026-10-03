@@ -1,5 +1,6 @@
 unicorn==2.1.4
 zstandard==0.25.0
+msgpack==1.2.3
 requests>=2.31
 cryptography>=42
 numpy>=1.26,<3

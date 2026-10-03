@@ -33,6 +33,7 @@ const trafficRoads = ref<TrafficRoad[]>([]);
 const trafficEnabled = ref(true);
 let trafficOverlay: ReturnType<typeof attachTrafficOverlay> | undefined;
 const liveSpeed = ref<number | null>(null);
+const speedEstimated = ref(false);
 let positionWatch: number | undefined;
 const use3D = ref(false), map3DStatus = ref('');
 const map3D = ref<InstanceType<typeof AmapNavigation3D>>();
@@ -54,6 +55,7 @@ import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 import { greenWaveSpeedWindow, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, isOverSpeed, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 const router = useRouter();
 const mapElement = ref<HTMLElement>();
 const topPanel = ref<HTMLElement>(), footerPanel = ref<HTMLElement>();
@@ -188,7 +190,71 @@ const status = ref('点击地图选择终点；先定位可使用当前位置作
 const roadSwitchOpen = ref(false);
 const lastGpsPoint = ref<Point>();
 const current = computed(() => routes.value[selected.value]);
+const speedLimitSection = ref<SpeedLimitSection>();
+const speedLimitEvents = createSpeedLimitSectionEvents();
+let speedLimitClearTimer: ReturnType<typeof setTimeout> | undefined;
+function clearSpeedLimitTimer() {
+  if (speedLimitClearTimer !== undefined) clearTimeout(speedLimitClearTimer);
+  speedLimitClearTimer = undefined;
+}
+function applySpeedLimitEvent(event: { type: 452; speed: number; section?: SpeedLimitSection }) {
+  clearSpeedLimitTimer();
+  if (event.speed > 0) { speedLimitSection.value = event.section; return; }
+  // The APK delays a zero-speed event briefly to avoid flicker at a boundary.
+  speedLimitClearTimer = setTimeout(() => { speedLimitSection.value = undefined; speedLimitClearTimer = undefined; }, 250);
+}
+function clearSpeedGuidance() {
+  clearSpeedLimitTimer();
+  speedLimitEvents.reset();
+  speedLimitSection.value = undefined;
+  speedCamera.value = undefined;
+  speedReminder.reset();
+}
+const nextSpeedLimit = computed(() => mode.value === 'live' ? upcomingSpeedLimit(current.value?.speedLimits, progress.value) : undefined);
+const speedSigns = ref<SpeedSignPoint[]>([]);
+const nextSpeedSign = computed(() => mode.value === 'live' ? upcomingSpeedSign(speedSigns.value, progress.value) : undefined);
+let speedSignRequest = 0;
+async function refreshNavigationEvents() {
+  const request = ++speedSignRequest;
+  speedSigns.value = [];
+  if (mode.value !== 'live' || !routeToken.value || !current.value) return;
+  const token = routeToken.value, index = selected.value;
+  try {
+    const response = await axios.post('/api/amap-app/navigation-events', { routeToken: token, routeIndex: index }, { timeout: 35000 });
+    if (disposed || request !== speedSignRequest || mode.value !== 'live' || token !== routeToken.value || index !== selected.value) return;
+    const data = response.data?.data;
+    if (response.data?.status === 'ok' && data?.state === 'ready'
+        && Array.isArray(data.speedSigns) && Array.isArray(data.speedLimits) && Array.isArray(data.speedCameras)) {
+      routes.value[index].speedLimits = data.speedLimits;
+      routes.value[index].speedCameras = data.speedCameras;
+      speedSigns.value = data.speedSigns;
+    }
+  } catch { /* The signed route still works when optional sign data is unavailable. */ }
+}
+const speedCamera = ref<{ at: number; limit: number; distance: number; type: number }>();
+function applySpeedCameraEvent(event: ReturnType<typeof cameraEventAhead>) {
+  const camera = event.naviCamera[0];
+  const speeds = camera?.speed.filter(value => Number.isInteger(value) && value >= 5 && value <= 160 && value !== 255);
+  speedCamera.value = camera && speeds?.length
+    ? { at: Math.round((progress.value + camera.distance) * 100) / 100, limit: Math.max(...speeds), distance: camera.distance, type: camera.type }
+    : undefined;
+}
+const speedLimit = computed(() => speedLimitSection.value?.limit);
+const overSpeed = computed(() => !speedEstimated.value && isOverSpeed(liveSpeed.value, speedLimit.value));
+const speedReminder = createSpeedReminder();
+const announcedSpeedLimits = new Set<NonNullable<typeof nextSpeedLimit.value>['section']>();
+const announcedSpeedCameras = new Set<number>();
+const announcedSpeedSigns = new Set<number>();
 watch([mode, routeToken, selected], () => {
+  clearSpeedLimitTimer();
+  speedLimitEvents.reset();
+  speedLimitSection.value = undefined;
+  speedCamera.value = undefined;
+  speedReminder.reset();
+  announcedSpeedLimits.clear();
+  announcedSpeedCameras.clear();
+  announcedSpeedSigns.clear();
+  void refreshNavigationEvents();
   stopSignals();
   if (mode.value === 'live' && routeToken.value) {
     signalTimer = setInterval(() => { signalClock.value = Date.now(); void refreshSignals(); }, 1000);
@@ -462,8 +528,8 @@ async function plan(replan = false) {
     if (response.data.status === 'need_login') { await router.replace('/login'); return; }
     const data = response.data.data;
     if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length) throw new Error(response.data.message || '这条路线暂未成功解析，请更换地点或重试');
-    routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; draw(!replan);
-    routes.value = data.routes; selected.value = 0; progress.value = 0; offCount = 0; spoken = ''; announcedServiceAreas.clear(); draw(!replan);
+    routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = 0; progress.value = 0; offCount = 0; spoken = '';
+    announcedServiceAreas.clear(); draw(!replan);
     status.value = replan ? '路线已重新规划' : '路线已就绪，选择方案后开始导航';
     if (replan) speak('已为您重新规划路线');
   } catch (exception) {
@@ -484,9 +550,10 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   animatePosition(point);
   }
   if (!current.value || mode.value === 'idle') return;
-  if (accuracy > 60) { status.value = '定位精度不足，等待更准确的位置'; return; }
+  if (accuracy > 60) { clearSpeedGuidance(); status.value = '定位精度不足，等待更准确的位置'; return; }
   const match = matchPosition(current.value, point, progress.value, recovered);
   if (match.distance > Math.max(40, accuracy * 1.5)) {
+    clearSpeedGuidance();
     offCount++;
     status.value = '已偏离路线';
     if (mode.value === 'live' && offCount >= 3 && !busy.value && Date.now() - lastReplan > 20000) {
@@ -495,6 +562,11 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     return;
   }
   offCount = 0; progress.value = fusion?.progress ?? (recovered ? match.progress : Math.max(progress.value, match.progress));
+  if (mode.value === 'live') {
+    const event = speedLimitEvents.update(current.value.speedLimits, progress.value);
+    if (event) applySpeedLimitEvent(event);
+    applySpeedCameraEvent(cameraEventAhead(current.value.speedCameras, progress.value));
+  }
   trimDrivenRoute();
   appMap?.setRoute(current.value, progress.value);
   if (recovered) spoken = '';
@@ -504,11 +576,33 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (!fusion?.estimated && remaining.value < 25 && meters(point, current.value.path[current.value.path.length - 1]) < 40) {
     finishNavigationFollow('已到达目的地附近，继续跟随车辆'); arrived.value = true; speak('已到达目的地附近'); return;
   }
-  if (fusion?.state === 'waiting') return;
+  if (fusion?.state === 'waiting') { clearSpeedGuidance(); return; }
   const turn = next.value;
   if (turn && turn.distance < 250) {
     const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
     if (key !== spoken) { spoken = key; speak(navigationVoicePhrase(turn, turn.distance < 40)); }
+  }
+  const reliableSpeed = mode.value === 'live' && !fusion?.estimated && accuracy <= 25
+    && (turn?.distance ?? Infinity) > 100 ? liveSpeed.value : null;
+  if (speedReminder.update(speedLimitSection.value, reliableSpeed, Date.now())) {
+    speak(`当前道路限速${speedLimit.value}公里，您已超速，请减速慢行`);
+  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+      && speedCamera.value && speedCamera.value.distance <= 200
+      && !announcedSpeedCameras.has(speedCamera.value.at)) {
+    announcedSpeedCameras.add(speedCamera.value.at);
+    speak(`前方${speedCamera.value.type === 25 || speedCamera.value.type === 26 ? '区间测速' : '测速'}限速${speedCamera.value.limit}公里，请留意道路标志`);
+  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+      && !speedCamera.value && nextSpeedSign.value && nextSpeedSign.value.distance <= 200
+      && !announcedSpeedSigns.has(nextSpeedSign.value.sign.at)) {
+    announcedSpeedSigns.add(nextSpeedSign.value.sign.at);
+    speak(`前方限速标志${nextSpeedSign.value.sign.limit}公里，请留意道路标志`);
+  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+      && !speedCamera.value
+      && nextSpeedLimit.value && nextSpeedLimit.value.distance <= 200
+      && nextSpeedLimit.value.section.limit !== speedLimit.value
+      && !announcedSpeedLimits.has(nextSpeedLimit.value.section)) {
+    announcedSpeedLimits.add(nextSpeedLimit.value.section);
+    speak(`前方限速${nextSpeedLimit.value.section.limit}公里，请留意道路标志`);
   }
   const area = serviceAreas.value[0];
   if (!muted.value && area && !announcedServiceAreas.has(area.key) &&
@@ -523,6 +617,7 @@ let fusionTimer: ReturnType<typeof setInterval> | undefined;
 function renderFusion(result?: FusionPosition) {
   if (!result || disposed || mode.value !== 'live') return;
   liveSpeed.value = result.speed * 3.6;
+  speedEstimated.value = !!result.estimated;
   updatePosition(result.point, 0, result.heading, result.speed, result.state === 'off-route', result);
 }
 function stopFusion() { clearInterval(fusionTimer); fusionTimer = undefined; routeFusion = undefined; }
@@ -536,6 +631,16 @@ watch(current, () => startFusion());
 let trackingLocation = false, resumeLocationOnActivate = false;
 watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
+  clearSpeedLimitTimer();
+  speedLimitEvents.reset();
+  speedLimitSection.value = undefined;
+  speedCamera.value = undefined;
+  speedReminder.reset();
+  announcedSpeedLimits.clear();
+  announcedSpeedCameras.clear();
+  announcedSpeedSigns.clear();
+  speedSignRequest++;
+  speedSigns.value = [];
   stopSignals();
   stopFusion();
   roadSwitchOpen.value = false;
@@ -545,7 +650,7 @@ function stop(keepLocation = false) {
     trackingLocation = false;
     locationGeneration++;
     if (positionWatch !== undefined) navigator.geolocation?.clearWatch(positionWatch);
-    positionWatch = undefined; liveSpeed.value = null;
+    positionWatch = undefined; liveSpeed.value = null; speedEstimated.value = false;
     if (locationTimeout) clearTimeout(locationTimeout);
     locationTimeout = undefined;
     geoLocation.removeListener('amap-navigation');
@@ -612,6 +717,7 @@ function locate(navigate = false, preserveRoute = false) {
       return;
     }
     liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
+    speedEstimated.value = false;
     updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
 
   };
@@ -693,6 +799,13 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
     </header>
     <div ref="topPanel" v-else-if="next" class="turn-card glass" aria-live="polite"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
     <AmapJunctionPreview v-if="visibleJunction && next" :road-jpeg="visibleJunction.roadJpeg" :arrow-png="visibleJunction.arrowPng" :width="visibleJunction.width" :height="visibleJunction.height" :distance="next.distance" :instruction="next.text" />
+    <div v-if="mode === 'live' && (liveSpeed !== null || speedLimit !== undefined || speedCamera || nextSpeedSign || nextSpeedLimit)" class="speed-badges" :aria-label="speedLimit === undefined ? '当前车速' : '当前车速与道路限速'">
+      <div v-if="liveSpeed !== null" class="speed-current" :class="{ 'speed-over': overSpeed }"><strong>{{ Math.round(liveSpeed) }}</strong><small>{{ speedEstimated ? '估 km/h' : 'km/h' }}</small></div>
+      <div v-if="speedLimit !== undefined" class="speed-road"><strong>{{ speedLimit }}</strong><small>限速</small></div>
+      <div v-if="speedCamera" class="speed-ahead glass">前方{{ speedCamera.type === 25 || speedCamera.type === 26 ? '区间测速' : '测速' }} {{ formatDistance(speedCamera.distance) }} <b>{{ speedCamera.limit }}</b> km/h</div>
+      <div v-else-if="nextSpeedSign" class="speed-ahead glass">前方限速标志 {{ formatDistance(nextSpeedSign.distance) }} <b>{{ nextSpeedSign.sign.limit }}</b> km/h</div>
+      <div v-else-if="nextSpeedLimit" class="speed-ahead glass">前方 {{ formatDistance(nextSpeedLimit.distance) }} <b>{{ nextSpeedLimit.section.limit }}</b> km/h</div>
+    </div>
     <div v-if="upcomingSignal" class="signal-card glass" :class="`signal-${upcomingSignal.color}`" role="status">
       <span class="signal-orb" aria-hidden="true"></span><div><strong>{{ signalLabel }} {{ upcomingSignal.seconds }} 秒</strong><small>前方 {{ Math.round(upcomingSignal.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
     </div>
@@ -778,6 +891,9 @@ onBeforeUnmount(() => { cancelPositionAnimation(); clearBackgroundNavigation(); 
 .map-controls .active{background:#e4f8ef;border-color:#19b88b;color:#078161}
 .traffic-legend{display:flex;gap:10px;font-size:11px;white-space:nowrap}.traffic-legend span{display:flex;align-items:center;gap:4px}.traffic-legend i{display:inline-block;width:15px;height:4px;border-radius:3px}.traffic-clear{background:#1688ef}.traffic-slow{background:#f5a623}.traffic-jam{background:#e44650}.traffic-message{max-width:205px;line-height:1.35;color:#a7523e}
 .traffic-warning{margin:0 0 7px;font-size:12px;color:#a7523e}
+.speed-badges{position:absolute;z-index:502;left:16px;bottom:110px;display:flex;align-items:flex-end;gap:8px;pointer-events:none}.speed-current,.speed-road{display:flex;flex-direction:column;align-items:center;justify-content:center;font-variant-numeric:tabular-nums;border-radius:50%;background:#fff;box-shadow:0 4px 16px #172e3a35}.speed-current{width:68px;height:68px;color:#354c58;border:5px solid #e5edf0}.speed-current.speed-over{color:#e33436;border-color:#ee3438}.speed-current strong{font-size:28px;line-height:1}.speed-current small{font-size:10px}.speed-road{width:50px;height:50px;border:4px solid #ee3438;color:#1f2b30}.speed-road strong{font-size:21px;line-height:1}.speed-road small{font-size:9px}@media(max-width:700px){.speed-badges{left:10px;bottom:90px}.speed-current{width:58px;height:58px}.speed-current strong{font-size:23px}.speed-road{width:44px;height:44px}.speed-road strong{font-size:18px}}
+.speed-ahead{padding:7px 10px;font-size:12px;color:#253b40;white-space:nowrap}.speed-ahead b{display:inline-grid;place-items:center;border:2px solid #ee3438;border-radius:50%;width:29px;height:29px;font-size:14px;margin:0 3px}
+.speed-badges ~ .service-area-card{bottom:195px}@media(max-width:700px){.speed-badges ~ .service-area-card{bottom:165px}}
 </style>
 
 <style scoped>

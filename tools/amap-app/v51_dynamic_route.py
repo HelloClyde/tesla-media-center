@@ -80,7 +80,9 @@ def extract(raw: bytes, route_index: int = 0) -> dict:
             delta, length = one(link, 1, None), one(link, 2, None)
             if type(start) is not int or type(count) is not int or start != covered or count < 2 or start + count > len(xs):
                 raise ValueError("invalid link span")
-            if type(delta) is not int or not 0 <= delta < 1 << 64 or type(length) is not int or not 0 < length <= 65535:
+            # The native wire field is wider than 16 bits: a real 666 m
+            # highway link arrives as 66,600 centimetres.
+            if type(delta) is not int or not 0 <= delta < 1 << 64 or type(length) is not int or not 0 < length <= 1_000_000:
                 raise ValueError("invalid link value")
             if 7 in link:
                 attributes = fields(one(link, 7))

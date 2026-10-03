@@ -53,6 +53,56 @@ def invoke_helper(payload=None):
         raise ValueError("adapter output contract")
     # Explicit allowlist: raw protocol fields and signing material never reach UI.
     clean = {"state": result["state"], "navigationAvailable": False}
+    if payload and payload.get("action") == "navigation-events":
+        if result["state"] != "ready":
+            return {"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []}
+        signs = result.get("speedSigns")
+        if not isinstance(signs, list) or len(signs) > 10000:
+            raise ValueError("invalid speed signs")
+        safe, previous = [], -1
+        for sign in signs:
+            if not isinstance(sign, dict):
+                raise ValueError("invalid speed sign")
+            at, limit = sign.get("at"), sign.get("limit")
+            if (type(at) not in (int, float) or not math.isfinite(at)
+                    or not previous <= at <= 20000000
+                    or type(limit) is not int or not 5 <= limit <= 160):
+                raise ValueError("invalid speed sign")
+            safe.append({"at": at, "limit": limit})
+            previous = at
+        sections = result.get("speedLimits")
+        if not isinstance(sections, list) or len(sections) > 10000:
+            raise ValueError("invalid speed limit sections")
+        safe_sections, previous_end = [], 0
+        for section in sections:
+            if not isinstance(section, dict):
+                raise ValueError("invalid speed limit section")
+            start, end, limit = section.get("start"), section.get("end"), section.get("limit")
+            if (type(start) not in (int, float) or type(end) not in (int, float)
+                    or not math.isfinite(start) or not math.isfinite(end)
+                    or not previous_end <= start < end <= 20000000
+                    or type(limit) is not int or not 5 <= limit <= 160):
+                raise ValueError("invalid speed limit section")
+            safe_sections.append({"start": start, "end": end, "limit": limit})
+            previous_end = end
+        cameras = result.get("speedCameras")
+        if not isinstance(cameras, list) or len(cameras) > 10000:
+            raise ValueError("invalid speed cameras")
+        safe_cameras, previous_at = [], -1
+        for camera in cameras:
+            if not isinstance(camera, dict):
+                raise ValueError("invalid speed camera")
+            at, kind, speeds = camera.get("at"), camera.get("type"), camera.get("speed")
+            if (type(at) not in (int, float) or not math.isfinite(at) or not previous_at <= at <= 20000000
+                    or type(kind) is not int or kind not in (7, 25, 26, 27)
+                    or not isinstance(speeds, list) or not 1 <= len(speeds) <= 8
+                    or any(type(value) is not int or value != 255 and not 5 <= value <= 160 for value in speeds)
+                    or all(value == 255 for value in speeds)):
+                raise ValueError("invalid speed camera")
+            safe_cameras.append({"at": at, "type": kind, "speed": speeds})
+            previous_at = at
+        return {"state": "ready", "speedSigns": safe,
+                "speedLimits": safe_sections, "speedCameras": safe_cameras}
     if payload and payload.get("action") == "traffic":
         if result["state"] != "ready":
             return {"state": "unavailable", "lights": []}
@@ -118,6 +168,37 @@ def invoke_helper(payload=None):
                     or type(traffic_light_count) is not int or traffic_light_count != len(traffic_lights)):
                 raise ValueError("invalid traffic lights")
             traffic_lights = [validate_point(point) for point in traffic_lights]
+            speed_limits = route.get("speedLimits", [])
+            if not isinstance(speed_limits, list) or len(speed_limits) > 10000:
+                raise ValueError("invalid speed limit sections")
+            safe_speed_limits = []
+            previous_end = 0
+            for section in speed_limits:
+                if not isinstance(section, dict):
+                    raise ValueError("invalid speed limit section")
+                start, end, limit = section.get("start"), section.get("end"), section.get("limit")
+                if (type(start) not in (int, float) or type(end) not in (int, float)
+                        or not math.isfinite(start) or not math.isfinite(end)
+                        or not previous_end <= start < end <= length + 1
+                        or type(limit) is not int or not 5 <= limit <= 160):
+                    raise ValueError("invalid speed limit section")
+                safe_speed_limits.append({"start": start, "end": end, "limit": limit})
+                previous_end = end
+            speed_cameras = route.get("speedCameras", [])
+            if not isinstance(speed_cameras, list) or len(speed_cameras) > 10000:
+                raise ValueError("invalid speed cameras")
+            safe_speed_cameras = []
+            for camera in speed_cameras:
+                if not isinstance(camera, dict):
+                    raise ValueError("invalid speed camera")
+                at, kind, speeds = camera.get("at"), camera.get("type"), camera.get("speed")
+                if (type(at) not in (int, float) or not math.isfinite(at) or not 0 <= at <= length + 1
+                        or type(kind) is not int or kind not in (7, 25, 26, 27)
+                        or not isinstance(speeds, list) or not 1 <= len(speeds) <= 8
+                        or any(type(value) is not int or value != 255 and not 5 <= value <= 160 for value in speeds)
+                        or all(value == 255 for value in speeds)):
+                    raise ValueError("invalid speed camera")
+                safe_speed_cameras.append({"at": at, "type": kind, "speed": speeds})
             safe_steps = []
             for step in steps:
                 if not isinstance(step, dict):
@@ -156,6 +237,8 @@ def invoke_helper(payload=None):
                 summary['tolls'] = None
             clean["routes"].append({**summary, "id": index, "path": path, "steps": safe_steps, "breaks": breaks,
                                     "trafficLights": traffic_lights, "trafficLightCount": traffic_light_count,
+                                    "speedLimits": safe_speed_limits,
+                                    "speedCameras": safe_speed_cameras,
                                     "distance": length, "labels": labels[:10]})
         raw_route = result.get("rawRoute")
         if raw_route is not None:
@@ -221,6 +304,30 @@ def load_route_session(token):
 
 
 def add_amap_app_route(app):
+    @app.post("/api/amap-app/navigation-events")
+    @app.post("/api/amap-app/speed-signs")
+    @login_check
+    def amap_app_navigation_events():
+        if request.content_length and request.content_length > 4096:
+            return json_fail(message="请求内容过大"), 413
+        payload = request.get_json(silent=True)
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            raw_route = load_route_session(payload.get("routeToken"))
+            index = payload.get("routeIndex")
+            if type(index) is not int or not 0 <= index <= 9:
+                raise ValueError("invalid route index")
+        except (ValueError, OSError):
+            return json_fail(message="路线会话已过期，请重新规划路线"), 400
+        try:
+            return json_ok(invoke_helper({"action": "navigation-events", "rawRoute": raw_route,
+                                          "routeIndex": index}))
+        except subprocess.TimeoutExpired:
+            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []})
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []})
+
     @app.post("/api/amap-app/junction-image")
     @login_check
     def amap_app_junction_image():

@@ -86,6 +86,30 @@ class AmapAppTest(unittest.TestCase):
             self.assertEqual(self.app.test_client().post('/api/amap-app/route', json=self.payload).json['status'], 'need_login')
             helper.assert_not_called()
 
+    def test_only_verified_bounded_speed_sections_reach_navigation(self):
+        route = {'path': [[120, 30], [120.01, 30.01]],
+                 'steps': [{'start': 0, 'end': 1, 'road': '道路'}],
+                 'distance': 1500, 'labels': [],
+                 'speedLimits': [{'start': 100, 'end': 500, 'limit': 80, 'private': 'hidden'}],
+                 'speedCameras': [{'at': 1000, 'type': 7, 'speed': [80, 255], 'private': 'hidden'}]}
+        result = {'state': 'ready', 'routes': [route]}
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())):
+            cleaned = amap_app.invoke_helper(self.payload)
+        self.assertEqual(cleaned['routes'][0]['speedLimits'], [{'start': 100, 'end': 500, 'limit': 80}])
+        self.assertEqual(cleaned['routes'][0]['speedCameras'], [{'at': 1000, 'type': 7, 'speed': [80, 255]}])
+        self.assertNotIn('hidden', json.dumps(cleaned))
+        for invalid in (0, 161, 80.5, True):
+            route['speedLimits'][0]['limit'] = invalid
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())):
+                with self.assertRaises(ValueError):
+                    amap_app.invoke_helper(self.payload)
+        route['speedLimits'][0]['limit'] = 80
+        for invalid in ([255], [0], [80.5], [True], [161]):
+            route['speedCameras'][0]['speed'] = invalid
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())):
+                with self.assertRaises(ValueError):
+                    amap_app.invoke_helper(self.payload)
+
     def test_invalid_coordinates_never_reach_upstream(self):
         bad = [None, [], [1], [True, 1], ['1', 1], [181, 0], [0, 91], [float('nan'), 0],
                [float('inf'), 0], [10**400, 0]]
@@ -199,6 +223,56 @@ class AmapAppTest(unittest.TestCase):
                         'routeToken': token, 'routeIndex': 0, 'stepIndex': True})
                     self.assertEqual(invalid.status_code, 400)
                     helper.assert_not_called()
+
+    def test_navigation_events_use_route_session_and_reject_unbounded_data(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(amap_app, 'SESSION_DIR', Path(directory)):
+                token = amap_app.save_route_session(base64.b64encode(b'route response').decode())
+                events = {'state': 'ready', 'speedSigns': [
+                    {'at': 140.5, 'limit': 80, 'private': 'hidden'},
+                    {'at': 450, 'limit': 60}],
+                    'speedLimits': [{'start': 100, 'end': 420, 'limit': 80, 'private': 'hidden'}],
+                    'speedCameras': [{'at': 400, 'type': 7, 'speed': [80, 255], 'private': 'hidden'}]}
+                with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(
+                        stdout=json.dumps(events).encode())):
+                    response = self.client.post('/api/amap-app/navigation-events', json={
+                        'routeToken': token, 'routeIndex': 0})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json['data']['speedSigns'], [
+                    {'at': 140.5, 'limit': 80}, {'at': 450, 'limit': 60}])
+                self.assertEqual(response.json['data']['speedLimits'], [
+                    {'start': 100, 'end': 420, 'limit': 80}])
+                self.assertEqual(response.json['data']['speedCameras'], [
+                    {'at': 400, 'type': 7, 'speed': [80, 255]}])
+                self.assertNotIn('hidden', response.get_data(as_text=True))
+                with patch.object(amap_app, 'invoke_helper') as helper:
+                    invalid = self.client.post('/api/amap-app/navigation-events', json={
+                        'routeToken': token, 'routeIndex': True})
+                    self.assertEqual(invalid.status_code, 400)
+                    helper.assert_not_called()
+                for bad in ({'at': 450, 'limit': 255}, {'at': 100, 'limit': 60},
+                            {'at': 460, 'limit': True}):
+                    events['speedSigns'][-1] = bad
+                    with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(
+                            stdout=json.dumps(events).encode())):
+                        with self.assertRaises(ValueError):
+                            amap_app.invoke_helper({'action': 'navigation-events'})
+                events['speedSigns'][-1] = {'at': 450, 'limit': 60}
+                for bad in ({'start': 400, 'end': 100, 'limit': 80},
+                            {'start': 100, 'end': 420, 'limit': 255}):
+                    events['speedLimits'][0] = bad
+                    with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(
+                            stdout=json.dumps(events).encode())):
+                        with self.assertRaises(ValueError):
+                            amap_app.invoke_helper({'action': 'navigation-events'})
+                events['speedLimits'][0] = {'start': 100, 'end': 420, 'limit': 80}
+                for bad in ({'at': 400, 'type': 8, 'speed': [80]},
+                            {'at': 400, 'type': 7, 'speed': [255]}):
+                    events['speedCameras'][0] = bad
+                    with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(
+                            stdout=json.dumps(events).encode())):
+                        with self.assertRaises(ValueError):
+                            amap_app.invoke_helper({'action': 'navigation-events'})
 
 
 if __name__ == '__main__':

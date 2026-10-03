@@ -25,7 +25,7 @@ HASHES = {
 
 
 def check_assets(validate_digest=True):
-    if any(importlib.util.find_spec(name) is None for name in ("unicorn", "cryptography", "requests", "zstandard")):
+    if any(importlib.util.find_spec(name) is None for name in ("unicorn", "cryptography", "requests", "zstandard", "msgpack")):
         raise ValueError("missing-runtime")
     for name, expected in HASHES.items():
         path = ASSETS / name
@@ -151,6 +151,25 @@ def traffic(payload):
     return {"state": "ready", **live}
 
 
+def navigation_events(payload):
+    from native_signer import load_material
+    from route_v51 import decode
+    from routeguide_events import fetch_guidance
+
+    encoded = payload.get("rawRoute")
+    if not isinstance(encoded, str) or len(encoded) > 6 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    raw = base64.b64decode(encoded, validate=True)
+    if not 0 < len(raw) <= 4 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    routes = decode(raw)
+    index = payload.get("routeIndex")
+    if type(index) is not int or not 0 <= index < len(routes):
+        raise ValueError("invalid-route-index")
+    guidance = fetch_guidance(raw, routes, load_material(ASSETS), ASSETS)
+    return {"state": "ready", **guidance[index]}
+
+
 def junction(payload):
     import requests
     from cross_v4_request import CROSS_URL, build_cross_for_step, cross_query
@@ -204,8 +223,10 @@ def main():
             # A traffic token can only come from a previously verified route
             # response, so skip rehashing the ~400 MB APK on every poll.
             action = payload.get("action")
-            check_assets(validate_digest=action not in ("traffic", "junction"))
-            result = traffic(payload) if action == "traffic" else junction(payload) if action == "junction" else probe(payload)
+            check_assets(validate_digest=action not in ("traffic", "junction", "navigation-events"))
+            result = (traffic(payload) if action == "traffic" else
+                      junction(payload) if action == "junction" else
+                      navigation_events(payload) if action == "navigation-events" else probe(payload))
     except Exception:
         # Exception messages from requests may contain signed URLs. Never emit them.
         result = {"state": "unavailable", "navigationAvailable": False,
