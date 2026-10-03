@@ -14,9 +14,12 @@ import sys
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
-ASSETS = Path(os.environ.get("TMC_AMAP_APP_ASSETS", ROOT / ".local-data/amap-app"))
+ASSETS = Path(os.environ.get("TMC_AMAP_APP_ASSETS", ROOT / "docker_build/amap-assets"))
 HASHES = {
-    "amap-release.apk": "022c844511dce2958fd37c8d0941feb72587a434701debc9b2fda3e69ec07152",
+    "libamapr.so": "91491e00f582f610fe36cdbc4ca03bef942d0da8ce24dc1f672c53be73e88e08",
+    "style-day.data": "3e3ebec698a750969c2b4184d38d0aa4a0abf67f37582a7af01f0f38192fb8ba",
+    "style-night.data": "586a06dccb22873918c684d2644f39faf00409f8af37a64d1241333d893224c9",
+    "signing-certificate.rsa": "80a52915ce984adcfb8a7e37660702c50d4e1a5666d223f4f342f386612c6146",
     "libserverkey.so": "92bfe9abf10918954dcef8713a1734a5448e9bcfc413ca1836e853f6dfbddaa8",
 }
 

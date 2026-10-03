@@ -1,5 +1,8 @@
 import unittest
 import threading
+import base64
+import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 from flask import Flask
@@ -18,6 +21,19 @@ class DouyinTests(unittest.TestCase):
 
     def login(self):
         with self.client.session_transaction() as session: session['last_visit'] = 1
+
+    def test_server_waf_challenge_is_solved_without_executing_page_scripts(self):
+        from tools.douyin.visitor_probe import waf_challenge_cookie
+        prefix = b'p' * 32
+        expected = hashlib.sha256(prefix + b'5').digest()
+        challenge = {'v': {'a': base64.b64encode(prefix).decode().rstrip('='),
+                           'c': base64.b64encode(expected).decode().rstrip('=')}}
+        encoded = base64.b64encode(json.dumps(challenge).encode()).decode().rstrip('=')
+        page = f'<script>var wci="_wafchallengeid",cs="{encoded}"; s256(prefix,""+i)</script>'
+        cookie = json.loads(base64.b64decode(waf_challenge_cookie(page)))
+        self.assertEqual(base64.b64decode(cookie['d']), b'5')
+        with self.assertRaises(ValueError):
+            waf_challenge_cookie(page.replace('s256(prefix,""+i)', 'unknown()'))
 
     def test_links(self):
         for url in (VID, f'https://www.douyin.com/video/{VID}', f'https://www.iesdouyin.com/share/video/{VID}/',

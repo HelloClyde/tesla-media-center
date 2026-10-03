@@ -72,11 +72,8 @@ def load_material(asset_dir):
     u.hook_add(UC_HOOK_CODE,hook);u.reg_write(UC_ARM64_REG_SP,0x1000000);u.reg_write(UC_ARM64_REG_X0,vm);u.reg_write(UC_ARM64_REG_LR,0x130000)
     u.emu_start(0x9d18,0x130004,count=1000000)
 
-    import zipfile,hashlib,requests
     from cryptography.hazmat.primitives.serialization import pkcs7,Encoding
-    with zipfile.ZipFile(p/'amap-release.apk') as z:
-     name=next(n for n in z.namelist() if n.startswith('META-INF/') and n.endswith('.RSA'))
-     cert=pkcs7.load_der_pkcs7_certificates(z.read(name))[0].public_bytes(Encoding.DER)
+    cert=pkcs7.load_der_pkcs7_certificates((p/'signing-certificate.rsa').read_bytes())[0].public_bytes(Encoding.DER)
     assert sum(x if x<128 else x-256 for x in cert)==0x3576
     u.mem_write(cert_ptr,cert);hooks[0x33b8]='signature-source';phase=True
     values={}

@@ -23,6 +23,8 @@ SESSION_DIR = Path(tempfile.gettempdir()) / "tmc-amap-route-sessions"
 SESSION_TTL = 2 * 60 * 60
 TRAFFIC_ADIU = secrets.token_hex(15)
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
+MANEUVERS = {1: 'left', 2: 'right', 3: 'bear-left', 4: 'bear-right'}
+FORK_ACTIONS = {6: 'fork-middle', 7: 'fork-right', 8: 'fork-left'}
 
 
 def validate_point(value):
@@ -104,7 +106,23 @@ def invoke_helper(payload=None):
                 start, end, road = step.get("start"), step.get("end"), step.get("road")
                 if type(start) is not int or type(end) is not int or not 0 <= start < end < len(path) or not isinstance(road, str) or len(road) > 1024:
                     raise ValueError("invalid route step")
-                safe_steps.append({"start": start, "end": end, "road": road})
+                safe_step = {"start": start, "end": end, "road": road}
+                # v5.1 segment.1 is the maneuver at this segment's exit.
+                # Only codes verified against live route geometry are exposed.
+                action = step.get('actionCode')
+                assistant_action = step.get('assistantActionCode')
+                # A fork instruction is more specific than its primary straight/turn action.
+                if type(assistant_action) is int and assistant_action in FORK_ACTIONS:
+                    safe_step['maneuver'] = FORK_ACTIONS[assistant_action]
+                elif type(action) is int and action in MANEUVERS:
+                    safe_step['maneuver'] = MANEUVERS[action]
+                service_area = step.get('serviceArea')
+                if service_area is not None:
+                    if not isinstance(service_area, str) or not 2 <= len(service_area) <= 100 or \
+                            not service_area.endswith(('服务区', '停车区')) or any(ord(c) < 32 for c in service_area):
+                        raise ValueError('invalid service area')
+                    safe_step['serviceArea'] = service_area
+                safe_steps.append(safe_step)
             labels = route.get("labels", [])
             if not isinstance(labels, list) or any(not isinstance(v, str) or len(v) > 100 for v in labels):
                 raise ValueError("invalid route labels")

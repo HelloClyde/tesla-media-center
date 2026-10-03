@@ -7,6 +7,7 @@ vi.mock('leaflet', () => ({ default: {
 } }));
 vi.mock('./mapRenderQueue', () => ({ createMapRenderQueue: () => ({ start() {}, cancel: cancelDraw }) }));
 import { attachAppMap } from './amapVectorMap';
+import type { AppRoute } from './amapNavigation';
 afterEach(() => { vi.useRealTimers(); post.mockReset(); cancelDraw.mockReset(); });
 
 function fakeMap() {
@@ -42,17 +43,40 @@ it('backs off failed tiles instead of looping on the same request', async () => 
   const { map } = fakeMap(); const layer = attachAppMap(map, vi.fn());
   await vi.advanceTimersByTimeAsync(1000);
   const firstLevel = post.mock.calls[0][1].level;
-  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(1);
-  await vi.advanceTimersByTimeAsync(1500);
+  // The raw tile decoder falls back to the server-rendered endpoint once.
   expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(3);
   layer.dispose();
 });
-it('does not repeatedly cancel drawing while following successive GPS pans', () => {
-  post.mockImplementation(() => new Promise(() => {}));
-  const { map, events } = fakeMap();
+it('loads overview and visible street detail before intermediate levels', async () => {
+  vi.useFakeTimers();
+  post.mockImplementation(async (_url, batch) => ({ status: 200, data: { status: 'ok', data: {
+    tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
+  } } }));
+  const { map } = fakeMap();
   const layer = attachAppMap(map, vi.fn());
-  layer.setFollowing(true);
-  for (let i = 0; i < 10; i++) { events.movestart(); events.moveend(); }
-  expect(cancelDraw).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(350);
+  expect(post.mock.calls.slice(0, 4).map(call => call[1].level)).toEqual([3, 3, 14, 12]);
+  layer.dispose();
+});
+it('warms route tiles only after the visible map and receives no geometry', async () => {
+  vi.useFakeTimers();
+  post.mockImplementation(async (url, batch) => url.endsWith('/prefetch')
+    ? { status: 200, data: { status: 'ok', data: { tiles: batch.tiles.map(([x, y]: number[]) => ({ x, y, ready: true })) } } }
+    : { status: 200, data: { status: 'ok', data: {
+      tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
+    } } });
+  const { map } = fakeMap();
+  const layer = attachAppMap(map, vi.fn());
+  const route: AppRoute = { id: 1, path: [[120.1, 30.2], [120.2, 30.2]],
+    breaks: [], steps: [], distance: 10000, labels: [] };
+  layer.setRoute(route);
+  await vi.advanceTimersByTimeAsync(1500);
+  const urls = post.mock.calls.map(call => call[0]);
+  const firstWarm = urls.findIndex(url => url.endsWith('/prefetch'));
+  expect(firstWarm).toBeGreaterThanOrEqual(6);
+  expect(post.mock.calls[firstWarm][1].tiles.length).toBeLessThanOrEqual(2);
+  expect(post.mock.calls[firstWarm][1].level).toBe(14);
   layer.dispose();
 });

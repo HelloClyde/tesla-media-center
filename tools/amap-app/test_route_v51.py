@@ -1,6 +1,6 @@
 import struct
 import unittest
-from route_v51 import decode, fields, unpack, route_summary
+from route_v51 import decode, fields, unpack, route_summary, service_area_name
 
 
 def vi(value):
@@ -30,9 +30,10 @@ def packed(values):
     return result
 
 
-def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None):
+def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None, facility=None, assistant_action=0):
     links = {} if link_flags is None else {'f3': msg(f6=link_flags, f8=msg(f1=0, f2=2))}
-    segment = msg(f1=2, f4=msg(f1=packed(xs), f2=packed(ys)), **links)
+    segment = msg(f1=2, f2=assistant_action, f4=msg(f1=packed(xs), f2=packed(ys)),
+                  **links, **({'f5': msg(f1=200, f2=8500, f3=b'G60', f4=facility.encode())} if facility else {}))
     protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500, f10=segment)))
     size = 64 + len(protobuf)
     body = struct.pack('<IHI', 31, 1, size).ljust(32, b'\0')
@@ -63,6 +64,16 @@ class RouteV51Test(unittest.TestCase):
         self.assertEqual(route['trafficLightCount'], 1)
         self.assertEqual(route['trafficLights'], [[116.401, 39.9]])
         self.assertEqual(decode(fixture(link_flags=8))[0]['trafficLightCount'], 0)
+    def test_decodes_middle_fork_assistant_action(self):
+        step = decode(fixture(assistant_action=6))[0]['steps'][0]
+        self.assertEqual(step['actionCode'], 2)
+        self.assertEqual(step['assistantActionCode'], 6)
+
+    def test_service_area_only_from_facility_label(self):
+        self.assertEqual(decode(fixture(facility='长安服务区'))[0]['steps'][0]['serviceArea'], '长安服务区')
+        self.assertEqual(decode(fixture(facility='某某停车区'))[0]['steps'][0]['serviceArea'], '某某停车区')
+        self.assertNotIn('serviceArea', decode(fixture(facility='某某收费站'))[0]['steps'][0])
+        self.assertIsNone(service_area_name(fields(msg(f5=b'\x0a\xff'))))
 
     def test_rejects_truncation(self):
         raw = fixture()

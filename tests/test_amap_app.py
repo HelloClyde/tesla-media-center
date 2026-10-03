@@ -33,7 +33,8 @@ class AmapAppTest(unittest.TestCase):
 
     def test_ready_route_allowlist_and_geometry_validation(self):
         route = {'path': [[116.4, 39.9], [116.401, 39.9]], 'steps': [
-            {'start': 0, 'end': 1, 'road': '示例路', 'private': 'hidden'}],
+            {'start': 0, 'end': 1, 'road': '示例路', 'serviceArea': '长安服务区', 'actionCode': 3,
+             'assistantActionCode': 6, 'private': 'hidden'}],
             'distance': 85, 'labels': ['方案一'], 'breaks': [], 'key': 'hidden',
             'duration': 8460, 'tolls': 71, 'tollCurrency': 'CNY',
             'trafficLights': [[116.401, 39.9]], 'trafficLightCount': 1}
@@ -46,6 +47,25 @@ class AmapAppTest(unittest.TestCase):
         self.assertEqual(result['routes'][0]['tolls'], 71)
         self.assertEqual(result['routes'][0]['trafficLightCount'], 1)
         self.assertEqual(result['routes'][0]['trafficLights'], [[116.401, 39.9]])
+        self.assertEqual(result['routes'][0]['steps'][0]['serviceArea'], '长安服务区')
+        self.assertEqual(result['routes'][0]['steps'][0]['maneuver'], 'fork-middle')
+        self.assertNotIn('actionCode', result['routes'][0]['steps'][0])
+        self.assertNotIn('assistantActionCode', result['routes'][0]['steps'][0])
+        for code, expected in ((7, 'fork-right'), (8, 'fork-left')):
+            route['steps'][0]['assistantActionCode'] = code
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+                self.assertEqual(amap_app.invoke_helper(self.payload)['routes'][0]['steps'][0]['maneuver'], expected)
+        route['steps'][0]['assistantActionCode'] = 0
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+            self.assertEqual(amap_app.invoke_helper(self.payload)['routes'][0]['steps'][0]['maneuver'], 'bear-left')
+        route['steps'][0]['actionCode'] = 4
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+            self.assertEqual(amap_app.invoke_helper(self.payload)['routes'][0]['steps'][0]['maneuver'], 'bear-right')
+        route['steps'][0]['serviceArea'] = '某某收费站'
+        with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+            with self.assertRaises(ValueError):
+                amap_app.invoke_helper(self.payload)
+        route['steps'][0]['serviceArea'] = '长安服务区'
         route.update(duration=-1, tolls=True)
         with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
             invalid = amap_app.invoke_helper(self.payload)['routes'][0]

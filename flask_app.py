@@ -52,6 +52,7 @@ def update_config():
     allowed_keys = {
         'amap_key',
         'amap_security_js_code',
+        'amap_traffic_key',
         'video_path',
         'home_page_iframe',
         'bilibili_cache_size_mb',
@@ -72,8 +73,10 @@ def update_config():
     for key, value in data.items():
         if key not in allowed_keys:
             continue
+        if key == 'amap_traffic_key' and (not isinstance(value, str) or len(value) > 128):
+            return futils.json_fail(message='路况 Key 无效'), 400
         put_config_by_key(key, value)
-        updated[key] = value
+        updated[key] = '已配置' if key == 'amap_traffic_key' and value else value
 
     return futils.json_ok({
         'updated': updated,
@@ -124,6 +127,8 @@ if __name__ == '__main__':
     amap_app.add_amap_app_route(app)
     from ffvideo.amap_map import add_amap_map_route
     add_amap_map_route(app)
+    from ffvideo.amap_traffic import add_amap_traffic_route
+    add_amap_traffic_route(app)
     tesla.add_tesla_route(app)
     tesla.start_tesla_background_sync()
     app.run(host='0.0.0.0', threaded=True, port=8080)

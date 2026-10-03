@@ -39,12 +39,13 @@ def grids(payload):
 def add_amap_map_route(app):
     @app.after_request
     def compress_map_response(response):
-        if request.path != '/api/amap-app/map':
+        if request.path not in ('/api/amap-app/map', '/api/amap-app/map/prefetch',
+                                '/api/amap-app/map/bmd', '/api/amap-app/map/bmd/prefetch'):
             return response
         response.vary.add('Accept-Encoding')
         # Authenticated map responses must not enter shared proxy caches.
         response.headers['Cache-Control'] = 'private, no-store'
-        if (response.status_code != 200 or response.is_streamed or
+        if (request.path not in ('/api/amap-app/map', '/api/amap-app/map/bmd') or response.status_code != 200 or response.is_streamed or
                 response.headers.get('Content-Encoding') or
                 request.accept_encodings.quality('gzip') <= 0):
             return response
@@ -74,8 +75,13 @@ def add_amap_map_route(app):
             return json_fail(message='缓存目录不可写或数据库不可用'), 503
 
     @app.post('/api/amap-app/map')
+    @app.post('/api/amap-app/map/prefetch')
+    @app.post('/api/amap-app/map/bmd')
+    @app.post('/api/amap-app/map/bmd/prefetch')
     @login_check
     def amap_map():
+        prefetch = request.path.endswith('/prefetch')
+        raw_mode = '/bmd' in request.path
         if request.content_length and request.content_length > 4096:
             return json_fail(message='请求过大'), 413
         try:
@@ -83,7 +89,12 @@ def add_amap_map_route(app):
             tiles = grids(payload)
             level = payload.get('level', 14)
             layer = payload.get('layer', 'base')
-            prefix = ('lanes-v1', level) if layer == 'lanes' else (level,)
+            if raw_mode and (layer != 'base' or level == 15):
+                raise ValueError('invalid raw map request')
+            if prefetch and (level not in (14, 15) or (raw_mode and level == 15) or
+                             layer != 'base' or len(tiles) > 2):
+                raise ValueError('invalid prefetch batch')
+            prefix = ('lanes-v1', level) if layer == 'lanes' else ('raw-v1', level) if raw_mode else (level,)
             tiles = [(*prefix, *t) for t in tiles]
         except ValueError:
             return json_fail(message='地图范围无效'), 400
@@ -92,8 +103,24 @@ def add_amap_map_route(app):
         except (OSError, sqlite3.Error):
             current_app.logger.error('amap disk cache read failed; continuing without cache')
             cached, cache_generation = {}, -1
+        def response_data():
+            if prefetch:
+                # Report only tiles that actually reached persistent storage.
+                # A concurrent cache clear can reject a completed download.
+                try:
+                    stored, _ = disk.read(tiles)
+                except (OSError, sqlite3.Error):
+                    stored = {}
+                return {'tiles': [{'x': t[-2], 'y': t[-1], 'ready': t in stored} for t in tiles]}
+            result_tiles = [cached.get(t, {'level': level, 'x': t[-2], 'y': t[-1],
+                'error': 'unsupported-tile'}) for t in tiles]
+            if raw_mode:
+                paints = next((tile.get('paints') for tile in result_tiles if tile.get('paints')), {})
+                result_tiles = [{k: v for k, v in tile.items() if k != 'paints'} for tile in result_tiles]
+                return {'tiles': result_tiles, 'paints': paints}
+            return {'tiles': result_tiles}
         if len(cached) == len(tiles):
-            return json_ok({'tiles': [cached[t] for t in tiles]})
+            return json_ok(response_data())
         # A disconnected browser does not stop the bounded helper. Do not
         # launch duplicate work or treat normal contention as rate limiting.
         if not LOCK.acquire(blocking=False):
@@ -107,25 +134,29 @@ def add_amap_map_route(app):
             missing = [t for t in tiles if t not in cached]
             if missing:
                 process = subprocess.run([sys.executable, str(helper)],
-                    input=json.dumps({'layer': layer, 'level': level, 'tiles': [t[-2:] for t in missing]}).encode(), stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, cwd=ROOT, timeout=65, check=True)
+                    input=json.dumps({'layer': layer, 'level': level, 'tiles': [t[-2:] for t in missing],
+                                      **({'format': 'bmd'} if raw_mode else {})}).encode(), stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, cwd=ROOT, timeout=10 if prefetch else 65, check=True)
                 if len(process.stdout) > 24 * 1024 * 1024:
                     raise ValueError('output limit')
                 result = json.loads(process.stdout)
                 if 'error' in result:
                     current_app.logger.error('amap map request=%s helper diagnostic=%s', request_id, json.dumps(result.get('diagnostic', {}), ensure_ascii=False)[:3000])
                     raise ValueError('helper unavailable')
+                paints = result.get('paints', {}) if raw_mode else {}
                 for tile in result.get('tiles', []):
                     key = (*prefix, tile['x'], tile['y'])
                     if key not in missing:
                         raise ValueError('unexpected tile')
                     if not tile.get('error'):
+                        if raw_mode:
+                            tile['paints'] = paints
                         cached[key] = tile
                         try:
                             disk.write(key, tile, cache_generation)
                         except (OSError, sqlite3.Error):
                             current_app.logger.error('amap disk cache write failed; serving downloaded tile')
-            return json_ok({'tiles': [cached.get(t, {'level': level, 'x': t[-2], 'y': t[-1], 'error': 'unsupported-tile'}) for t in tiles]})
+            return json_ok(response_data())
         except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
             # Never log raw stderr or exception messages containing signed URLs.
             detail = ''
@@ -136,7 +167,7 @@ def add_amap_map_route(app):
                 if missing:
                     detail += ' missing_module=' + missing.group(1)
             elif isinstance(error, subprocess.TimeoutExpired):
-                detail = 'timeout=65s'
+                detail = 'timeout=' + ('10s' if prefetch else '65s')
             elif isinstance(error, OSError):
                 detail = 'errno=' + str(error.errno)
             current_app.logger.error('amap map request=%s level=%s tiles=%s failure=%s %s', request_id, level, len(tiles), type(error).__name__, detail)

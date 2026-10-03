@@ -40,8 +40,9 @@ async function openFirst() {
 it('automatically opens the first video with WASM and persists only public metadata', async () => {
   await openFirst(); expect(players[0].play).toHaveBeenCalledOnce();
   expect((players[0] as any).chunkSize).toBe(1024 * 1024);
+  expect((players[0] as any).maxAheadSeconds).toBe(24);
   expect(players[0].play.mock.calls[0]).toEqual(['/api/douyin/media/token', expect.anything(), expect.any(Function),
-    524288, false, undefined, ['https://v5.zjcdn.com/test.mp4?secret=temporary', '/api/douyin/media/token']]);
+    524288, false, undefined, ['/api/douyin/media/token']]);
   expect(view!.find('video').exists()).toBe(false);
   expect(localStorage.getItem('tmc.douyin.recent.v1')).not.toMatch(/token|secret/);
 });

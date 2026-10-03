@@ -8,7 +8,8 @@ Worker 内执行，24 kHz PCM 经 Web Audio 播放。下面的 Matcha 体积、�
 本地准备：`python web/scripts/amap-tts/extract_assets.py --apk
 .local-data/amap-app/amap-release.apk`，再在 `web/` 执行 `npm ci` 和
 `npm run build`。CI 用 `tools/amap-app/release_assets.py` 下载并校验固定 APK，
-然后提取模型。MNN WASM 和模型的授权情况见
+将服务器资源单独提取后，再从 `.local-data/` 的源 APK 提取语音模型；
+完整 APK 不进入镜像。MNN WASM 和模型的授权情况见
 `web/public/tts/amap-1.0/NOTICE.md`。
 
 ## 旧版 Matcha 记录

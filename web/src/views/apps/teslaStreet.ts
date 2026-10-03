@@ -60,13 +60,27 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
   }
   const lamps: T.PointLight[] = [];
   const lampGroups: T.Group[] = [];
+  const lampHalos: T.Sprite[] = [];
+  const haloPixels=new Uint8Array(64*64*4);
+  for(let y=0;y<64;y++)for(let x=0;x<64;x++){
+    const distance=Math.hypot(x-31.5,y-31.5)/31.5,index=(y*64+x)*4;
+    haloPixels[index]=255;haloPixels[index+1]=220;haloPixels[index+2]=169;
+    haloPixels[index+3]=Math.round(255*Math.pow(Math.max(0,1-distance),3));
+  }
+  const haloTexture=new T.DataTexture(haloPixels,64,64,T.RGBAFormat);
+  haloTexture.needsUpdate=true;
+  const haloMaterial=new T.SpriteMaterial({map:haloTexture,color:'#ffe4b8',transparent:true,opacity:.9,depthWrite:false,blending:T.AdditiveBlending});
   let parked = true, nightMode = false;
   function updateLampVisibility() {
-    // Keep the entire orbit around the parked car clear of foreground poles.
-    for (const lamp of lampGroups) lamp.visible = !parked || Math.abs(lamp.position.z) >= 15;
-    // Keep distant bulbs emissive, but only shade nearby geometry with real lights.
-    const nearest = lamps.filter(light => light.parent?.visible).sort((a,b) => Math.abs(a.parent!.position.z) - Math.abs(b.parent!.position.z)).slice(0,4);
-    for (const light of lamps) light.visible = nightMode && nearest.includes(light);
+    // Keep light objects in the scene in both modes so material shaders do not
+    // recompile when night is toggled. Hide only the near poles while parked.
+    for (const lamp of lampGroups) {
+      const showPole = nightMode || !parked || Math.abs(lamp.position.z) >= 15;
+      for (const child of lamp.children) if (child instanceof T.Mesh) child.visible = showPole;
+    }
+    // Two shadowless lights are enough to shade the car without multiplying shadow work.
+    const nearest = [...lamps].sort((a,b) => Math.abs(a.parent!.position.z) - Math.abs(b.parent!.position.z)).slice(0,2);
+    for (const light of lamps) light.visible = nearest.includes(light);
   }
   for (const side of [-1, 1]) {
     parent = group;
@@ -129,7 +143,8 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
       mesh(box,pole,side*8.35,2.7,z,.1,5.4,.1);
       mesh(box,pole,side*7.95,5.35,z,.9,.08,.1);
       mesh(box,bulb,side*7.55,5.3,z,.5,.07,.28);
-      const light=new T.PointLight('#ffd49a',0,16,2);light.position.set(side*7.55,5.1,z);parent.add(light);lamps.push(light);
+      const halo=new T.Sprite(haloMaterial);halo.position.set(side*7.55,5.3,z);halo.scale.set(1.6,1.6,1);halo.visible=false;parent.add(halo);lampHalos.push(halo);
+      const light=new T.PointLight('#ffd49a',0,16,2);light.position.set(side*7.55,5.1,z);light.castShadow=false;parent.add(light);lamps.push(light);
     }
   }
   const treeAssets=loadStreetTrees(trees, manager);
@@ -152,6 +167,7 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
     shops.setNight(night);
     glass.emissiveIntensity=night ? .65 : 0;
     bulb.emissiveIntensity=night ? 5 : 0;
+    lampHalos.forEach(halo=>halo.visible=night);
     lamps.forEach(light=>light.intensity=night ? 70 : 0);
   }, dispose() {
     treeAssets.dispose();
@@ -161,6 +177,7 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
     const geometries=new Set<T.BufferGeometry>(), materials=new Set<T.Material>();
     group.traverse(o=>{if(o instanceof T.Mesh){geometries.add(o.geometry);materials.add(o.material as T.Material);}});
     facade.dispose();textures.forEach(t=>t.dispose());trees.forEach(tree=>tree.userData.dispose());geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());group.removeFromParent();
+    haloMaterial.dispose();haloTexture.dispose();
   }};
 }
 

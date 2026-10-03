@@ -16,6 +16,7 @@ shot/
 
 .qqmusic/
 .local-data/
+docker_build/amap-assets/amap-release.apk
 
 /data/
 

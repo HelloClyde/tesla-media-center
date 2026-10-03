@@ -75,6 +75,7 @@ function Player() {
     this.seekReceivedLen    = 0;
     this.loadingDiv         = null;
     this.buffering          = false;
+    this.bufferingWatchdog   = null;
     this.frameBuffer        = [];
     this.isStream           = false;
     this.streamReceivedLen  = 0;
@@ -467,6 +468,8 @@ Player.prototype.stop = function () {
     }
     clearInterval(this.sourceWatchdog);
     this.sourceWatchdog = null;
+    clearTimeout(this.bufferingWatchdog);
+    this.bufferingWatchdog = null;
     if (this.displayAnimationFrame !== null) {
         cancelAnimationFrame(this.displayAnimationFrame);
         this.displayAnimationFrame = null;
@@ -795,7 +798,6 @@ Player.prototype.onFileDataStream = function(data, start, end, seq, newSize){
 
 Player.prototype.onFileData = function (data, start, end, seq) {
     console.log("Got data bytes=" + start + "-" + end + ".");
-    this.downloading = false;
 
     if (this.playerState == playerStateIdle) {
         return;
@@ -804,6 +806,7 @@ Player.prototype.onFileData = function (data, start, end, seq) {
     if (seq != this.downloadSeqNo) {
         return;  // Old data.
     }
+    this.downloading = false;
 
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
@@ -931,7 +934,9 @@ Player.prototype.onFileDataUnderDecoderInitializing = function () {
 };
 
 Player.prototype.onFileDataUnderDecoderReady = function () {
-    //this.downloadOneChunk();
+    // Refill encoded data immediately while below the bounded lookahead;
+    // waiting for the periodic timer can leave a variable-bitrate clip dry.
+    if (this.buffering || this.maxAheadSeconds > 0) this.downloadOneChunk();
 };
 
 Player.prototype.onInitDecoder = function (objData) {
@@ -1238,6 +1243,10 @@ Player.prototype.onRequestData = function (offset, available) {
 
         //this.restartAudio();
         this.justSeeked = false;
+    } else if (!this.isStream && this.playerState === playerStatePlaying && offset === -1 &&
+               this.fileInfo && this.fileInfo.offset < this.fileInfo.size) {
+        // The decoder exhausted its input before the periodic timer fired.
+        this.downloadOneChunk();
     }
 };
 
@@ -1324,9 +1333,18 @@ Player.prototype.startBuffering = function () {
     // Buffering still needs the decoder and downloader to accept new data.
     if (this.pcmPlayer) this.pcmPlayer.pause();
     this.stopTrackTimer();
+    clearTimeout(this.bufferingWatchdog);
+    var self = this;
+    this.bufferingWatchdog = setTimeout(function () {
+        if (self.buffering && self.playerState === playerStatePlaying) {
+            self.reportPlayError(-1, 0, '视频缓冲超时，请重试');
+        }
+    }, 30000);
 }
 
 Player.prototype.stopBuffering = function () {
+    clearTimeout(this.bufferingWatchdog);
+    this.bufferingWatchdog = null;
     this.buffering = false;
     this.hideLoading();
     if (this.isStream) {
@@ -1343,7 +1361,6 @@ Player.prototype.renderVideoFrame = function (data) {
 };
 
 Player.prototype.downloadOneChunk = function () {
-    this.logger.logInfo("trigger downloadOneChunk.");
     if (!this.downloadSwitch){
         // console.log('disable download, return');
         return;
@@ -1366,7 +1383,10 @@ Player.prototype.downloadOneChunk = function () {
         var elapsed = Math.max(0, this.pcmPlayer.getTimestamp() + this.beginTimeOffset);
         var bytesPerSecond = this.fileInfo.size * 1000 / this.duration;
         var aheadLimit = this.waitHeaderLength + bytesPerSecond * (elapsed + this.maxAheadSeconds);
-        if (start >= aheadLimit) return;
+        // Buffering pauses the audio clock. A variable-bitrate section may
+        // need more than the time-based estimate before one second of frames
+        // can be decoded; keep a bounded extra window to avoid deadlock.
+        if (start >= aheadLimit + (this.buffering ? 16 * 1024 * 1024 : 0)) return;
     }
     if (start >= this.fileInfo.size) {
         this.logger.logError("Reach file end.");
@@ -1399,12 +1419,14 @@ Player.prototype.downloadOneChunk = function () {
 };
 
 Player.prototype.startDownloadTimer = function () {
+    if (this.downloadTimer !== null) return;
     var self = this;
     // start download timer
-    this.downloadSeqNo++;
+    // Decoder initialization can start this timer while a Range request is
+    // already in flight. Changing its sequence here drops that valid reply.
     this.downloadTimer = setInterval(function () {
         self.downloadOneChunk();
-    }, this.chunkInterval);
+    }, this.maxAheadSeconds > 0 ? Math.min(this.chunkInterval, 500) : this.chunkInterval);
     this.logger.logInfo("startDownloadTimer." + self.downloadTimer + "," + self.downloadSeqNo);
 };
 
@@ -1414,6 +1436,7 @@ Player.prototype.stopDownloadTimer = function () {
         clearInterval(this.downloadTimer);
         this.downloadTimer = null;
     }
+    this.downloadSeqNo++;
     this.downloading = false;
 };
 

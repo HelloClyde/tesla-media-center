@@ -2,10 +2,10 @@
 from bmd_geometry import Reader
 from bmd_tile import directory, LIMIT
 from route_v51 import fields, one
-import zipfile
 import zstandard
 import math
 import struct
+from pathlib import Path
 
 
 def solid_color(paint, key):
@@ -175,13 +175,12 @@ def polygon_paints(raw):
     return result
 
 
-def load_paints(apk, mode_id=2):
+def load_paints(assets, mode_id=2):
     result = {}
-    with zipfile.ZipFile(apk) as archive:
-        for theme, prefix in [('day', 'style_X_MainStd_Std_D_s_'), ('night', 'style_X_MainStd_Std_N_s_')]:
-            name = next(n for n in archive.namelist() if n.startswith('assets/map_assets/' + prefix))
-            if archive.getinfo(name).file_size > LIMIT:
-                raise ValueError('style size limit')
-            raw = zstandard.ZstdDecompressor().decompress(archive.read(name), max_output_size=LIMIT)
-            result[theme] = polygon_paints(raw) if mode_id == 2 else detail_paints(raw, mode_id)
+    for theme in ('day', 'night'):
+        path = Path(assets) / f'style-{theme}.data'
+        if path.stat().st_size > LIMIT:
+            raise ValueError('style size limit')
+        raw = zstandard.ZstdDecompressor().decompress(path.read_bytes(), max_output_size=LIMIT)
+        result[theme] = polygon_paints(raw) if mode_id == 2 else detail_paints(raw, mode_id)
     return result

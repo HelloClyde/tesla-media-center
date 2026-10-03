@@ -10,6 +10,7 @@ PCMPlayer.prototype.init = function(option) {
         flushingTime: 1000
     };
     this.option = Object.assign({}, defaults, option);
+    this.contextTransition = Promise.resolve();
     this.samples = new Float32Array();
     this.flush = this.flush.bind(this);
     this.interval = setInterval(this.flush, this.option.flushingTime);
@@ -182,15 +183,19 @@ PCMPlayer.prototype.play = function (data) {
 };
 
 PCMPlayer.prototype.pause = function () {
-    if (this.audioCtx.state === 'running') {
-        this.audioCtx.suspend()
-    }
+    var context = this.audioCtx;
+    if (!context) return Promise.resolve();
+    this.contextTransition = this.contextTransition.then(() => {
+        if (this.audioCtx === context && context.state === 'running') return context.suspend();
+    }).catch(() => {});
+    return this.contextTransition;
 }
 
 PCMPlayer.prototype.resume = function () {
-    if (this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume()
-    }
+    var context = this.audioCtx;
+    if (!context) return Promise.resolve();
+    this.contextTransition = this.contextTransition.then(() => {
+        if (this.audioCtx === context && context.state === 'suspended') return context.resume();
+    }).catch(() => {});
+    return this.contextTransition;
 }
-
-

@@ -14,7 +14,7 @@ FILES = ('am_encoder.mnn', 'am_decoder.mnn', 'ddspganV2_f0.mnn',
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--apk', type=Path,
-                        default=ROOT / 'docker_build/amap-assets/amap-release.apk')
+                        default=ROOT / '.local-data/amap-app/amap-release.apk')
     parser.add_argument('--output', type=Path,
                         default=ROOT / 'web/public/tts/amap-1.0')
     args = parser.parse_args()

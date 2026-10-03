@@ -6,6 +6,7 @@ Run from repository root after prepare-source.cjs. Not an engineering CAD model.
 from pathlib import Path
 import json
 import math
+import subprocess
 import bpy
 import bmesh
 from mathutils import Vector
@@ -213,6 +214,7 @@ for obj in root.children_recursive:
 bpy.ops.export_scene.gltf(filepath=str(ROOT / 'web/public/models/2022_tesla_model_y.glb'),
     export_format='GLB', use_selection=True, export_extras=True, export_animations=True,
     export_animation_mode='ACTIONS', export_yup=True)
+subprocess.run(['node', str(ROOT / 'tools/vehicle-model/remove-oversized-rockers.mjs')], cwd=ROOT, check=True)
 
 for name, frame in [('closed',1), ('doors-open',36)]:
     scene.frame_set(frame)

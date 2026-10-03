@@ -1,7 +1,8 @@
 import L from 'leaflet';
 import axios from 'axios';
 import { createMapRenderQueue } from './mapRenderQueue';
-import { surroundingTiles } from './amapTilePrefetch';
+import { routeCorridorTiles, surroundingTiles } from './amapTilePrefetch';
+import type { AppRoute } from './amapNavigation';
 import { viewportTiles } from './amapViewport';
 import { layoutPlaceLabels, type PlaceLabel } from './amapPlaceLabels';
 
@@ -19,12 +20,34 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   const renderer = L.canvas({ pane: 'appRoads', padding: .2 });
   const roads = L.layerGroup().addTo(map), labels = L.layerGroup().addTo(map);
   const cache = new Map<string, { time: number; collection?: any; surfaces?: any[]; transit?: any[]; placeLabels?: PlaceLabel[]; missingLayers?: string[] }>();
+  let route: AppRoute | undefined, routeBucket = -1, routeGeneration = 0, routeTiles: number[][] = [];
+  const routeAttempted = new Set<string>();
   let request: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined;
   function queueLoad(delay: number) {
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => { timer = undefined; void load(); }, delay);
   }
   let disposed = false, generation = 0;
+  let bmdWorker: Worker | undefined;
+  let rawUnavailable = false;
+  function decodeRaw(tiles: any[], paints: any): Promise<any[]> {
+    if (typeof Worker === 'undefined') return Promise.reject(new Error('Worker unavailable'));
+    bmdWorker ||= new Worker(new URL('./amapBmdWorker.ts', import.meta.url), { type: 'module' });
+    return new Promise((resolve, reject) => {
+      const worker = bmdWorker!;
+      const timeout = setTimeout(() => { worker.terminate(); bmdWorker = undefined; reject(new Error('BMD decode timeout')); }, 15000);
+      worker.onmessage = event => {
+        clearTimeout(timeout);
+        if (event.data.error) reject(new Error(event.data.error));
+        else resolve(event.data.tiles);
+      };
+      worker.onerror = () => {
+        clearTimeout(timeout); worker.terminate(); bmdWorker = undefined;
+        reject(new Error('BMD worker failed'));
+      };
+      worker.postMessage({ tiles, paints });
+    });
+  }
   function visible() {
     const b = map.getBounds();
     return viewportTiles(map.getZoom(), b.getWest(), b.getNorth(), b.getEast(), b.getSouth());
@@ -150,7 +173,18 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     const tiles = visible();
     draw(tiles);
     if (!tiles.length) { report('路线总览 · 放大后显示道路详情'); return; }
-    const missing = tiles.filter(needsTile);
+    // Show the broad overview first, then the current street detail before
+    // filling in intermediate source levels. Drawing still uses source order.
+    const missing = tiles.filter(needsTile).sort((a, b) =>
+      a[0] === b[0] ? 0 : a[0] === 3 ? -1 : b[0] === 3 ? 1 : b[0] - a[0]);
+    if (!missing.length && routeTiles.length) {
+      const visibleKeys = new Set(tiles.map(tile => tile.join('/')));
+      const ahead = routeTiles.filter(tile => {
+        const key = tile.join('/');
+        return !visibleKeys.has(key) && !cache.has(key) && !routeAttempted.has(key);
+      });
+      if (ahead.length) { void warmRoute(ahead.slice(0, 2)); return; }
+    }
     const prefetch = missing.length === 0;
     const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
     if (!candidates.length) {
@@ -168,19 +202,41 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     const batch = candidates.filter(t => t[0] === level).slice(0, prefetch ? 4 : 24);
     if (!prefetch) report('正在加载 App 地图…');
     try {
-      let response;
       const deadline = Date.now() + 90000;
-      while (true) {
-        response = await axios.post('/api/amap-app/map', { level, tiles: batch.map(t => t.slice(1)) }, { signal: controller.signal, timeout: 70000 });
-        if (response.status !== 202 || !response.data.data?.pending) break;
-        if (Date.now() >= deadline) throw new Error('地图加载超时');
-        await new Promise(resolve => setTimeout(resolve, 750));
-        if (disposed || id !== generation) return;
+      const fetchReady = async (path: string) => {
+        while (true) {
+          const response = await axios.post(path, { level, tiles: batch.map(t => t.slice(1)) },
+            { signal: controller.signal, timeout: 70000 });
+          if (response.status !== 202 || !response.data.data?.pending) return response;
+          if (Date.now() >= deadline) throw new Error('地图加载超时');
+          await new Promise(resolve => setTimeout(resolve, 750));
+          if (disposed || id !== generation) throw new Error('地图请求已取消');
+        }
+      };
+      let response;
+      try {
+        response = await fetchReady(rawUnavailable ? '/api/amap-app/map' : '/api/amap-app/map/bmd');
+      } catch (error) {
+        if (rawUnavailable || controller.signal.aborted || disposed || id !== generation) throw error;
+        rawUnavailable = true;
+        response = await fetchReady('/api/amap-app/map');
       }
       if (disposed || id !== generation) return;
       if (response.data.status !== 'ok') throw new Error('地图请求失败');
+      let receivedTiles = response.data.data.tiles;
+      if (!rawUnavailable) {
+        try {
+          receivedTiles = await decodeRaw(receivedTiles, response.data.data.paints || {});
+        } catch {
+          rawUnavailable = true;
+          response = await fetchReady('/api/amap-app/map');
+          if (response.data.status !== 'ok') throw new Error('地图回退请求失败');
+          receivedTiles = response.data.data.tiles;
+        }
+      }
+      if (disposed || id !== generation) return;
       const returned = new Set<string>();
-      for (const tile of response.data.data.tiles) {
+      for (const tile of receivedTiles) {
         const key = `${tile.level}/${tile.x}/${tile.y}`;
         if (!batch.some(t => t.join('/') === key)) continue;
         returned.add(key);
@@ -202,6 +258,33 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       if (request === controller) request = undefined;
       if (!disposed && active) {
         queueLoad(100);
+      }
+    }
+  }
+
+  async function warmRoute(batch: number[][]) {
+    loading = true;
+    const id = generation, routeId = routeGeneration;
+    const controller = new AbortController(); request = controller;
+    let delay = 750;
+    try {
+      const response = await axios.post(rawUnavailable ? '/api/amap-app/map/prefetch' : '/api/amap-app/map/bmd/prefetch',
+        { level: 14, tiles: batch.map(tile => tile.slice(1)) },
+        { signal: controller.signal, timeout: 12000 });
+      if (disposed || id !== generation || routeId !== routeGeneration) return;
+      if (response.status === 202 && response.data.data?.pending) { delay = 2000; return; }
+      // A failed tile is attempted only once per route window. Visible loads
+      // retain their own retry policy if the vehicle reaches that tile.
+      batch.forEach(tile => routeAttempted.add(tile.join('/')));
+    } catch {
+      if (!disposed && id === generation && routeId === routeGeneration)
+        batch.forEach(tile => routeAttempted.add(tile.join('/')));
+    } finally {
+      loading = false;
+      if (request === controller) request = undefined;
+      if (!disposed && active) {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => void load(), delay);
       }
     }
   }
@@ -233,8 +316,27 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   map.on('moveend zoomend rotate', schedule);
   void load();
   return { setFollowing(value: boolean) { following = value; if (value) { moving = false; schedule(); } },
-    setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); pauseDrawing(); } else { moving = false; schedule(); } }, setAppearance(value: AppMapAppearance) { appearance = value; draw(visible(), true); }, retry: () => { failures.clear(); drawnView = ''; void load(); }, dispose() {
+    setActive(value: boolean) { active = value; if (!value) { generation++; request?.abort(); pauseDrawing(); } else { moving = false; schedule(); } },
+    setAppearance(value: AppMapAppearance) { appearance = value; draw(visible(), true); },
+    setRoute(nextRoute?: AppRoute, progress = 0) {
+      const bucket = Math.floor(Math.max(0, Number.isFinite(progress) ? progress : 0) / 2000);
+      if (route === nextRoute && routeBucket === bucket) return;
+      if (route !== nextRoute) routeAttempted.clear();
+      route = nextRoute; routeBucket = bucket; routeGeneration++;
+      routeTiles = nextRoute ? routeCorridorTiles(nextRoute, progress) : [];
+      if (active) schedule();
+    },
+    retry: () => { failures.clear(); drawnView = ''; void load(); },
+    releaseMemory() {
+      renderQueue.cancel();
+      cache.clear(); rendered.clear();
+      surfaces.clearLayers(); roads.clearLayers(); labels.clearLayers();
+      bmdWorker?.terminate(); bmdWorker = undefined;
+      drawnView = '';
+    },
+    dispose() {
     disposed = true; generation++; request?.abort(); renderQueue.cancel(); if (timer) clearTimeout(timer);
+    bmdWorker?.terminate(); bmdWorker = undefined;
     map.off('movestart zoomstart', suspend); map.off('moveend zoomend rotate', schedule); roads.remove(); labels.remove(); renderer.remove(); surfaces.remove(); surfaceRenderer.remove(); cache.clear(); rendered.clear();
   } };
 }

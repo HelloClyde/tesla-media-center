@@ -19,6 +19,7 @@ export function positionNavigationCamera(
   const focusX = following ? vehicle[0] : 0;
   const focusZ = following ? vehicle[1] : 0;
   // Looking a little ahead puts the vehicle near 62% of the canvas height.
+  // A larger 2D offset would hide it behind the navigation footer in perspective.
   const ahead = following && headingUp ? distance * .24 : 0;
   camera.position.set(focusX - Math.sin(angle) * distance, distance * (zoom < 16 ? 1.1 : .95), focusZ + Math.cos(angle) * distance);
   camera.lookAt(focusX + Math.sin(angle) * ahead, 0, focusZ - Math.cos(angle) * ahead);

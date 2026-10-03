@@ -1,7 +1,6 @@
 """One LNDS tile per isolated request, returned as compact ground boundary XY."""
 import hashlib
 import math
-import zipfile
 
 from bmd_tile import tile_id
 from lane_render import version_catalog, inspect_response
@@ -57,13 +56,10 @@ def main(payload):
     blocks = decode_render_blocks(body, identity)['blocks'] if body else []
     if len(blocks) > 8:
         raise ValueError('lane block limit')
-    # The already pinned APK is shipped by the existing Release workflow.
-    # No external filesystem extraction, writable asset mount or extra download.
-    with zipfile.ZipFile(ASSETS / 'amap-release.apk') as archive:
-        info = archive.getinfo('lib/arm64-v8a/libamapr.so')
-        if info.file_size > 40 * 1024 * 1024:
-            raise ValueError('lane library limit')
-        library = archive.read(info)
+    library_path = ASSETS / 'libamapr.so'
+    if library_path.stat().st_size > 40 * 1024 * 1024:
+        raise ValueError('lane library limit')
+    library = library_path.read_bytes()
     lines = []
     for block in blocks:
         flatbuffer = decode(block['data'], library, identity, block['id'])

@@ -33,8 +33,11 @@ class MapCache:
         hours, mb, _ = db.execute('SELECT hours, mb, generation FROM policy').fetchone()
         db.execute('DELETE FROM tiles WHERE created < ?', (time.time() - hours * 3600,))
         total = db.execute('SELECT COALESCE(SUM(length(data)),0) FROM tiles').fetchone()[0]
+        limit = mb * 1024 * 1024
+        if total <= limit:
+            return
         for key, size in db.execute('SELECT key, length(data) FROM tiles ORDER BY accessed ASC').fetchall():
-            if total <= mb * 1024 * 1024:
+            if total <= limit:
                 break
             db.execute('DELETE FROM tiles WHERE key=?', (key,))
             total -= size

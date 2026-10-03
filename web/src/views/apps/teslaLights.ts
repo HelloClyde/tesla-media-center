@@ -63,7 +63,7 @@ export function createVehicleLights(model: T.Object3D) {
     const beam = new T.SpotLight('#e5efff', 0, 42, .3, .65, 2);
     beam.position.set(side*.68,.76,2.2);
     beam.target.position.set(side*1.6, -.2, 22);
-    // A shared shadow caster prevents the beam from shining through roadside objects.
+    // One shadow caster keeps the beam from shining through roadside objects.
     beam.castShadow = side === -1;
     beam.shadow.mapSize.set(1024,1024);beam.shadow.bias=-.00015;beam.shadow.normalBias=.025;
     beam.shadow.camera.near=.15;
@@ -74,9 +74,9 @@ export function createVehicleLights(model: T.Object3D) {
   return { setEnabled(enabled: boolean) {
     front.emissiveIntensity=enabled ? 3 : 0;
     rear.emissiveIntensity=enabled ? 1.6 : 0;
+    // Keep the light group in the scene with zero intensity while off.
     beams.forEach(light=>light.intensity=enabled ? 420 : 0);
     markers.forEach(light=>light.intensity=enabled ? .08 : 0);
-    group.visible=enabled;
     lenses.forEach(lens => { lens.visible = enabled; });
   }, dispose() {
     beams.forEach(light=>light.shadow.dispose());
