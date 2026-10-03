@@ -3,8 +3,11 @@
 The native event's first link is an unsigned 64-bit decimal ID; subsequent
 entries are signed 64-bit decimal deltas from the preceding ID. Saved 5.1
 route responses also expose a base and ZigZag deltas that recover stable
-candidate link IDs across alternate paths and different origins. Direct
-identity with the native event still needs confirmation.
+link IDs across alternate paths and different origins. A 2026-10-03 live
+App lane-suggestion request on the elevated-fork route independently
+confirmed exact contiguous windows of 57/57, 54/54 and 47/47 decoded IDs.
+This verifies route-link identity for that request, not the separate
+cross-image request body.
 """
 
 from collections.abc import Iterable, Sequence

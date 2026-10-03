@@ -212,3 +212,19 @@ Run `inspect_junction_runtime.py --route ROUTE.bin --heap APP.hprof` to
 reproduce the sanitized route/request summary. It never prints signed query
 values or device identifiers. The on-screen App picture remains a research
 reference; TMC does not yet display this original data.
+
+The same heap contains gzip JSON from the App's lane-suggestion request with
+ordered `linkInfos[].linkId`. The existing 5.1 base-plus-ZigZag-delta decoder
+recovered **all 57** route-0 link IDs in the same order; later live windows
+matched the final 54 and 47 IDs exactly. This validates the route's actual
+road-link IDs against independent App runtime data. It does not establish
+the cross-image body's road selection, coordinates3d, or response format.
+The runtime inspection command now reports these exact contiguous matches
+without printing link IDs.
+
+A bounded replay of a captured signed cross URL, both with an empty body and
+with a locally assembled candidate XML road list, returned the same HTTP 400
+`code=2`. Changing only the outer `csid` did not change that result. This
+does not distinguish a stale/session-bound signature from an invalid body;
+the candidate must not be treated as the App's original request. The actual
+road-window selection and successful response are still missing.

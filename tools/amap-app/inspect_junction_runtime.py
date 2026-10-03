@@ -7,11 +7,14 @@ request is sent, and device/session/signature values are never printed.
 import argparse
 import json
 import re
+import zlib
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlsplit
 
+from dynamic_route_links import decode_v51_link_deltas
 from native_body_codec import decode as decode_aos_query
 from route_v51 import decode as decode_route
+from route_v51 import fields, one, unpack
 
 
 ENDPOINT = b"https://m5.amap.com/ws/transfer/auth/new_vector_cross/"
@@ -71,6 +74,53 @@ def inspect_heap(path):
     ]
 
 
+def compare_live_link_windows(route_path, heap_path):
+    """Check native route-link decoding against live App lane request IDs.
+
+    The gzip JSON is the App's lane-suggestion request, not a cross-image
+    response. A contiguous identity check confirms the underlying link IDs
+    without exposing their values or conflating the two endpoints.
+    """
+    envelope = fields(unpack(route_path.read_bytes()))
+    message = fields(one(envelope, 2, b""))
+    route_ids = []
+    for route_blob in message.get(7, []):
+        route = fields(route_blob)
+        base = int.from_bytes(one(route, 9, b""), "little")
+        deltas = [
+            one(fields(link_blob), 1)
+            for segment_blob in route.get(10, [])
+            for link_blob in fields(segment_blob).get(3, [])
+        ]
+        route_ids.append(decode_v51_link_deltas(base, deltas))
+    data = heap_path.read_bytes()
+    windows = set()
+    for match in re.finditer(rb"\x1f\x8b\x08", data):
+        try:
+            stream = zlib.decompressobj(31)
+            payload = stream.decompress(data[match.start():match.start() + 2_000_000], 8_000_000)
+            if not stream.eof or not payload.startswith(b"{"):
+                continue
+            body = json.loads(payload)
+        except (zlib.error, json.JSONDecodeError):
+            continue
+        links = body.get("linkInfos") if isinstance(body, dict) else None
+        if isinstance(links, list) and links and all(
+                isinstance(link, dict) and type(link.get("linkId")) is int for link in links):
+            windows.add(tuple(link["linkId"] for link in links))
+    matches = []
+    for window in windows:
+        for route_index, ids in enumerate(route_ids):
+            start = next((index for index in range(len(ids) - len(window) + 1)
+                          if tuple(ids[index:index + len(window)]) == window), None)
+            if start is not None:
+                matches.append({"route": route_index, "route_links": len(ids),
+                                "live_window_links": len(window), "start_link": start,
+                                "exact_contiguous_match": True})
+    return sorted(matches, key=lambda item: (item["route"], item["start_link"],
+                                             item["live_window_links"]))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", type=Path)
@@ -83,4 +133,6 @@ if __name__ == "__main__":
         result["routes"] = inspect_route(args.route)
     if args.heap:
         result["live_cross_requests"] = inspect_heap(args.heap)
+    if args.route and args.heap:
+        result["live_lane_link_matches"] = compare_live_link_windows(args.route, args.heap)
     print(json.dumps(result, ensure_ascii=False, indent=2))
