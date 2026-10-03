@@ -6,6 +6,7 @@ request is sent, and device/session/signature values are never printed.
 
 import argparse
 import json
+import mmap
 import re
 import zlib
 from pathlib import Path
@@ -121,13 +122,87 @@ def compare_live_link_windows(route_path, heap_path):
                                              item["live_window_links"]))
 
 
+def inspect_original_v4_bodies(route_path, disk_path):
+    """Find native V4 cross requests in a local, read-only emulator disk image.
+
+    Guest memory may be present in the virtual disk's physical pages. Match
+    decoded route-link IDs without publishing account, device or session IDs.
+    This does not imply that the matching HTTP response was captured.
+    """
+    envelope = fields(unpack(route_path.read_bytes()))
+    message = fields(one(envelope, 2, b""))
+    route_ids = []
+    for route_blob in message.get(7, []):
+        route = fields(route_blob)
+        base = int.from_bytes(one(route, 9, b""), "little")
+        deltas = [one(fields(link_blob), 1)
+                  for segment_blob in route.get(10, [])
+                  for link_blob in fields(segment_blob).get(3, [])]
+        route_ids.append(decode_v51_link_deltas(base, deltas))
+
+    needle = b'{"protocolVer":"4.0"'
+    unique = set()
+    matches = []
+    with disk_path.open("rb") as source, mmap.mmap(source.fileno(), 0,
+                                                   access=mmap.ACCESS_READ) as image:
+        cursor = 0
+        while (offset := image.find(needle, cursor)) != -1:
+            cursor = offset + len(needle)
+            # The native body is under 1 KiB in observed samples; cap parsing
+            # to prevent unrelated guest-memory strings from consuming memory.
+            sample = image[offset:offset + 16_384].decode("utf-8", "replace")
+            try:
+                body, _ = json.JSONDecoder().raw_decode(sample)
+            except json.JSONDecodeError:
+                continue
+            path = body.get("pathInfo", {})
+            deltas = path.get("linkids", [])
+            first = path.get("firstLinkID")
+            if type(first) is not int or not isinstance(deltas, list) or not deltas:
+                continue
+            ids = []
+            current = first
+            for delta in deltas:
+                if type(delta) is not int:
+                    break
+                current += delta
+                ids.append(current)
+            if len(ids) != len(deltas):
+                continue
+            key = (body.get("naviID"), tuple(ids))
+            if key in unique:
+                continue
+            unique.add(key)
+            for route_index, route in enumerate(route_ids):
+                start = next((index for index in range(len(route) - len(ids) + 1)
+                              if route[index:index + len(ids)] == ids), None)
+                if start is not None:
+                    matches.append({"route": route_index,
+                                    "route_links": len(route),
+                                    "cross_request_links": len(ids),
+                                    "start_link": start,
+                                    "first_segment": path.get("firstSegIndex"),
+                                    "cross_type": body.get("crossType"),
+                                    "dimensions": [body.get("width"), body.get("height")],
+                                    "body_fields": sorted(body),
+                                    "path_fields": sorted(path),
+                                    "exact_contiguous_match": True})
+    return {"v4_bodies_found": len(unique),
+            "route_matches": sorted(matches, key=lambda item: (item["route"],
+                                                                item["start_link"]))}
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--route", type=Path)
     parser.add_argument("--heap", type=Path)
+    parser.add_argument("--disk-image", type=Path,
+                        help="optional local BlueStacks VHDX; read-only scan")
     args = parser.parse_args()
     if not args.route and not args.heap:
         parser.error("specify --route and/or --heap")
+    if args.disk_image and not args.route:
+        parser.error("--disk-image requires --route")
     result = {}
     if args.route:
         result["routes"] = inspect_route(args.route)
@@ -135,4 +210,7 @@ if __name__ == "__main__":
         result["live_cross_requests"] = inspect_heap(args.heap)
     if args.route and args.heap:
         result["live_lane_link_matches"] = compare_live_link_windows(args.route, args.heap)
+    if args.route and args.disk_image:
+        result["original_v4_cross_bodies"] = inspect_original_v4_bodies(
+            args.route, args.disk_image)
     print(json.dumps(result, ensure_ascii=False, indent=2))

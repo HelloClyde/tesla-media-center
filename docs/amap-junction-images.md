@@ -204,8 +204,9 @@ outer query has `ent`, `in`, `csid`, `is_bin`. Decoding `in` with the APK's
 known query codec yielded 36 named fields, including `cross_ver=4.0` and
 `sdk_version=17.00.0.1007`. This resolves the active endpoint choice to the
 **transfer** variant for this session. The heap contained no plaintext
-`<cross` XML; the route-specific body and successful binary response remain
-to be captured or reconstructed. Replaying one captured URL with an empty
+`<cross` XML. A later read-only virtual-disk inspection recovered the actual
+route-specific V4 JSON body (below). The successful binary response remains
+to be captured. Replaying one captured URL with an empty
 body returned HTTP 400, so it is not a standalone image URL.
 
 Run `inspect_junction_runtime.py --route ROUTE.bin --heap APP.hprof` to
@@ -220,11 +221,56 @@ matched the final 54 and 47 IDs exactly. This validates the route's actual
 road-link IDs against independent App runtime data. It does not establish
 the cross-image body's road selection, coordinates3d, or response format.
 The runtime inspection command now reports these exact contiguous matches
-without printing link IDs.
+without printing link IDs. Its later disk-image option also checks the
+original V4 request body against those route IDs.
 
 A bounded replay of a captured signed cross URL, both with an empty body and
 with a locally assembled candidate XML road list, returned the same HTTP 400
-`code=2`. Changing only the outer `csid` did not change that result. This
-does not distinguish a stale/session-bound signature from an invalid body;
-the candidate must not be treated as the App's original request. The actual
-road-window selection and successful response are still missing.
+`code=2`. Changing only the outer `csid` did not change that result. The XML
+candidate is superseded by the original V4 JSON body below.
+
+## Original V4 request recovered from the elevated fork (2026-10-03)
+
+The BlueStacks Rvc64 virtual disk retained native process pages from the
+successful real-navigation session. A read-only physical-page scan found 16
+unique plaintext `protocolVer=4.0` JSON request bodies. Three bodies belong
+to the verified 秋石高架→石石立交→留石高架 route: their signed `linkids`
+deltas expand to exact contiguous windows of 19, 27 and 22 IDs within the
+57-link App 5.1 route. They begin at route link offsets 0, 1 and 19 and set
+`firstSegIndex` to 0, 1 and 2 respectively. This is direct runtime evidence
+for the selected fork windows, not a guessed road list.
+
+The original JSON contains `protocolVer`, `dataVer`, `sdkVer`, `naviID`,
+`width`, `height`, `crossType`, `needGridData`, `needStreetImage`, and
+`pathInfo`. The latter contains `pathID`, `firstSegIndex`, `firstLinkID`,
+`linkids`, `segments`, `scenes`, `mainActions`, `assistActions`, and optional
+fork, traffic-light and solid-line arrays. The observed request asks for
+1056×697 output with `crossType=3`. Raw request captures contain session and
+device identifiers and remain ignored under `.local-data/amap-app`.
+Both `source` and `needfullscreen` still contain placeholder markers in every
+recovered body, so the disk copies may precede final request substitution.
+The substitution values and layer are not yet established.
+
+The request loader in `libamaptbt.so+78f280` creates AOS kind 7, selects
+the active `ws/transfer/auth/new_vector_cross/` endpoint, adds
+`cross_ver=4.0`, uses common parameter mask `0xff`, and submits the JSON
+body. Mask bits 0–7 correspond, in order, to `channel`, `tid`, `dic`, `dip`,
+`diu`, `diu2`, `diu3`, `div`. Recomputing the signature from those fields and
+the pinned APK signing material exactly matches the captured App `sign`.
+This verifies the signing field order, but does not prove a fresh request is
+accepted.
+
+Replaying the observed segment-1 JSON with a captured signed URL, and the
+same JSON with a leading `0` transport byte, returned HTTP 400 `code=2`.
+Replaying the segment-0 JSON with an adjacent virtual-disk URL also returned
+`code=2`. The cause is not yet isolated: possible remaining differences are
+the live session, common headers or native body transport encoding. No valid
+response bytes or original image are available to TMC yet. The next work is
+to reproduce a fresh complete request during a new route session, capture
+its accepted binary response, and port `libamaptbt.so+78ff38` decoding plus
+show/hide timing.
+
+To reproduce the privacy-safe check, run
+`inspect_junction_runtime.py --route ROUTE.bin --heap APP.hprof --disk-image Data.vhdx`.
+The disk option scans read-only, reports only field names and link-window
+counts, and omits URL signatures, NaviID, UUID and link ID values.
