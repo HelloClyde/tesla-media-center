@@ -1246,16 +1246,23 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 </style>
 
 <style scoped>
-.turn-card .turn-summary{display:flex;align-items:center;gap:14px;min-width:0}
+.turn-card .turn-summary{display:flex;align-items:center;gap:10px;min-width:0}
 .turn-card .turn-summary>div{min-width:0}
-.navigation-guidance .turn-card{position:relative;left:auto;top:auto;flex:0 1 auto;min-width:0;max-width:100%;box-sizing:border-box}
-.turn-card.has-junction,.turn-card.has-lanes{display:block;width:min(360px,100%);max-width:none;padding:0;overflow:hidden}
-.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{min-height:94px;padding:10px 14px}
-.turn-card.has-junction .turn-arrow,.turn-card.has-lanes .turn-arrow{width:42px;height:50px}
-.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:20px;white-space:nowrap}
-.turn-card.has-junction p,.turn-card.has-lanes p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:700px){.turn-card .turn-summary{gap:9px}.turn-card.has-junction,.turn-card.has-lanes{width:min(335px,100%)}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{min-height:84px;padding:9px 11px}.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:18px}}
-@media(max-width:520px){.navigation-guidance{gap:6px}.navigation-guidance .turn-card{padding:9px}.turn-card .turn-summary{gap:6px}.turn-card .turn-arrow{width:34px;height:42px}.turn-card h2,.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{padding:9px}.signal-card{flex-basis:145px;gap:6px;padding:8px}.signal-card strong{font-size:14px}.signal-card small{font-size:10px}}
+.navigation-guidance .turn-card{position:relative;left:auto;top:auto;flex:0 1 auto;min-width:0;max-width:min(300px,100%);box-sizing:border-box;padding:10px 14px;border-radius:14px}
+.turn-card .turn-arrow{width:36px;height:44px}
+.turn-card h2{font-size:18px;line-height:1.25;margin:3px 0;overflow-wrap:anywhere}
+.turn-card p{font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.turn-card small{font-size:10px;line-height:1.2}
+.navigation-guidance .turn-card.has-junction,.navigation-guidance .turn-card.has-lanes{display:block;width:min(280px,100%);max-width:100%;padding:0;overflow:hidden}
+.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{min-height:62px;padding:8px 10px;box-sizing:border-box}
+.turn-card.has-junction .turn-summary small,.turn-card.has-lanes .turn-summary small{display:none}
+.turn-card.has-junction .turn-arrow,.turn-card.has-lanes .turn-arrow{width:30px;height:38px}
+.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:17px;margin:0 0 3px}
+.turn-card :deep(.lane-guide){box-sizing:border-box;padding:5px 8px 6px}
+.turn-card :deep(.lane-guide small){font-size:10px;margin-bottom:1px}
+.turn-card :deep(.lane-arrow){max-width:42px;height:44px}
+@media(max-width:700px){.turn-card .turn-summary{gap:8px}.navigation-guidance .turn-card{padding:9px 11px;max-width:min(280px,100%)}.navigation-guidance .turn-card.has-junction,.navigation-guidance .turn-card.has-lanes{width:min(260px,100%);padding:0}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{padding:7px 9px;min-height:58px}}
+@media(max-width:520px){.navigation-guidance{gap:6px}.navigation-guidance .turn-card{padding:8px 10px}.turn-card .turn-summary{gap:6px}.turn-card .turn-arrow{width:30px;height:38px}.turn-card h2,.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:16px}.navigation-guidance .turn-card.has-junction,.navigation-guidance .turn-card.has-lanes{width:min(240px,100%);padding:0}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{padding:7px 8px}.turn-card :deep(.lane-arrow){height:40px}.signal-card{flex-basis:145px;gap:6px;padding:8px}.signal-card strong{font-size:14px}.signal-card small{font-size:10px}}
 .service-area-card{position:absolute;z-index:500;left:16px;bottom:102px;width:min(330px,calc(100% - 90px));padding:11px 15px;display:grid;gap:6px;background:#123f38ed;color:white}.service-area-card>strong{font-size:13px;color:#85dfbd}.service-area-item{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}.service-area-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.service-area-item b{flex-shrink:0;font-size:12px;font-weight:600}.service-area-card small{font-size:10px;color:#c2d7d0}@media(max-width:700px){.service-area-card{left:10px;bottom:82px;width:min(300px,calc(100% - 74px));padding:8px 11px}}
 .map-controls .dimension-mode{font-size:15px;font-weight:700}
 .map-controls .view-mode{display:grid;place-items:center}

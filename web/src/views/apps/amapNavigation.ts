@@ -1,5 +1,5 @@
 export type Point = [number, number];
-export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' | 'fork-left' | 'fork-middle' | 'fork-right' }
+export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; roundaboutExit?: number; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' | 'fork-left' | 'fork-middle' | 'fork-right' | 'roundabout-enter' | 'roundabout-exit' }
 export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; trafficRuns?: import('./amapRouteTraffic').CongestionRun[]; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[]; laneGuides?: import('./amapLaneGuidance').LaneGuide[] }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
@@ -45,6 +45,14 @@ export function instruction(route: AppRoute, progress: number) {
   const step = route.steps[stepIndex < 0 ? route.steps.length - 1 : stepIndex];
   const next = route.steps[stepIndex + 1];
   if (!next || stepIndex < 0) return { text: '到达目的地附近', arrow: '⚑', road: step.road, distance: Math.max(0, values[values.length - 1] - progress), key: route.steps.length };
+  if (step.maneuver === 'roundabout-enter' || step.maneuver === 'roundabout-exit') {
+    const entering = step.maneuver === 'roundabout-enter';
+    const candidate = entering && next.maneuver === 'roundabout-exit' ? next.roundaboutExit : step.roundaboutExit;
+    const exit = typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 1 && candidate <= 16 ? candidate : undefined;
+    return { text: entering ? `进入环岛${exit ? `，从第${exit}出口驶出` : ''}`
+      : exit ? `从第${exit}出口驶出环岛` : '驶出环岛', arrow: '⟳', road: next.road,
+      distance: Math.max(0, values[step.end] - progress), key: stepIndex, maneuver: step.maneuver };
+  }
   const a = route.path[Math.max(step.start, step.end - 1)], b = route.path[step.end];
   const c = route.path[next.start], d = route.path[Math.min(next.end, next.start + 1)];
   const bearing = (a: Point, b: Point) => Math.atan2((b[0] - a[0]) * Math.cos(a[1] * Math.PI / 180), b[1] - a[1]) * 180 / Math.PI;

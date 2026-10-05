@@ -96,6 +96,24 @@ class AmapAppTest(unittest.TestCase):
             self.assertEqual(self.app.test_client().post('/api/amap-app/route', json=self.payload).json['status'], 'need_login')
             helper.assert_not_called()
 
+    def test_roundabout_action_preserves_exit_and_takes_priority_over_fork(self):
+        step = {'start': 0, 'end': 1, 'road': '环岛', 'actionCode': 12,
+                'assistantActionCode': 7, 'roundaboutExit': 4}
+        data = {'state': 'ready', 'routes': [{'path': [[116.4, 39.9], [116.401, 39.9]],
+                'steps': [step], 'distance': 85, 'labels': [], 'breaks': []}]}
+        def invoke():
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+                return amap_app.invoke_helper(self.payload)['routes'][0]['steps'][0]
+        self.assertEqual(invoke()['maneuver'], 'roundabout-exit')
+        self.assertEqual(invoke()['roundaboutExit'], 4)
+        for invalid in (0, 17, True, '2'):
+            step['roundaboutExit'] = invalid
+            with self.assertRaises(ValueError):
+                invoke()
+        del step['roundaboutExit']
+        step['actionCode'] = 11
+        self.assertEqual(invoke()['maneuver'], 'roundabout-enter')
+
     def test_only_verified_bounded_speed_sections_reach_navigation(self):
         route = {'path': [[120, 30], [120.01, 30.01]],
                  'steps': [{'start': 0, 'end': 1, 'road': '道路'}],

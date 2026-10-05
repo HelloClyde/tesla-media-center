@@ -25,7 +25,8 @@ SESSION_DIR = Path(tempfile.gettempdir()) / "tmc-amap-route-sessions"
 SESSION_TTL = 2 * 60 * 60
 TRAFFIC_ADIU = secrets.token_hex(15)
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
-MANEUVERS = {1: 'left', 2: 'right', 3: 'bear-left', 4: 'bear-right'}
+MANEUVERS = {1: 'left', 2: 'right', 3: 'bear-left', 4: 'bear-right',
+             11: 'roundabout-enter', 12: 'roundabout-exit'}
 FORK_ACTIONS = {6: 'fork-middle', 7: 'fork-right', 8: 'fork-left'}
 
 
@@ -277,11 +278,19 @@ def invoke_helper(payload=None):
                 # Only codes verified against live route geometry are exposed.
                 action = step.get('actionCode')
                 assistant_action = step.get('assistantActionCode')
-                # A fork instruction is more specific than its primary straight/turn action.
-                if type(assistant_action) is int and assistant_action in FORK_ACTIONS:
+                # Preserve ring semantics; ordinary fork instructions then take
+                # priority over their primary straight/turn action.
+                if type(action) is int and action in (11, 12):
+                    safe_step['maneuver'] = MANEUVERS[action]
+                elif type(assistant_action) is int and assistant_action in FORK_ACTIONS:
                     safe_step['maneuver'] = FORK_ACTIONS[assistant_action]
                 elif type(action) is int and action in MANEUVERS:
                     safe_step['maneuver'] = MANEUVERS[action]
+                ring_exit = step.get('roundaboutExit')
+                if ring_exit is not None:
+                    if type(ring_exit) is not int or not 1 <= ring_exit <= 16 or action != 12:
+                        raise ValueError('invalid roundabout exit')
+                    safe_step['roundaboutExit'] = ring_exit
                 service_area = step.get('serviceArea')
                 if service_area is not None:
                     if not isinstance(service_area, str) or not 2 <= len(service_area) <= 100 or \

@@ -254,9 +254,17 @@ def decode(raw, origin=None, destination=None):
                 path.extend(points)
             length = offsets[-1]
             service_area = service_area_name(segment)
+            # On complete ring traversals, link flag 0x8 marks the successive
+            # exits. West-ring captures from the same entrance contain 1, 2,
+            # and 4 markers for the first, second, and fourth exit respectively.
+            # A route starting inside the ring cannot establish the ordinal.
+            ring_exit = sum(bool(one(link, 6, 0) & 8) for link in links)
+            complete_ring = (one(segment, 1, 0) == 12 and steps
+                             and steps[-1]['actionCode'] == 11)
             steps.append({"road": current_road, "start": start_index, "end": len(path) - 1,
                           "distance": round(length, 1), "actionCode": one(segment, 1, 0),
                           "assistantActionCode": one(segment, 2, 0),
+                          **({'roundaboutExit': ring_exit} if complete_ring and 1 <= ring_exit <= 16 else {}),
                           **({'serviceArea': service_area} if service_area else {})})
             measured += length
         if not steps or len(path) > 100000:

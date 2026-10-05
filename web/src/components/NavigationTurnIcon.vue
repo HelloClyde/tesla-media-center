@@ -7,6 +7,7 @@ const paths: Record<string, string> = {
   '↶': 'M42 51V23a14 14 0 0 0-28 0v15 M5 29 14 38 23 29',
   '↑': 'M28 51V10 M15 23 28 10 41 23',
   '⚑': 'M14 52V10 M14 12h28l-7 10 7 10H14',
+  '⟳': 'M28 54V45a16 16 0 1 1 16-16V9 M34 19 44 9 54 19',
 };
 const path = computed(() => paths[props.arrow] || paths['↑']);
 </script>

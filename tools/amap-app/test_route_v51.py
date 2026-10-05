@@ -31,15 +31,22 @@ def packed(values):
 
 
 def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None, facility=None, assistant_action=0,
-            link_statuses=None):
+            link_statuses=None, action=2, ring_flags=None, ring_entry=False):
     links = {} if link_flags is None else {'f3': msg(f6=link_flags, f8=msg(f1=0, f2=2))}
     if link_statuses is not None:
         links = {'f3': [msg(f2=round(8500 / len(link_statuses)), f3=status,
                             f8=msg(f1=index, f2=2))
                         for index, status in enumerate(link_statuses)]}
-    segment = msg(f1=2, f2=assistant_action, f4=msg(f1=packed(xs), f2=packed(ys)),
+    if ring_flags is not None:
+        links = {'f3': [msg(f6=flag, f8=msg(f1=index, f2=2))
+                        for index, flag in enumerate(ring_flags)]}
+    segment = msg(f1=action, f2=assistant_action, f4=msg(f1=packed(xs), f2=packed(ys)),
                   **links, **({'f5': msg(f1=200, f2=8500, f3=b'G60', f4=facility.encode())} if facility else {}))
-    protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500, f10=segment)))
+    segments = [segment]
+    if ring_entry:
+        segments.insert(0, msg(f1=11, f2=0, f4=msg(f1=packed((xs[0] - .001, xs[0])),
+                                                  f2=packed((ys[0], ys[0])))))
+    protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500 * len(segments), f10=segments)))
     size = 64 + len(protobuf)
     body = struct.pack('<IHI', 31, 1, size).ljust(32, b'\0')
     body += struct.pack('<HHII', 0, 1, len(protobuf), len(protobuf)).ljust(32, b'\0') + protobuf
@@ -83,6 +90,17 @@ class RouteV51Test(unittest.TestCase):
         step = decode(fixture(assistant_action=6))[0]['steps'][0]
         self.assertEqual(step['actionCode'], 2)
         self.assertEqual(step['assistantActionCode'], 6)
+
+    def test_ring_exit_ordinal_requires_complete_entry_and_native_exit_markers(self):
+        for flags, expected in (([8], 1), ([8, 0, 8], 2), ([8, 0, 8, 0, 8, 0, 8], 4)):
+            xs = tuple(116.4 + .001 * i / len(flags) for i in range(len(flags) + 1))
+            route = decode(fixture(xs=xs, ys=(39.9,) * len(xs), action=12,
+                                   ring_flags=flags, ring_entry=True))[0]
+            self.assertEqual(route['steps'][1]['roundaboutExit'], expected)
+            self.assertEqual(route['steps'][0]['actionCode'], 11)
+        for action, entry, flags in ((12, False, [8]), (2, True, [8]), (12, True, [0])):
+            self.assertNotIn('roundaboutExit', decode(fixture(action=action,
+                             ring_entry=entry, ring_flags=flags))[0]['steps'][-1])
 
     def test_service_area_only_from_facility_label(self):
         self.assertEqual(decode(fixture(facility='长安服务区'))[0]['steps'][0]['serviceArea'], '长安服务区')

@@ -46,6 +46,17 @@ describe('navigation geometry', () => {
     expect(matchPosition(disconnected, [116.005, 39.001]).distance).toBeGreaterThan(400);
     expect(pointAt(disconnected, lengths[1] + 1)[0]).toBeGreaterThanOrEqual(116.01);
   });
+  it('announces the ring exit before entering and inside the ring despite a right-turn angle', () => {
+    const ring: AppRoute = { ...route, path: [[116, 39], [116, 39.001], [116.001, 39.001], [116.001, 39.002]],
+      steps: [{ start: 0, end: 1, road: '入口路', maneuver: 'roundabout-enter' },
+        { start: 1, end: 2, road: '环岛', maneuver: 'roundabout-exit', roundaboutExit: 4 },
+        { start: 2, end: 3, road: '出口路' }] };
+    expect(instruction(ring, 30)).toMatchObject({ text: '进入环岛，从第4出口驶出', arrow: '⟳', road: '环岛' });
+    expect(instruction(ring, 120)).toMatchObject({ text: '从第4出口驶出环岛', arrow: '⟳', road: '出口路' });
+    delete ring.steps[1].roundaboutExit;
+    expect(instruction(ring, 30).text).toBe('进入环岛');
+    expect(instruction(ring, 120).text).toBe('驶出环岛');
+  });
   it('clamps replay at the destination', () => {
     expect(pointAt(route, 10000)).toEqual(route.path[2]);
   });
