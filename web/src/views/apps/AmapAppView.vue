@@ -28,6 +28,7 @@ import L from 'leaflet';
 import 'leaflet-rotate';
 import { bearingBetween, movementHeading, smoothHeading } from './amapHeading';
 import { placeNavigationPoint, type Place } from './amapSearch';
+import { clearBrowserFavoritePlaces, loadBrowserFavoritePlaces } from './amapFavoritePlaces';
 import { searchWebPlaces } from './amapWebSearch';
 import { attachAppMap, type AppMapAppearance } from './amapVectorMap';
 const mapStatus = ref('');
@@ -60,6 +61,7 @@ watch(mapAppearance, value => appMap?.setAppearance(value), { deep: true });
 let appMap: ReturnType<typeof attachAppMap> | undefined;
 function resumeAfterTmcLogin() {
   tmcLoginVisible.value = false;
+  void refreshFavoritePlaces();
   appMap?.retry();
   map3D.value?.retry();
   if (resumePlanAfterTmcLogin) {
@@ -250,6 +252,72 @@ function stopSignals() {
 }
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
+const favoritePlaces = ref<Place[]>([]);
+const favoriteLoading = ref(false), favoriteSaving = ref(false), favoriteReady = ref(false), favoriteMessage = ref('');
+function favoriteResponsePlaces(body: { status?: string; data?: { places?: Place[] }; message?: string }): Place[] {
+  if (body?.status === 'need_login') {
+    tmcLoginVisible.value = true;
+    throw new Error('请先登录 TMC，才能使用收藏地点');
+  }
+  if (body?.status !== 'ok' || !Array.isArray(body.data?.places))
+    throw new Error(body?.message || '读取收藏地点失败');
+  return body.data.places;
+}
+async function refreshFavoritePlaces() {
+  if (favoriteLoading.value || favoriteSaving.value) return;
+  favoriteLoading.value = true;
+  let serverLoaded = false;
+  try {
+    const response = await axios.get('/api/amap-app/favorites', { timeout: 10000 });
+    let places = favoriteResponsePlaces(response.data);
+    if (disposed) return;
+    favoritePlaces.value = places;
+    favoriteReady.value = true;
+    serverLoaded = true;
+    const browserFavorites = loadBrowserFavoritePlaces();
+    if (browserFavorites.length) {
+      const imported = await axios.post('/api/amap-app/favorites',
+        { action: 'import', places: browserFavorites }, { timeout: 10000 });
+      places = favoriteResponsePlaces(imported.data);
+      clearBrowserFavoritePlaces();
+    }
+    if (disposed) return;
+    favoritePlaces.value = places;
+    favoriteReady.value = true;
+    favoriteMessage.value = '';
+  } catch (exception) {
+    if (disposed) return;
+    if (!serverLoaded) favoriteReady.value = false;
+    favoriteMessage.value = axios.isAxiosError(exception)
+      ? exception.response?.data?.message || '收藏地点加载失败，请重试'
+      : exception instanceof Error ? exception.message : '收藏地点加载失败，请重试';
+  } finally { favoriteLoading.value = false; }
+}
+const visibleFavoritePlaces = computed(() => {
+  const keyword = query.value.trim().toLocaleLowerCase();
+  return keyword ? favoritePlaces.value.filter(place =>
+    `${place.name} ${place.address}`.toLocaleLowerCase().includes(keyword)) : favoritePlaces.value;
+});
+const favoriteIds = computed(() => new Set(favoritePlaces.value.map(place => place.id)));
+async function togglePlaceFavorite(place: Place) {
+  if (!favoriteReady.value || favoriteLoading.value || favoriteSaving.value) return;
+  favoriteSaving.value = true;
+  let updated = false;
+  try {
+    const response = await axios.post('/api/amap-app/favorites', favoriteIds.value.has(place.id)
+      ? { action: 'remove', id: place.id } : { action: 'add', place }, { timeout: 10000 });
+    favoritePlaces.value = favoriteResponsePlaces(response.data);
+    favoriteMessage.value = '';
+    updated = true;
+  } catch (exception) {
+    favoriteMessage.value = axios.isAxiosError(exception)
+      ? exception.response?.data?.message || '收藏未保存，请重试点击星标'
+      : exception instanceof Error ? exception.message : '收藏未保存，请重试点击星标';
+  } finally {
+    favoriteSaving.value = false;
+    if (updated && loadBrowserFavoritePlaces().length) void refreshFavoritePlaces();
+  }
+}
 const pointPicker = ref<HTMLElement>(), pointMenuOpen = ref(false);
 function choosePointType(type: 'origin' | 'destination') {
   picking.value = type;
@@ -545,6 +613,7 @@ watch(show3D, enabled => {
 });
 onActivated(async () => {
   viewActive.value = true;
+  if (favoriteReady.value) void refreshFavoritePlaces();
   await nextTick();
   if (disposed || !map || !viewActive.value) return;
   map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); endpoints(); draw(false);
@@ -1004,6 +1073,7 @@ function beginMapTouch(event: TouchEvent) {
 }
 onMounted(() => {
   document.addEventListener('pointerdown', closePointMenuOnOutsideClick);
+  void refreshFavoritePlaces();
   if (!mapElement.value) return;
   mapElement.value.addEventListener('touchstart', beginMapTouch, { passive: true, capture: true });
   map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: true, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
@@ -1051,7 +1121,22 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
         <input v-model="query" :aria-label="picking === 'destination' ? '搜索目的地' : '搜索起点'" placeholder="搜索地点、地址，或输入经纬度" maxlength="100" @keydown.enter="!$event.isComposing && search()" />
         <button :disabled="!mapReady || busy || searching || !query.trim()" @click="search">{{ searching ? '搜索中' : '搜索' }}</button><button :disabled="!mapReady || busy" @click="locate(false)">定位</button></div>
       <p v-if="searchMessage" class="search-message" role="status">{{ searchMessage }}</p>
-      <div v-if="tips.length" class="search-tips" aria-label="地点搜索结果"><button v-for="tip in tips" :key="tip.id" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button></div>
+      <p v-if="favoriteLoading && !favoriteReady" class="favorite-status" role="status">正在加载收藏地点…</p>
+      <div v-if="favoriteMessage" class="favorite-status" role="status"><span>{{ favoriteMessage }}</span><button type="button" :disabled="favoriteLoading || favoriteSaving" @click="refreshFavoritePlaces">重试</button></div>
+      <section v-if="visibleFavoritePlaces.length" class="place-section" aria-label="收藏地点">
+        <h3>收藏地点</h3>
+        <div class="place-list favorite-list"><div v-for="place in visibleFavoritePlaces" :key="place.id" class="place-row">
+          <button type="button" class="place-select" @click="selectPlace(place)"><strong>{{ place.name }}</strong><small>{{ place.address || '已收藏地点' }}</small></button>
+          <button type="button" class="favorite-toggle saved" :disabled="favoriteLoading || favoriteSaving || !favoriteReady" :aria-label="`取消收藏 ${place.name}`" :title="`取消收藏 ${place.name}`" aria-pressed="true" @click="togglePlaceFavorite(place)">★</button>
+        </div></div>
+      </section>
+      <section v-if="tips.length" class="place-section" aria-label="地点搜索结果">
+        <h3>搜索结果</h3>
+        <div class="place-list search-tips"><div v-for="tip in tips" :key="tip.id" class="place-row">
+          <button type="button" class="place-select" @click="selectPlace(tip)"><strong>{{ tip.name }}</strong><small>{{ tip.address }}</small></button>
+          <button type="button" class="favorite-toggle" :class="{ saved: favoriteIds.has(tip.id) }" :disabled="favoriteLoading || favoriteSaving || !favoriteReady" :aria-label="`${favoriteIds.has(tip.id) ? '取消收藏' : '收藏'} ${tip.name}`" :title="`${favoriteIds.has(tip.id) ? '取消收藏' : '收藏'} ${tip.name}`" :aria-pressed="favoriteIds.has(tip.id)" @click="togglePlaceFavorite(tip)">{{ favoriteIds.has(tip.id) ? '★' : '☆' }}</button>
+        </div></div>
+      </section>
     </header>
     <div v-else ref="topPanel" class="navigation-guidance">
       <div v-if="next" class="turn-card glass" :class="{ 'has-junction': visibleJunction, 'has-lanes': visibleLane }" aria-live="polite">
@@ -1184,9 +1269,11 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 
 <style scoped>
 .search-message{margin:10px 0 0;font-size:12px;color:#80634c}
+.favorite-status{display:flex;align-items:center;gap:8px;margin:8px 0 0;color:#80634c;font-size:12px}.favorite-status span{min-width:0;flex:1}.navigation-app .favorite-status button{min-height:28px;padding:3px 9px;font-size:12px}
 .search-tips button{display:flex;flex-direction:column;gap:5px;white-space:normal;line-height:1.4;padding:12px 8px}
 .search-tips button:hover{background:#e4f8ef}.search-tips strong{font-weight:500}
 .search-tips{overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b2cec5 transparent}
+.place-section{margin-top:9px}.place-section h3{margin:0 0 4px;color:#59796e;font-size:12px;font-weight:700}.place-list{max-height:min(22vh,180px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#b2cec5 transparent}.place-row{display:flex;align-items:center;border-bottom:1px solid #e8edea}.place-row:last-child{border-bottom:0}.navigation-app .place-list .place-select{flex:1;min-width:0;width:0;display:flex;flex-direction:column;align-items:flex-start;gap:3px;min-height:48px;padding:7px 8px;border:0;border-radius:8px;background:transparent;line-height:1.4;text-align:left}.place-select strong,.place-select small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.place-select strong{font-weight:600}.place-select small{color:#7d9088;font-size:11px}.navigation-app .place-list .place-select:hover{background:#e4f8ef}.navigation-app .place-list .favorite-toggle{flex:none;display:grid;place-items:center;width:42px;min-width:42px;min-height:42px;padding:0;border:0;border-radius:10px;background:transparent;color:#79948a;font-size:25px;line-height:1;white-space:nowrap}.navigation-app .place-list .favorite-toggle:hover{background:#eef8f2}.navigation-app .place-list .favorite-toggle.saved{color:#e1a627}
 </style>
 
 

@@ -31,6 +31,7 @@ config.json
 *.sln
 *.sw?
 **/*.pyc
+**/__pycache__/
 docker_build/ffvideo
 docker_build/web
 docker_build/*.py

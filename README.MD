@@ -224,6 +224,8 @@ docker run -d --name tmc --restart unless-stopped \
 
 配置、QQ 音乐凭证、GBA 游戏及存档、GAM4980 游戏及存档、Tesla 历史数据库、地图缓存和 B 站缓存统一保存在 `/data`。`TMC_PASSWORD` 仅在没有配置文件时初始化密码；已有配置的密码和密钥保持不变。未设置初始密码时随机生成并输出到首次启动日志。
 
+高德地点收藏保存在 `/data/amap/favorites.json`，登录 TMC 的浏览器共享。旧版浏览器本地收藏会在首次打开地图时合并到服务器；只有服务器确认写入后才清除本地旧数据。
+
 升级前请按 [持久化与旧数据迁移](docs/persistence.md) 迁移旧数据，尤其同时保留 QQ 音乐凭证和配置密钥。本地运行默认使用项目下 `data/`，可以通过 `TMC_DATA_DIR` 指定其他根目录。
 
 本地视频属于自选媒体库，仍可按 `video_path` 另行挂载；也可将视频放入 `/data/video` 并设置该路径。
