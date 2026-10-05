@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { greenWaveSpeedWindow, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { greenWaveSpeedWindow, mergeTrafficSignalLights, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import type { AppRoute } from './amapNavigation';
 
 const route: AppRoute = {
@@ -56,6 +56,33 @@ describe('upcoming live traffic light', () => {
     expect(upcomingTrafficSignal(route, 0, lights, now - 50_000, now + 25_000)?.seconds).toBe(50);
     expect(upcomingTrafficSignal(route, 0, lights, now - 50_000, now + 41_000)).toBeNull();
   });
+
+  it('keeps a Hangzhou 96-second red phase through stationary GPS silence and an empty refresh', () => {
+    // Archived Hangzhou 5.1 route: the signal at 120.155116,30.270864
+    // has a 96-second red phase, with 76 seconds left in the ETA frame.
+    const hangzhou: AppRoute = { ...route, path: [
+      [120.155116, 30.269864], [120.155116, 30.270864], [120.155116, 30.271864],
+    ] };
+    const first: LiveTrafficLight = { point: [120.155116, 30.270864], phases: [
+      { start: now / 1000 - 20, end: now / 1000 + 76, color: 'red' },
+    ] };
+    let lights = mergeTrafficSignalLights([], [first], now, now);
+    expect(upcomingTrafficSignal(hangzhou, 0, lights, now, now)?.seconds).toBe(76);
+    lights = mergeTrafficSignalLights(lights, [], now + 40_000, now + 40_000);
+    expect(recentTrafficSignalFix(now, now + 40_000, true)).toBe(true);
+    expect(upcomingTrafficSignal(hangzhou, 0, lights, now + 40_000, now + 40_000)?.seconds).toBe(36);
+    expect(upcomingTrafficSignal(hangzhou, 0, lights, now + 60_000, now + 60_000)?.seconds).toBe(16);
+    expect(upcomingTrafficSignal(hangzhou, 0, lights, now + 77_000, now + 77_000)).toBeNull();
+    expect(recentTrafficSignalFix(now, now + 40_000, false)).toBe(false);
+    expect(recentTrafficSignalFix(now, now + 91_000, true)).toBe(false);
+  });
+
+  it('does not extend an old light when another light refreshes', () => {
+    const old = mergeTrafficSignalLights([], [light(30.001, 'red')], now - 89_000, now);
+    const refreshed = mergeTrafficSignalLights(old, [light(30.0018, 'green')], now, now);
+    expect(refreshed).toHaveLength(2);
+    expect(upcomingTrafficSignal(route, 0, refreshed, now, now + 2_000)?.color).toBe('green');
+  });
 });
 
 describe('near-green voice cue', () => {
@@ -66,12 +93,12 @@ describe('near-green voice cue', () => {
   const signal = () => upcomingTrafficSignal(route, 50, [{ point: [120, 30.001], phases }], now, now);
 
   it('announces the APK red-three-seconds cue only with a following green phase', () => {
-    expect(nearGreenReminder(signal(), now, now)).toMatchObject({ text: '红灯即将变绿', phaseEnd: now / 1000 + 3 });
-    expect(nearGreenReminder(signal(), now - 21_000, now)).toBeNull();
-    expect(nearGreenReminder({ ...signal()!, seconds: 4 }, now, now)).toBeNull();
-    expect(nearGreenReminder({ ...signal()!, distance: 201 }, now, now)).toBeNull();
-    expect(nearGreenReminder({ ...signal()!, phases: phases.slice(0, 1) }, now, now)).toBeNull();
-    expect(nearGreenReminder({ ...signal()!, phases: [phases[0], { ...phases[1], start: phases[1].start + 2 }] }, now, now)).toBeNull();
+    expect(nearGreenReminder(signal(), now)).toMatchObject({ text: '红灯即将变绿', phaseEnd: now / 1000 + 3 });
+    expect(nearGreenReminder({ ...signal()!, observedAt: now - 21_000 }, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, seconds: 4 }, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, distance: 201 }, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, phases: phases.slice(0, 1) }, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, phases: [phases[0], { ...phases[1], start: phases[1].start + 2 }] }, now)).toBeNull();
   });
 });
 

@@ -3,6 +3,8 @@ import { cumulative, matchPosition, type AppRoute, type Point } from './amapNavi
 export interface LiveTrafficLight {
   point: Point;
   phases: { start: number; end: number; color: 'red' | 'green' | 'yellow' }[];
+  /** Timestamp of the ETA frame that actually contained this light. */
+  observedAt?: number;
 }
 
 export interface UpcomingTrafficSignal {
@@ -11,14 +13,15 @@ export interface UpcomingTrafficSignal {
   seconds: number;
   distance: number;
   phases: LiveTrafficLight['phases'];
+  observedAt: number;
 }
 
 /** The APK has a dedicated red-three-seconds status; only announce it when
  * the live phase plan actually changes from red to green near the car. */
-export function nearGreenReminder(signal: UpcomingTrafficSignal | null, updatedAt: number, nowMs: number) {
+export function nearGreenReminder(signal: UpcomingTrafficSignal | null, nowMs: number) {
   if (!signal || signal.color !== 'red' || signal.distance > 200
       || signal.seconds < 1 || signal.seconds > 3
-      || nowMs - updatedAt > 20_000 || updatedAt - nowMs > 1_000) return null;
+      || nowMs - signal.observedAt > 20_000 || signal.observedAt - nowMs > 1_000) return null;
   const now = nowMs / 1000;
   const red = signal.phases.find(phase => phase.color === 'red' && phase.start <= now && now < phase.end);
   const green = signal.phases.find(phase => phase.color === 'green' && red
@@ -69,20 +72,38 @@ export function trustedTrafficSignalFix(accuracy: number,
 }
 
 /** A brief positioning correction must not erase an already received phase plan. */
-export function recentTrafficSignalFix(lastTrustedAt: number, nowMs: number) {
-  return lastTrustedAt > 0 && nowMs - lastTrustedAt <= 20_000 && lastTrustedAt - nowMs <= 1_000;
+export function recentTrafficSignalFix(lastTrustedAt: number, nowMs: number, stationary = false) {
+  return lastTrustedAt > 0 && nowMs - lastTrustedAt <= (stationary ? 90_000 : 20_000)
+    && lastTrustedAt - nowMs <= 1_000;
+}
+
+/** An empty or partial ETA refresh must not cancel a phase whose end is still known. */
+export function mergeTrafficSignalLights(previous: LiveTrafficLight[], incoming: LiveTrafficLight[],
+                                         updatedAt: number, nowMs: number): LiveTrafficLight[] {
+  const byPoint = new Map<string, LiveTrafficLight>();
+  const key = (light: LiveTrafficLight) => light.point.map(value => value.toFixed(6)).join(',');
+  for (const light of previous) {
+    const observedAt = light.observedAt ?? updatedAt;
+    if (nowMs - observedAt <= 90_000 && light.phases.some(phase => phase.end * 1000 > nowMs)) {
+      byPoint.set(key(light), { ...light, observedAt });
+    }
+  }
+  for (const light of incoming) byPoint.set(key(light), { ...light, observedAt: updatedAt });
+  return [...byPoint.values()];
 }
 
 export function upcomingTrafficSignal(route: AppRoute, progress: number, lights: LiveTrafficLight[],
                                       updatedAt: number, nowMs: number) {
   // The server accepts App ETA frames up to 90 seconds old. The absolute
   // phase end still bounds the countdown; never invent time beyond that plan.
-  if (!route.path.length || nowMs - updatedAt > 90_000 || updatedAt - nowMs > 15_000) return null;
+  if (!route.path.length) return null;
   const lengths = cumulative(route);
   const now = nowMs / 1000;
   let best: UpcomingTrafficSignal | null = null;
   for (const light of lights) {
     if (!Array.isArray(light.point) || light.point.length !== 2) continue;
+    const observedAt = light.observedAt ?? updatedAt;
+    if (nowMs - observedAt > 90_000 || observedAt - nowMs > 15_000) continue;
     const matched = matchPosition(route, light.point, 0, true);
     const ahead = matched.progress - progress;
     if (matched.distance > 25 || ahead < -15 || ahead > 450 || matched.progress > lengths[lengths.length - 1] + 1) continue;
@@ -91,7 +112,7 @@ export function upcomingTrafficSignal(route: AppRoute, progress: number, lights:
     const seconds = Math.ceil(phase.end - now);
     if (seconds < 1 || seconds > 300) continue;
     if (!best || ahead < best.distance) best = { point: light.point, color: phase.color,
-                                                  seconds, distance: Math.max(0, ahead), phases: light.phases };
+                                                  seconds, distance: Math.max(0, ahead), phases: light.phases, observedAt };
   }
   return best;
 }

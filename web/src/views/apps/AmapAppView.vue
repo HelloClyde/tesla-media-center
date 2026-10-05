@@ -80,7 +80,7 @@ import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
-import { greenWaveSpeedWindow, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { greenWaveSpeedWindow, mergeTrafficSignalLights, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 import { cameraAssetReady, cameraSign, mapSignUrl, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
 const mapElement = ref<HTMLElement>();
@@ -178,14 +178,20 @@ const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error 
 const routeToken = ref('');
 const liveLights = ref<LiveTrafficLight[]>([]), liveUpdatedAt = ref(0), signalClock = ref(Date.now());
 const signalFixTrusted = ref(false), signalFixAt = ref(0);
+const signalHoldPosition = ref<Point | null>(null), signalHoldProgress = ref(0), signalHoldHeading = ref(0);
+const signalLastTrustedSpeed = ref<number | null>(null);
 let signalTimer: ReturnType<typeof setInterval> | undefined;
-let signalBusy = false, signalLastRequest = 0, signalGeneration = 0, signalEmptyRefreshes = 0;
+let signalBusy = false, signalLastRequest = 0, signalGeneration = 0;
 let signalAbort: AbortController | undefined;
 const nearGreenSpoken = new Map<string, number>();
 function setSignalFixTrust(trusted: boolean, discard = false) {
   if (trusted) {
     signalFixTrusted.value = true;
     signalFixAt.value = Date.now();
+    signalHoldPosition.value = location.value ?? null;
+    signalHoldProgress.value = progress.value;
+    signalHoldHeading.value = heading.value || 0;
+    signalLastTrustedSpeed.value = liveSpeed.value;
     return;
   }
   signalFixTrusted.value = false;
@@ -193,23 +199,28 @@ function setSignalFixTrust(trusted: boolean, discard = false) {
     signalGeneration++;
     signalAbort?.abort(); signalAbort = undefined;
     liveLights.value = []; liveUpdatedAt.value = 0; signalFixAt.value = 0;
-    signalLastRequest = 0; signalEmptyRefreshes = 0;
+    signalHoldPosition.value = null; signalHoldProgress.value = 0; signalLastTrustedSpeed.value = null;
+    signalLastRequest = 0;
   }
 }
+const signalStationary = computed(() => signalLastTrustedSpeed.value !== null
+  && signalLastTrustedSpeed.value <= 5 && (liveSpeed.value === null || liveSpeed.value <= 5));
 const upcomingSignal = computed(() => mode.value !== 'idle' && current.value
-  && recentTrafficSignalFix(signalFixAt.value, signalClock.value)
-  ? upcomingTrafficSignal(current.value, progress.value, liveLights.value, liveUpdatedAt.value, signalClock.value) : null);
+  && recentTrafficSignalFix(signalFixAt.value, signalClock.value, signalStationary.value)
+  ? upcomingTrafficSignal(current.value, signalFixTrusted.value ? progress.value : signalHoldProgress.value,
+    liveLights.value, liveUpdatedAt.value, signalClock.value) : null);
 const nextRouteLight = computed(() => mode.value !== 'idle' && current.value
   ? upcomingRouteTrafficLight(current.value, progress.value) : null);
 const signalLabel = computed(() => upcomingSignal.value?.color === 'red' ? '红灯'
   : upcomingSignal.value?.color === 'green' ? '绿灯' : '黄灯');
-const signalAwaitingUpdate = computed(() => !!upcomingSignal.value && signalClock.value - liveUpdatedAt.value > 20_000);
+const signalAwaitingUpdate = computed(() => !!upcomingSignal.value
+  && signalClock.value - upcomingSignal.value.observedAt > 20_000);
 const greenWave = computed(() => signalAwaitingUpdate.value ? null
   : greenWaveSpeedWindow(upcomingSignal.value, signalClock.value, liveSpeed.value));
 function announceNearGreen() {
   if (muted.value || localSpeechState.speaking
       || (next.value?.distance ?? Infinity) <= turnVoiceDistances(liveSpeed.value).ahead) return;
-  const cue = nearGreenReminder(upcomingSignal.value, liveUpdatedAt.value, signalClock.value);
+  const cue = nearGreenReminder(upcomingSignal.value, signalClock.value);
   if (!cue) return;
   const key = cue.point.map(value => value.toFixed(6)).join(',');
   if (signalClock.value - (nearGreenSpoken.get(key) || 0) < 90_000) return;
@@ -218,8 +229,11 @@ function announceNearGreen() {
   void speakLocal(cue.text, 3000).catch(() => {});
 }
 async function refreshSignals() {
-  if (signalBusy || mode.value === 'idle' || !routeToken.value || !location.value
-      || !signalFixTrusted.value || Date.now() - signalFixAt.value > 10000
+  const now = Date.now();
+  const heldStationaryFix = signalStationary.value
+    && recentTrafficSignalFix(signalFixAt.value, now, true);
+  if (signalBusy || mode.value === 'idle' || !routeToken.value || !signalHoldPosition.value
+      || (!heldStationaryFix && (!signalFixTrusted.value || now - signalFixAt.value > 10_000))
       || Date.now() - signalLastRequest < 12000) return;
   signalBusy = true; signalLastRequest = Date.now();
   const generation = signalGeneration;
@@ -227,17 +241,15 @@ async function refreshSignals() {
   signalAbort = controller;
   try {
     const response = await axios.post('/api/amap-app/traffic-signals', {
-      routeToken: routeToken.value, routeIndex: selected.value, position: location.value,
-      speed: liveSpeed.value === null ? 0 : liveSpeed.value / 3.6, heading: heading.value || 0,
-      progress: progress.value,
+      routeToken: routeToken.value, routeIndex: selected.value, position: signalHoldPosition.value,
+      speed: heldStationaryFix ? 0 : liveSpeed.value === null ? 0 : liveSpeed.value / 3.6,
+      heading: signalHoldHeading.value, progress: signalHoldProgress.value,
     }, { timeout: 30000, signal: controller.signal });
     if (generation !== signalGeneration || !navigationRunning()) return;
     const result = response.data?.data;
     if (response.data?.status === 'ok' && result?.state === 'ready' && Array.isArray(result.lights)) {
-      if (result.lights.length || ++signalEmptyRefreshes >= 2) {
-        liveLights.value = result.lights; liveUpdatedAt.value = result.updatedAt;
-        if (result.lights.length) signalEmptyRefreshes = 0;
-      }
+      liveLights.value = mergeTrafficSignalLights(liveLights.value, result.lights, result.updatedAt, Date.now());
+      liveUpdatedAt.value = result.updatedAt;
       signalClock.value = Date.now(); announceNearGreen();
     }
   } catch { /* A missing live signal never blocks route guidance. */ }
@@ -246,7 +258,7 @@ async function refreshSignals() {
 function stopSignals() {
   setSignalFixTrust(false, true);
   signalGeneration++; clearInterval(signalTimer); signalTimer = undefined;
-  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0; signalEmptyRefreshes = 0;
+  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
   signalAbort?.abort(); signalAbort = undefined;
   nearGreenSpoken.clear();
 }
