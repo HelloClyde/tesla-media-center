@@ -36,7 +36,6 @@ def write_config(config_dict):
 
 def get_all_config_safe():
     config = read_config()
-    config['amap_traffic_configured'] = bool(config.get('amap_traffic_key') or os.environ.get('TMC_AMAP_TRAFFIC_KEY'))
     config.pop('amap_traffic_key', None)
     config.pop('password', None)
     config.pop('secret_key', None)

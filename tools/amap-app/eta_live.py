@@ -38,23 +38,53 @@ def _point(parent, name, point, **attrs):
     return node
 
 
-def _remaining_links(context, route, position):
+def _remaining_links(context, position, progress_hint=None):
     starts = context["route_links_start_point_candidate"]
+    polylines = context["route_links_points_candidate"]
     lengths = context["route_links_length_candidate"]
     encoded = context["route_links_candidate"]
-    if not starts or len(starts) != len(lengths) or len(starts) != len(encoded):
+    if not starts or len(starts) != len(lengths) or len(starts) != len(encoded) or len(starts) != len(polylines):
         raise ValueError("ETA route links are inconsistent")
     latitude_scale = math.cos(math.radians(position[1]))
-    nearest = (math.inf, 0, 0.0)
-    for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else route["path"][-1]
-        dx, dy = (end[0] - start[0]) * latitude_scale, end[1] - start[1]
-        px, py = (position[0] - start[0]) * latitude_scale, position[1] - start[1]
-        ratio = min(1.0, max(0.0, (px * dx + py * dy) / (dx * dx + dy * dy or 1)))
-        distance = math.hypot(px - ratio * dx, py - ratio * dy) * 111195
-        if distance < nearest[0]:
-            nearest = (distance, index, ratio)
-    distance, index, ratio = nearest
+    candidates = []
+    geometry_progress = 0.0
+    for index, points in enumerate(polylines):
+        if len(points) < 2 or tuple(points[0]) != tuple(starts[index]):
+            raise ValueError("ETA link geometry is inconsistent")
+        # Follow every native link vertex. A curve can be hundreds of metres
+        # away from its start/end chord, even while the vehicle is on-road.
+        projected = [((lon - position[0]) * latitude_scale * 111195,
+                      (lat - position[1]) * 111195) for lon, lat in points]
+        segment_lengths = [math.hypot(b[0] - a[0], b[1] - a[1])
+                           for a, b in zip(projected, projected[1:])]
+        total = sum(segment_lengths)
+        if total <= 0:
+            continue
+        along = 0.0
+        for (ax, ay), (bx, by), segment_length in zip(projected, projected[1:], segment_lengths):
+            if segment_length <= 0:
+                continue
+            dx, dy = bx - ax, by - ay
+            ratio = min(1.0, max(0.0, -(ax * dx + ay * dy) / (segment_length ** 2)))
+            distance = math.hypot(ax + ratio * dx, ay + ratio * dy)
+            position_along = along + ratio * segment_length
+            candidates.append((distance, index, position_along / total,
+                               geometry_progress + position_along))
+            along += segment_length
+        geometry_progress += total
+    if not candidates:
+        raise ValueError("ETA route links have no usable geometry")
+    nearest_distance = min(candidate[0] for candidate in candidates)
+    if progress_hint is None:
+        distance, index, ratio, _ = min(candidates, key=lambda candidate: candidate[0])
+    else:
+        # GPS cannot distinguish close parallel or repeated links by distance
+        # alone. The frontend's route progress disambiguates only near-equal
+        # candidates; it cannot pull the match onto a distant road.
+        close = [candidate for candidate in candidates
+                 if candidate[0] <= nearest_distance + 12]
+        distance, index, ratio, _ = min(
+            close, key=lambda candidate: (abs(candidate[3] - progress_hint), candidate[0]))
     if distance > 100:
         raise ValueError("ETA position is away from the route")
     absolute = int(encoded[0])
@@ -67,7 +97,7 @@ def _remaining_links(context, route, position):
 
 
 def build_eta_body(routes, contexts, route_index, position, *, speed=0.0,
-                   heading=0.0, now=None):
+                   heading=0.0, progress_hint=None, now=None):
     if not 0 <= route_index < len(routes) == len(contexts) <= 10:
         raise ValueError("invalid ETA routes")
     if len(position) != 2 or any(not math.isfinite(x) for x in position):
@@ -75,7 +105,11 @@ def build_eta_body(routes, contexts, route_index, position, *, speed=0.0,
     now = int(time.time() if now is None else now)
     context = contexts[route_index]
     route = routes[route_index]
-    roadlinks, startlen, drive_dist = _remaining_links(context, route, position)
+    if (progress_hint is not None and
+            (type(progress_hint) not in (int, float) or not math.isfinite(progress_hint)
+             or not 0 <= progress_hint <= route["distance"] + 500)):
+        raise ValueError("invalid ETA route progress")
+    roadlinks, startlen, drive_dist = _remaining_links(context, position, progress_hint)
     root = ET.Element("etatrafficupdate", {
         "DataVers": str(context["eta_data_vers"]), **ROOT_FIELDS,
         "NaviID": context["navigation_id_candidate"],

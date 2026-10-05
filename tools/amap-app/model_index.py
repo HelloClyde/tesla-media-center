@@ -1,8 +1,10 @@
 """Offline inspection of the App's IndexedModel protobuf descriptor.
 
 Schema recovered from libamapr.so 17.00.0.2005 descriptor 0x1b335b8,
-used by 0xc7398c -> 0xc73b30 -> 0x1ada34c. No live nonempty index has
-been validated yet. Field numbers are retained where semantics are unknown.
+used by 0xc7398c -> 0xc73b30 -> 0x1ada34c. This is an internal descriptor,
+not the type-15 HTTP index now decoded in landmark_models.py. No live sample
+of this particular descriptor has been validated. Field numbers retain
+unknown semantics.
 This tool does not fetch URLs or convert coordinates into map positions.
 """
 import argparse

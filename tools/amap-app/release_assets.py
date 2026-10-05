@@ -14,10 +14,13 @@ APK_ENTRIES = {
     'libamapr.so': 'lib/arm64-v8a/libamapr.so',
     'style-day.data': 'assets/map_assets/style_X_MainStd_Std_D_s_26_1788435170.data',
     'style-night.data': 'assets/map_assets/style_X_MainStd_Std_N_s_26_1788435163.data',
+    'style-navigation-day.data': 'assets/map_assets/style_X_DrvNavS_Drv_D_s_26_1788435175.data',
+    'style-navigation-night.data': 'assets/map_assets/style_X_DrvNavS_Drv_N_s_26_1788435176.data',
     'signing-certificate.rsa': 'META-INF/MINIMAP_.RSA',
 }
 MAX_SIZES = {'libamapr.so': 40 * 1024 * 1024, 'style-day.data': 1024 * 1024,
-             'style-night.data': 1024 * 1024, 'signing-certificate.rsa': 4096}
+             'style-night.data': 1024 * 1024, 'style-navigation-day.data': 1024 * 1024,
+             'style-navigation-night.data': 1024 * 1024, 'signing-certificate.rsa': 4096}
 
 
 def verify(path, expected):

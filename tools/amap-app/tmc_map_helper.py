@@ -2,10 +2,13 @@
 import hashlib
 import base64
 import json
+import os
 import sys
+import time
 import traceback
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from uuid import uuid4
 import requests
 from bmd_tile import catalog, tile_id, unpack, LIMIT
 from bmd_geometry import geographic_features
@@ -15,6 +18,10 @@ from bmd_points import geographic_labels
 from bmd_buildings import geographic_buildings
 from route_v51 import fields, one
 from tmc_route_helper import check_assets, ASSETS
+
+VERSION_URL = 'https://m5.amap.com/ws/render/bmd/version/'
+VERSION_TTL_SECONDS = 120
+TILE_HOSTS = {'https://render-prod-tile.amap.com', 'https://render-prod-backup-tile.amap.com'}
 
 
 def download(url, params):
@@ -29,6 +36,44 @@ def download(url, params):
             if len(data) > LIMIT:
                 raise ValueError('response too large')
         return bytes(data)
+
+
+def version_catalog(material, cache_path=None):
+    """Reuse the small APK BMD catalog across short-lived tile helpers."""
+    channel = material['getAosChannel']
+    path = Path(cache_path) if cache_path else None
+    now = time.time()
+    if path:
+        try:
+            if path.stat().st_size <= 4096:
+                saved = json.loads(path.read_text(encoding='utf-8'))
+                versions = {int(k): v for k, v in saved['versions'].items()}
+                if (saved['channel'] == channel and 0 <= now - saved['fetchedAt'] <= VERSION_TTL_SECONDS
+                        and saved['host'] in TILE_HOSTS and all(type(v) is int and v >= 0 for v in versions.values())
+                        and {0, 1, 2, 5, 6}.issubset(versions)):
+                    return saved['host'], versions
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            pass
+    sign = hashlib.md5((channel + '@' + material['getAosKey']).encode()).hexdigest().upper()
+    raw = download(VERSION_URL, dict(channel=channel, diu='', sign=sign, output='bin', isolTag=162500, cSrc=1))
+    versions = catalog(raw)
+    host = one(fields(raw), 5).decode()
+    # The version service cannot redirect this helper to an arbitrary host.
+    if host not in TILE_HOSTS:
+        raise ValueError('unsupported tile host')
+    if path:
+        temporary = path.with_name(path.name + '.' + uuid4().hex + '.tmp')
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary.write_text(json.dumps({'channel': channel, 'fetchedAt': now,
+                                             'host': host, 'versions': versions}), encoding='utf-8')
+            os.replace(temporary, path)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return host, versions
 
 
 def main(payload):
@@ -48,17 +93,9 @@ def main(payload):
     check_assets()
     from native_signer import load_material
     material = load_material(ASSETS)
-    channel = material['getAosChannel']
-    sign = hashlib.md5((channel + '@' + material['getAosKey']).encode()).hexdigest().upper()
-    raw = download('https://m5.amap.com/ws/render/bmd/version/',
-                   dict(channel=channel, diu='', sign=sign, output='bin', isolTag=162500, cSrc=1))
-    versions = catalog(raw)
-    paints = load_paints(ASSETS, 8 if level == 15 else 2)
-    road_paints = load_paints(ASSETS, 1) if level != 15 and not raw_mode else {}
-    host = one(fields(raw), 5).decode()
-    # The version service cannot redirect this helper to an arbitrary host.
-    if host not in {'https://render-prod-tile.amap.com', 'https://render-prod-backup-tile.amap.com'}:
-        raise ValueError('unsupported tile host')
+    host, versions = version_catalog(material, payload.get('versionCachePath'))
+    paints = load_paints(ASSETS, 8, variant='navigation') if level == 15 else load_paints(ASSETS, 2)
+    road_paints = load_paints(ASSETS, 1) if level != 15 else {}
     def fetch(tile):
         x, y = tile
         identity = tile_id(level, x, y)
@@ -76,6 +113,16 @@ def main(payload):
                 data = unpack(response, identity, kind)
                 if raw_mode:
                     result[field + 'Bmd'] = base64.b64encode(data).decode('ascii')
+                    if kind == 2 and data:
+                        from bmd_geometry import decode as decode_roads
+                        from bmd_styles import style_bindings
+                        bindings = style_bindings(data, 31, len(decode_roads(data)))
+                        used = {f'{category}/{subtype}' for category, subtype in bindings.values()}
+                        result['roadPaints'] = {
+                            theme: {f'{category}/{subtype}': stops for (category, subtype), stops in lookup.items()
+                                    if f'{category}/{subtype}' in used}
+                            for theme, lookup in road_paints.items()
+                        }
                 elif kind == 5:
                     result['buildings'], skipped = geographic_buildings(data, (level, x, y), paints) if data else ([], 0)
                     if skipped:
@@ -118,4 +165,6 @@ if __name__ == '__main__':
             result['diagnostic']['module'] = error.name
         if isinstance(error, requests.HTTPError) and error.response is not None:
             result['diagnostic']['httpStatus'] = error.response.status_code
-    print(json.dumps(result, ensure_ascii=False))
+    # The Flask parent decodes subprocess stdout as UTF-8. Keep the wire JSON
+    # ASCII-only so Windows console encodings cannot corrupt map labels.
+    print(json.dumps(result, ensure_ascii=True))

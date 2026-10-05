@@ -19,8 +19,8 @@ def detail_paints(raw, mode_id):
     """Packaged default-theme rules, excluding conditional/unsupported branches.
 
     Road widths remain style units, NOT measured lane widths. The web renderer
-    chooses its cartographic scale. For buildings only uniform solid palettes
-    are accepted: heterogeneous face assignments/textures need a native port.
+    chooses its cartographic scale. Building mode-8 solid color slots are kept
+    in their source order; the native face orientation mapping is separate.
     """
     mode = next((m for m in map(fields, fields(raw).get(1, [])) if one(m, 1) == mode_id), None)
     if mode is None:
@@ -58,9 +58,22 @@ def detail_paints(raw, mode_id):
                         stop = dict(outer=outer, inner=inner, outerWidth=widths[0], innerWidth=widths[1])
                     else:
                         colors = [solid_color(paint, k) for k in range(2, 7)]
-                        if any(c != colors[0] for c in colors):
+                        if any(c['opacity'] != 1 for c in colors):
                             continue
-                        stop = dict(surface=colors[0])
+                        stop = dict(surface=colors[0], colorSlots=[c['color'] for c in colors])
+                        # Mode-8 materials carry two icon references. The
+                        # second is 1112 for most night navigation buildings
+                        # and zero for day ones. Preserve both without
+                        # assuming the shader's sampler/UV binding.
+                        for key, name in ((10, 'textureId'), (11, 'secondaryTextureId')):
+                            if key in paint:
+                                texture_id = one(fields(one(paint, key)), 1)
+                                if type(texture_id) is int and 0 < texture_id <= 0xffffffff:
+                                    stop[name] = texture_id
+                        if 7 in paint:
+                            option = one(paint, 7)
+                            if type(option) is int and 0 < option <= 255:
+                                stop['materialOption7Raw'] = option
                     stops.append(dict(minZoom=low, maxZoom=high, **stop))
                 except (KeyError, TypeError, ValueError, struct.error):
                     continue
@@ -175,10 +188,12 @@ def polygon_paints(raw):
     return result
 
 
-def load_paints(assets, mode_id=2):
+def load_paints(assets, mode_id=2, variant='main'):
+    if variant not in ('main', 'navigation'):
+        raise ValueError('unsupported map style')
     result = {}
     for theme in ('day', 'night'):
-        path = Path(assets) / f'style-{theme}.data'
+        path = Path(assets) / (f'style-{theme}.data' if variant == 'main' else f'style-navigation-{theme}.data')
         if path.stat().st_size > LIMIT:
             raise ValueError('style size limit')
         raw = zstandard.ZstdDecompressor().decompress(path.read_bytes(), max_output_size=LIMIT)

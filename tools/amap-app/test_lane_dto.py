@@ -1,5 +1,5 @@
 import unittest
-from tmc_lane_helper import boundary_dto
+from tmc_lane_helper import boundary_dto, boundary_dto_with_kinds
 
 
 class LaneDtoTest(unittest.TestCase):
@@ -12,3 +12,12 @@ class LaneDtoTest(unittest.TestCase):
         for point in [[float('nan'), 40], [181, 40], [116, 90]]:
             with self.assertRaises(ValueError):
                 boundary_dto([[point, [116, 40]]])
+
+    def test_raw_kind_stays_aligned_after_reverse_deduplication(self):
+        a, b, c = [116, 40], [116.0001, 40], [116.0002, 40]
+        lines, kinds = boundary_dto_with_kinds([[a, b], [b, a], [b, c]], [1, 3, 1])
+        self.assertEqual(lines, [[(116, 40), (116.0001, 40)],
+                                 [(116.0001, 40), (116.0002, 40)]])
+        self.assertEqual(kinds, [3, 1])
+        with self.assertRaises(ValueError):
+            boundary_dto_with_kinds([[a, b]], [])

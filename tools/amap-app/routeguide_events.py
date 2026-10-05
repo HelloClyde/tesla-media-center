@@ -20,7 +20,32 @@ from v51_dynamic_route import extract
 
 
 SECTION_CONDITION = re.compile(r'\(\(distance>0\) && \(distance<=([0-9]{1,8})\)\)\Z')
+LANE_CONDITION = re.compile(r'\(\(link@=\[([0-9]{1,6}),\1\]\) && \(distance@=\[0,0\]\)\)\Z')
 CAMERA_TYPES = {7, 25, 26, 27}
+
+
+def _lane_variants(payload):
+    choices = payload.get('lanenew')
+    if not isinstance(choices, list) or not 1 <= len(choices) <= 8:
+        return []
+    result = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            return []
+        count = choice.get('laneCount')
+        back, front = choice.get('backLane'), choice.get('frontLane')
+        start, end = choice.get('starttime'), choice.get('endtime')
+        if (type(count) is not int or not 1 <= count <= 12
+                or not isinstance(back, list) or not isinstance(front, list)
+                or len(back) != count or len(front) != count
+                or any(type(code) is not int or code not in range(101) and code != 255
+                       for code in back + front)
+                or type(start) is not int or type(end) is not int
+                or not 0 <= start < end <= 24):
+            return []
+        result.append({'startHour': start, 'endHour': end,
+                       'back': back, 'front': front})
+    return result
 
 
 def _kind_three(answer):
@@ -151,7 +176,7 @@ def decode_ncp(answer, raw, routes, expected_ids=None):
         native = [sum(links) for links in native_links]
         map_distance, native_ends = _distance_map(route, native)
         total = native_ends[-1]
-        sections, cameras = [], []
+        sections, cameras, lane_guides = [], [], []
         def add_camera(kind, speeds, remaining, coordinate):
             if (type(kind) is not int or kind not in CAMERA_TYPES
                     or not isinstance(speeds, list) or not 1 <= len(speeds) <= 8
@@ -180,7 +205,19 @@ def decode_ncp(answer, raw, routes, expected_ids=None):
                 continue
             if not isinstance(payload, dict):
                 continue
-            if list(payload) == ['speed']:
+            if 'lanenew' in payload:
+                remaining, condition = script.get('_rd'), script.get('_c')
+                segment = script.get('_ss')
+                if (set(payload) != {'lanenew'} or type(remaining) is not int
+                        or not 0 <= remaining <= total or type(segment) is not int
+                        or not 0 <= segment < len(native)
+                        or not isinstance(condition, str) or not LANE_CONDITION.fullmatch(condition)):
+                    continue
+                variants = _lane_variants(payload)
+                if variants:
+                    lane_guides.append({'at': round(map_distance(total - remaining), 1),
+                                        'variants': variants})
+            elif list(payload) == ['speed']:
                 speed, remaining = payload['speed'], script.get('_rd')
                 segment, end_segment = script.get('_ss'), script.get('_es')
                 condition = script.get('_c', '')
@@ -221,6 +258,7 @@ def decode_ncp(answer, raw, routes, expected_ids=None):
         if any(a['end'] > b['start'] + 0.2 for a, b in zip(sections, sections[1:])):
             raise ValueError('overlapping NCP speed sections')
         cameras.sort(key=lambda item: item['at'])
+        lane_guides.sort(key=lambda item: item['at'])
         unique_cameras = []
         seen = set()
         for camera in cameras:
@@ -228,7 +266,8 @@ def decode_ncp(answer, raw, routes, expected_ids=None):
             if key not in seen:
                 seen.add(key)
                 unique_cameras.append(camera)
-        result.append({'speedLimits': sections, 'speedCameras': unique_cameras})
+        result.append({'speedLimits': sections, 'speedCameras': unique_cameras,
+                       'laneGuides': lane_guides})
     return result
 
 

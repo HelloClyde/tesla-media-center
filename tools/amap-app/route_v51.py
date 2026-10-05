@@ -177,7 +177,7 @@ def decode(raw, origin=None, destination=None):
     routes = []
     for route_raw in message.get(7, []):
         route = fields(route_raw)
-        path, steps, measured, breaks, traffic_lights = [], [], 0.0, [], []
+        path, steps, measured, breaks, traffic_lights, traffic_runs = [], [], 0.0, [], [], []
         current_road = "道路"
         for segment_raw in route.get(10, []):
             segment = fields(segment_raw)
@@ -194,6 +194,9 @@ def decode(raw, origin=None, destination=None):
             if path and distance(path[-1], points[0]) > 100:
                 raise ValueError("discontinuous route geometry")
             links = [fields(item) for item in segment.get(3, [])]
+            offsets = [0.0]
+            for a, b in zip(points, points[1:]):
+                offsets.append(offsets[-1] + distance(a, b))
             covered = 0
             for link in links:
                 span = fields(one(link, 8, b""))
@@ -209,6 +212,25 @@ def decode(raw, origin=None, destination=None):
                     raise ValueError("invalid link flags")
                 if flags & 4:
                     traffic_lights.append(points[covered])
+                # App RouteLink.getLinkTrafficStatus() exposes status, speed,
+                # passTime and length. v5.1 link fields 3/4/5/2 carry these
+                # values; 2/3/4 mean slow/jammed/severely jammed in the APK.
+                status = one(link, 3, 0)
+                if type(status) is not int or status not in (0, 1, 2, 3, 4, 16):
+                    raise ValueError("invalid link traffic status")
+                if status in (2, 3, 4):
+                    run_path = points[start:start + count]
+                    run_start = round(measured + offsets[start], 1)
+                    run_end = round(measured + offsets[covered], 1)
+                    if run_end > run_start:
+                        if (traffic_runs and traffic_runs[-1]["status"] == status
+                                and traffic_runs[-1]["path"][-1] == run_path[0]
+                                and abs(traffic_runs[-1]["end"] - run_start) <= .2):
+                            traffic_runs[-1]["path"].extend(run_path[1:])
+                            traffic_runs[-1]["end"] = run_end
+                        else:
+                            traffic_runs.append({"status": status, "path": run_path,
+                                                 "start": run_start, "end": run_end})
             if links and covered != len(points) - 1:
                 raise ValueError("unused segment coordinates")
             for link in links:
@@ -230,7 +252,7 @@ def decode(raw, origin=None, destination=None):
                 if path:
                     breaks.append(start_index)
                 path.extend(points)
-            length = sum(distance(a, b) for a, b in zip(points, points[1:]))
+            length = offsets[-1]
             service_area = service_area_name(segment)
             steps.append({"road": current_road, "start": start_index, "end": len(path) - 1,
                           "distance": round(length, 1), "actionCode": one(segment, 1, 0),
@@ -249,6 +271,7 @@ def decode(raw, origin=None, destination=None):
         labels = [one(fields(item), 2, b"").decode("utf-8") for item in route.get(12, [])]
         routes.append({"id": len(routes), "labels": labels, "path": path, "steps": steps, "breaks": breaks,
                        "trafficLights": traffic_lights, "trafficLightCount": len(traffic_lights),
+                       "trafficRuns": traffic_runs,
                        **route_summary(route), "distance": round(measured), "roads": list(dict.fromkeys(step["road"] for step in steps))})
     if not 1 <= len(routes) <= 10:
         raise ValueError("route count")

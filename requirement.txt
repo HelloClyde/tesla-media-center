@@ -11,3 +11,4 @@ qrcode[pil]>=7.4,<9
 aiohttp
 
 qqmusic-api-python==0.7.3
+zstandard>=0.19,<1

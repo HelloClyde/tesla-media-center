@@ -39,11 +39,15 @@ export function createRouteFusion(route: AppRoute) {
       estimated: state !== 'tracking', estimationSeconds: Math.max(0, Math.floor((clock - trustedAt) / 1000)), state };
   }
   function tick(now: number) {
-    const dt = clamp((now - clock) / 1000, 0, 1); clock = now;
+    const elapsed = Math.max(0, (now - clock) / 1000); clock = now;
     if (progress === undefined) return;
     if (state === 'off-route') return;
     if (now - trustedAt > 2500) { trustedStream = false; if (state === 'tracking') state = 'estimating'; }
     const continuousSpeed = speedSamples >= 3 && now - speedAt <= 2500;
+    // Car browsers may deliver valid speed callbacks every two seconds.
+    // Account for that interval while the established stream is fresh, but
+    // retain the one-second cap once it is stale or has not been established.
+    const dt = Math.min(elapsed, continuousSpeed ? 2.5 : 1);
     const staleFor = now - speedAt;
     if ((!speedStreamEstablished && !continuousSpeed && (now - trustedAt > 30000 || travelled >= 500))
       || staleFor > speedGraceMs || (speedStreamEstablished && staleTravelled >= staleDistanceLimit)) {

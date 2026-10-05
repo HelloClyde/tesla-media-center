@@ -11,6 +11,9 @@ export function vehicleMapPoint(sample: any): MapPoint | undefined {
 export function groundOffset(point: number[], origin: MapPoint): MapPoint {
   return [(point[0] - origin[0]) * METERS * Math.cos(origin[1] * Math.PI / 180), (origin[1] - point[1]) * METERS];
 }
+export function groundPoint(origin: MapPoint, east: number, south: number): MapPoint {
+  return [origin[0] + east / (METERS * Math.cos(origin[1] * Math.PI / 180)), origin[1] - south / METERS];
+}
 export function groundBounds(origin: MapPoint, radius: number) {
   const dx = radius / (METERS * Math.cos(origin[1] * Math.PI / 180)), dy = radius / METERS;
   return [origin[0] - dx, origin[1] + dy, origin[0] + dx, origin[1] - dy] as const;

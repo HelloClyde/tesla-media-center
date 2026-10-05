@@ -17,6 +17,8 @@ COPY web/public/catalogs/ /assets/catalogs/
 COPY web/public/gam4980/ /assets/gam4980/
 COPY web/public/icon/ /assets/icon/
 COPY web/public/vendor/ /assets/vendor/
+COPY web/public/basis/ /assets/basis/
+COPY web/public/amap/ /assets/amap/
 RUN node /precompress-dist.mjs /assets
 
 FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder
@@ -56,7 +58,7 @@ COPY tools/amap-app/requirements.txt ./amap-requirements.txt
 RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
 
 # Linked COPY layers do not depend on earlier code/dependency layers.
-COPY --link docker_build/amap-assets/libserverkey.so docker_build/amap-assets/libamapr.so docker_build/amap-assets/style-day.data docker_build/amap-assets/style-night.data docker_build/amap-assets/signing-certificate.rsa /opt/tmc/amap-app/
+COPY --link docker_build/amap-assets/libserverkey.so docker_build/amap-assets/libamapr.so docker_build/amap-assets/style-day.data docker_build/amap-assets/style-night.data docker_build/amap-assets/style-navigation-day.data docker_build/amap-assets/style-navigation-night.data docker_build/amap-assets/signing-certificate.rsa /opt/tmc/amap-app/
 COPY --link --from=tts-assets /assets/ ./web/dist/tts/
 COPY --link --from=model-assets /assets/ ./web/dist/models/
 COPY --link --from=texture-assets /assets/ ./web/dist/textures/
@@ -70,6 +72,6 @@ COPY --link ffvideo/ ./ffvideo/
 COPY --link tools/douyin/ ./tools/douyin/
 COPY --link tools/amap-app/ ./tools/amap-app/
 RUN python tools/amap-app/release_assets.py --verify-only --directory /opt/tmc/amap-app && \
-    python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper"
+    python -c "import sys; sys.path.insert(0, 'tools/amap-app'); import tmc_map_helper, tmc_route_helper, tmc_lane_helper, landmark_models"
 COPY --link --from=web-builder /build/web/dist/ ./web/dist/
 CMD ["python", "/root/tesla-media-center/flask_app.py"]

@@ -1,6 +1,10 @@
 import type { Point } from './amapNavigation';
 
-export type Place = { id: string; name: string; address: string; location: Point };
+export type Place = { id: string; name: string; address: string; location: Point; entrance?: Point };
+
+export function placeNavigationPoint(place: Place): Point {
+  return place.entrance || place.location;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -25,9 +29,14 @@ export function parseSearchPlaces(response: unknown): Place[] {
       Math.abs(location[0]) > 180 || Math.abs(location[1]) > 85) continue;
     if (ids.has(id.trim())) continue;
     ids.add(id.trim());
+    const entrance = item.entrance;
+    const validEntrance = Array.isArray(entrance) && entrance.length === 2 &&
+      entrance.every(v => typeof v === 'number' && Number.isFinite(v)) &&
+      Math.abs(entrance[0]) <= 180 && Math.abs(entrance[1]) <= 85;
     places.push({ id: id.trim(), name: name.trim(),
       address: typeof item.address === 'string' ? item.address.trim() : '',
-      location: [location[0], location[1]] });
+      location: [location[0], location[1]],
+      ...(validEntrance ? { entrance: [entrance[0], entrance[1]] as Point } : {}) });
   }
   if (data.places.length && !places.length) throw new Error('搜索结果中没有可用于导航的地点');
   return places;

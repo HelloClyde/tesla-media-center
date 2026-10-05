@@ -77,10 +77,20 @@ window.addEventListener('message', function (event) {
         if (!p.id || !p.location || ids.has(p.id)) return false;
         ids.add(p.id); return true;
       });
-      reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: pois.map(p => ({
-        id: p.id, name: p.name, address: [p.pname, p.cityname, p.adname, typeof p.address === 'string' ? p.address : ''].filter(Boolean).join(' '),
-        location: [p.location.getLng(), p.location.getLat()]
-      })) } });
+      reply({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places: pois.map(p => {
+        const entrance = Array.isArray(p.entrances) ? p.entrances.map(value => {
+          const longitude = Number(value?.longitude ?? value?.lon ?? value?.getLng?.());
+          const latitude = Number(value?.latitude ?? value?.lat ?? value?.getLat?.());
+          return [longitude, latitude];
+        }).find(([longitude, latitude]) => Number.isFinite(longitude) && Number.isFinite(latitude)
+          && Math.abs(longitude) <= 180 && Math.abs(latitude) <= 85) : undefined;
+        return {
+          id: p.id, name: p.name,
+          address: [p.pname, p.cityname, p.adname, typeof p.address === 'string' ? p.address : ''].filter(Boolean).join(' '),
+          location: [p.location.getLng(), p.location.getLat()],
+          ...(entrance ? { entrance } : {})
+        };
+      }) } });
     } catch (error) { reply({ status: 'error', message: error?.message || '高德搜索服务初始化失败' }); }
   };
   const script = document.createElement('script');

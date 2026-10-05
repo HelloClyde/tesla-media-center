@@ -1,6 +1,6 @@
 export type Point = [number, number];
 export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' | 'fork-left' | 'fork-middle' | 'fork-right' }
-export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[] }
+export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; trafficRuns?: import('./amapRouteTraffic').CongestionRun[]; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[]; laneGuides?: import('./amapLaneGuidance').LaneGuide[] }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
   return Math.hypot((b[0] - a[0]) * Math.cos(lat), b[1] - a[1]) * rad * 6371000;

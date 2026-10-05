@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSearchPlaces } from './amapSearch';
+import { parseSearchPlaces, placeNavigationPoint } from './amapSearch';
 
 const poi = { id: 'test', name: '测试地点', location: [116.4, 39.9] };
 const response = (places: unknown[]) => ({ status: 'ok', data: { coordinateSystem: 'GCJ-02', places } });
@@ -7,6 +7,13 @@ const response = (places: unknown[]) => ({ status: 'ok', data: { coordinateSyste
 describe('TMC search response validation', () => {
   it('keeps valid destinations and deduplicates their IDs', () => {
     expect(parseSearchPlaces(response([poi, { ...poi, name: '重复地点' }]))).toEqual([{ ...poi, address: '' }]);
+  });
+  it('routes to a valid POI entrance while retaining the displayed POI center', () => {
+    const [place] = parseSearchPlaces(response([{...poi, entrance:[116.401,39.901]}]));
+    expect(place.location).toEqual([116.4,39.9]);
+    expect(placeNavigationPoint(place)).toEqual([116.401,39.901]);
+    const [withoutEntrance] = parseSearchPlaces(response([{...poi, entrance:[NaN,39.901]}]));
+    expect(placeNavigationPoint(withoutEntrance)).toEqual([116.4,39.9]);
   });
   it('excludes cards and invalid coordinates without inventing destinations', () => {
     const invalid = [null, { ...poi, id: 'card', item_type: 'advertisement' },

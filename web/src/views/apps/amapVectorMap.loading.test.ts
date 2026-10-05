@@ -25,6 +25,7 @@ it('keeps in-flight tiles during movement and aborts on disposal', async () => {
   post.mockImplementationOnce(() => new Promise(r => resolve = r));
   const { map, events } = fakeMap();
   const layer = attachAppMap(map, vi.fn());
+  await vi.advanceTimersByTimeAsync(0);
   const signal = post.mock.calls[0][2].signal;
   events.movestart(); events.moveend();
   await vi.advanceTimersByTimeAsync(150);
@@ -43,10 +44,10 @@ it('backs off failed tiles instead of looping on the same request', async () => 
   const { map } = fakeMap(); const layer = attachAppMap(map, vi.fn());
   await vi.advanceTimersByTimeAsync(1000);
   const firstLevel = post.mock.calls[0][1].level;
-  // The raw tile decoder falls back to the server-rendered endpoint once.
-  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
+  // A network error keeps BMD enabled and waits before retrying the tile.
+  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(1);
   await vi.advanceTimersByTimeAsync(1500);
-  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(3);
+  expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
   layer.dispose();
 });
 it('loads overview and visible street detail before intermediate levels', async () => {
@@ -57,13 +58,13 @@ it('loads overview and visible street detail before intermediate levels', async 
   const { map } = fakeMap();
   const layer = attachAppMap(map, vi.fn());
   await vi.advanceTimersByTimeAsync(350);
-  expect(post.mock.calls.slice(0, 4).map(call => call[1].level)).toEqual([3, 3, 14, 12]);
+  expect(post.mock.calls.slice(0, 4).map(call => call[1].level)).toEqual([3, 14, 12, 10]);
   layer.dispose();
 });
-it('warms route tiles only after the visible map and receives no geometry', async () => {
+it('warms route tiles only after the visible map and receives an empty response', async () => {
   vi.useFakeTimers();
   post.mockImplementation(async (url, batch) => url.endsWith('/prefetch')
-    ? { status: 200, data: { status: 'ok', data: { tiles: batch.tiles.map(([x, y]: number[]) => ({ x, y, ready: true })) } } }
+    ? { status: 204, data: '' }
     : { status: 200, data: { status: 'ok', data: {
       tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
     } } });

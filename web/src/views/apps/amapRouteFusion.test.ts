@@ -115,6 +115,15 @@ describe('route fusion', () => {
   for(let i=1;i<=120;i++) engine.accept(fix(i*10,i+1,700),i*1000);
   const result = engine.tick(120250)!; expect(result.state).toBe('estimating'); expect(result.progress).toBeGreaterThan(1100); expect(result.estimationSeconds).toBeGreaterThan(100);
  });
+ it('accounts for two-second car speed callbacks in a long tunnel', () => {
+  const engine=createRouteFusion({...route,path:[[120,30],[120.2,30]]});
+  engine.accept(fix(0,1),0);
+  for(let i=1;i<=30;i++) engine.accept(fix(300+i*20,i+1,800),i*2000);
+  const result=engine.tick(60000)!;
+  expect(result.state).toBe('estimating');
+  expect(result.progress).toBeGreaterThan(550);
+  expect(result.progress).toBeLessThanOrEqual(600);
+ });
  it('recovers over multiple fixes without jumping straight to the fix', () => {
   const engine=createRouteFusion(route); engine.accept(fix(0,1),0);
   engine.accept(fix(30,2,80),1000);

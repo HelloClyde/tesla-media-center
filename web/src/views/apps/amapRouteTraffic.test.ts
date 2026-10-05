@@ -1,31 +1,29 @@
 import { describe, expect, it } from 'vitest';
-import { remainingCongestionPath, routeCongestionRuns } from './amapRouteTraffic';
-import type { AppRoute } from './amapNavigation';
-import type { TrafficRoad } from './amapTrafficOverlay';
+import { congestionSegmentProgresses, remainingCongestionPath, type CongestionRun } from './amapRouteTraffic';
 
-const route: AppRoute = {
-  id: 0, path: [[116.4, 39.9], [116.401, 39.9]], breaks: [],
-  steps: [{ start: 0, end: 1, road: '示例路' }], distance: 86, labels: [],
-};
+describe('APK route congestion', () => {
+  const run: CongestionRun = {
+    status: 4, start: 20, end: 100,
+    path: [[116.4, 39.9], [116.4004, 39.9], [116.4008, 39.9]],
+  };
 
-describe('navigation route traffic', () => {
-  it('colors only matching congestion on the route and trims driven parts', () => {
-    const roads: TrafficRoad[] = [
-      { status: 3, name: '示例路', angle: 0, path: [[116.40035, 39.9], [116.40065, 39.9]] },
-      { status: 2, name: '平行路', angle: 0, path: [[116.4, 39.9004], [116.401, 39.9004]] },
-    ];
-    const runs = routeCongestionRuns(route, roads);
-    expect(runs).toHaveLength(1);
-    expect(runs[0].status).toBe(3);
-    expect(runs[0].start).toBeGreaterThan(0);
-    expect(runs[0].end).toBeLessThan(90);
-    expect(remainingCongestionPath(runs[0], runs[0].end)).toEqual([]);
-    expect(remainingCongestionPath(runs[0], (runs[0].start + runs[0].end) / 2)[0][0]).toBeGreaterThan(runs[0].path[0][0]);
+  it('retains native route-link geometry and trims already driven congestion', () => {
+    expect(remainingCongestionPath(run, 10)).toEqual(run.path);
+    expect(remainingCongestionPath(run, 100)).toEqual([]);
+    const ahead = remainingCongestionPath(run, 60);
+    expect(ahead[0][0]).toBeGreaterThan(run.path[0][0]);
+    expect(ahead[ahead.length - 1]).toEqual(run.path[run.path.length - 1]);
   });
 
-  it('does not color a crossing road or traffic in the opposite direction', () => {
-    const crossing: TrafficRoad = { status: 3, angle: 90, path: [[116.4005, 39.8998], [116.4005, 39.9002]] };
-    const opposite: TrafficRoad = { status: 2, angle: 180, path: [[116.4, 39.9], [116.401, 39.9]] };
-    expect(routeCongestionRuns(route, [crossing, opposite])).toEqual([]);
+  it('keeps 2D and 3D progress anchored to the decoded interval despite rounded geometry', () => {
+    const spans = congestionSegmentProgresses(run);
+    expect(spans[0].start).toBe(20);
+    expect(spans[spans.length - 1].end).toBeCloseTo(100, 8);
+    expect(spans[0].end).toBeCloseTo(60, 1);
+    const nearlyFinished = remainingCongestionPath(run, 99);
+    expect(nearlyFinished).toHaveLength(2);
+    expect(nearlyFinished[0][0]).toBeGreaterThan(run.path[1][0]);
+    expect(nearlyFinished[0][0]).toBeLessThan(run.path[2][0]);
+    expect(remainingCongestionPath(run, 100)).toEqual([]);
   });
 });

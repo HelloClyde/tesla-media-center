@@ -1,12 +1,22 @@
 import L from 'leaflet';
 import axios from 'axios';
+import { decodeBmdOnMainThread, postMapTiles, rawBmdDecodeUnsupported, rawBmdUnsupported, TransientBmdDecodeError, transferableBmdBuffers } from './amapBmdTransport';
 import { createMapRenderQueue } from './mapRenderQueue';
 import { routeCorridorTiles, surroundingTiles } from './amapTilePrefetch';
 import type { AppRoute } from './amapNavigation';
 import { viewportTiles } from './amapViewport';
 import { layoutPlaceLabels, type PlaceLabel } from './amapPlaceLabels';
+import { browserMapTileTtlMs, readMapTiles, storeMapTiles } from './amapBrowserTileCache';
 
 export type AppMapAppearance = { theme: 'day' | 'night'; surfaces: boolean; roads: boolean; labels: boolean; transit: boolean; places: boolean };
+type RoadPaint = { minZoom: number; maxZoom: number; outerWidth: number; innerWidth: number;
+  outer: { color: string; opacity: number }; inner: { color: string; opacity: number } };
+type RoadPaints = Record<string, Record<string, RoadPaint[]>>;
+
+export function appRoadPaint(paints: RoadPaints | undefined, theme: AppMapAppearance['theme'], key: string | undefined, zoom: number) {
+  const stops = key ? (paints?.[theme]?.[key] || paints?.day?.[key]) : undefined;
+  return stops?.find(stop => zoom >= stop.minZoom && zoom <= stop.maxZoom);
+}
 
 export function attachAppMap(map: L.Map, report: (message: string) => void) {
   let appearance: AppMapAppearance = { theme: 'day', surfaces: true, roads: true, labels: true, transit: true, places: true };
@@ -19,7 +29,9 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   map.createPane('appPlaceLabels', upright).style.zIndex = '450';
   const renderer = L.canvas({ pane: 'appRoads', padding: .2 });
   const roads = L.layerGroup().addTo(map), labels = L.layerGroup().addTo(map);
-  const cache = new Map<string, { time: number; collection?: any; surfaces?: any[]; transit?: any[]; placeLabels?: PlaceLabel[]; missingLayers?: string[] }>();
+  const cache = new Map<string, { time: number; collection?: any; surfaces?: any[]; transit?: any[]; placeLabels?: PlaceLabel[];
+    roadPaints?: RoadPaints; missingLayers?: string[] }>();
+  const hydrated = new Set<string>();
   let route: AppRoute | undefined, routeBucket = -1, routeGeneration = 0, routeTiles: number[][] = [];
   const routeAttempted = new Set<string>();
   let request: AbortController | undefined, timer: ReturnType<typeof setTimeout> | undefined;
@@ -28,24 +40,45 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     timer = setTimeout(() => { timer = undefined; void load(); }, delay);
   }
   let disposed = false, generation = 0;
-  let bmdWorker: Worker | undefined;
-  let rawUnavailable = false;
+  let bmdWorker: Worker | undefined, bmdWorkerReady = false, workerUnavailable = false;
+  let rawUnavailable = false, authRequired = false, transientDecodeFailures = 0;
   function decodeRaw(tiles: any[], paints: any): Promise<any[]> {
-    if (typeof Worker === 'undefined') return Promise.reject(new Error('Worker unavailable'));
-    bmdWorker ||= new Worker(new URL('./amapBmdWorker.ts', import.meta.url), { type: 'module' });
+    if (workerUnavailable || typeof Worker === 'undefined')
+      return Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints));
+    try { bmdWorker ||= new Worker(new URL('./amapBmdWorker.ts', import.meta.url), { type: 'module' }); }
+    catch {
+      workerUnavailable = true;
+      return Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints));
+    }
     return new Promise((resolve, reject) => {
       const worker = bmdWorker!;
-      const timeout = setTimeout(() => { worker.terminate(); bmdWorker = undefined; reject(new Error('BMD decode timeout')); }, 15000);
+      let sent = false;
+      const local = () => {
+        workerUnavailable = true;
+        Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints)).then(resolve, reject);
+      };
+      const stop = () => { worker.terminate(); bmdWorker = undefined; bmdWorkerReady = false; };
+      const send = () => {
+        try { worker.postMessage({ tiles, paints }, transferableBmdBuffers(tiles)); sent = true; }
+        catch { clearTimeout(timeout); stop(); local(); }
+      };
+      const timeout = setTimeout(() => {
+        stop();
+        if (sent) reject(new TransientBmdDecodeError('BMD decode timeout'));
+        else local();
+      }, 15000);
       worker.onmessage = event => {
+        if (event.data.ready) { bmdWorkerReady = true; send(); return; }
         clearTimeout(timeout);
         if (event.data.error) reject(new Error(event.data.error));
         else resolve(event.data.tiles);
       };
       worker.onerror = () => {
-        clearTimeout(timeout); worker.terminate(); bmdWorker = undefined;
-        reject(new Error('BMD worker failed'));
+        clearTimeout(timeout); stop();
+        if (sent) reject(new TransientBmdDecodeError('BMD worker failed'));
+        else local();
       };
-      worker.postMessage({ tiles, paints });
+      if (bmdWorkerReady) send();
     });
   }
   function visible() {
@@ -74,6 +107,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   }
   function* drawSteps(tiles: number[][]): Generator<void> {
     const wanted = new Set<string>();
+    const roadFeatures: { tileKey: string; index: number; feature: any; paint?: RoadPaint }[] = [];
     const zoom = Math.floor(map.getZoom());
     const used = new Set<string>(), occupied = new Set<string>();
     if (appearance.places) {
@@ -124,11 +158,9 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         const style = feature.properties.style;
         return zoom >= (style & 31) && zoom <= ((style >> 5) & 31);
       }) };
-      if (appearance.roads) for (const [index, feature] of collection.features.entries()) {
-        retain(`${tileKey}/road/${index}`, feature, `${zoom}/${appearance.theme}`, roads, () => L.geoJSON(feature, { pane: 'appRoads', interactive: false,
-          style: { renderer, color: appearance.theme === 'night' ? '#6f9399' : '#ffffff', weight: 3, opacity: .9 } }), wanted);
-        yield;
-      }
+      if (appearance.roads) for (const [index, feature] of collection.features.entries())
+        roadFeatures.push({ tileKey, index, feature,
+          paint: appRoadPaint(cached.roadPaints, appearance.theme, feature.properties.paintKey, zoom) });
       if (!appearance.labels) continue;
       for (const feature of collection.features) {
         const name = feature.properties.name as string;
@@ -147,6 +179,19 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         yield;
       }
     }
+    // All casings precede all fills, preserving the App's two-stroke road
+    // hierarchy at intersections rather than painting every road white.
+    for (const layer of ['outer', 'inner'] as const) for (const road of roadFeatures) {
+      if (!road.paint && layer === 'inner') continue;
+      const stroke = road.paint?.[layer];
+      const weight = road.paint ? Math.max(.5, road.paint[layer === 'outer' ? 'outerWidth' : 'innerWidth'] * .1) : 3;
+      retain(`${road.tileKey}/road/${road.index}/${layer}`, road.feature,
+        `${zoom}/${appearance.theme}/${stroke?.color}/${weight}`, roads,
+        () => L.geoJSON(road.feature, { pane: 'appRoads', interactive: false,
+          style: { renderer, color: stroke?.color || (appearance.theme === 'night' ? '#6f9399' : '#ffffff'),
+            weight, opacity: stroke?.opacity ?? .9, lineCap: 'round', lineJoin: 'round' } }), wanted);
+      yield;
+    }
     // Keep the current map as a backdrop until new viewport tiles arrive.
     // Reconcile only after the pass completes so interrupted drawing never clears it.
     const complete = tiles.every(tile => cache.has(tile.join('/')));
@@ -160,7 +205,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   const failures = new Map<string, { count: number; retryAt: number }>();
   function needsTile(tile: number[]) {
     const key = tile.join('/'), cached = cache.get(key), failure = failures.get(key);
-    return (!cached || Date.now() - cached.time > 600000)
+    return (!cached || Date.now() - cached.time > browserMapTileTtlMs())
       && (!failure || (failure.count < 3 && Date.now() >= failure.retryAt));
   }
   function markFailed(tile: number[]) {
@@ -168,15 +213,45 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     failures.set(key, { count, retryAt: Date.now() + 2000 * 2 ** (count - 1) });
     if (failures.size > 256) failures.delete(failures.keys().next().value!);
   }
+  async function hydrateTiles(tiles: number[][]) {
+    const full=await readMapTiles('full',tiles);
+    const saved=await readMapTiles('rendered',tiles.filter(tile=>!full.has(tile.join('/'))));
+    for(const tile of tiles) hydrated.add(tile.join('/'));
+    for(const [key,row] of [...full,...saved]) cache.set(key,{
+      time:row.at,collection:row.tile.collection,surfaces:row.tile.surfaces as any[],
+      transit:row.tile.transit as any[],placeLabels:row.tile.placeLabels as PlaceLabel[],
+      roadPaints:row.tile.roadPaints as RoadPaints,missingLayers:row.tile.missingLayers,
+    });
+  }
   async function load() {
-    if (disposed || !active || loading) return;
+    if (disposed || !active || loading || authRequired) return;
     const tiles = visible();
+    const toHydrate=tiles.filter(tile=>!hydrated.has(tile.join('/')));
+    if(toHydrate.length) {
+      loading=true;
+      const id=generation;
+      try {
+        await hydrateTiles(toHydrate);
+        if(disposed || id!==generation || !active) return;
+        draw(visible(),true);
+      } finally {loading=false;}
+      if(!disposed && active) return load();
+      return;
+    }
     draw(tiles);
     if (!tiles.length) { report('路线总览 · 放大后显示道路详情'); return; }
     // Show the broad overview first, then the current street detail before
     // filling in intermediate source levels. Drawing still uses source order.
     const missing = tiles.filter(needsTile).sort((a, b) =>
       a[0] === b[0] ? 0 : a[0] === 3 ? -1 : b[0] === 3 ? 1 : b[0] - a[0]);
+    if (!missing.length && tiles.some(tile => failures.has(tile.join('/')))) {
+      const retryTimes = tiles.map(tile => failures.get(tile.join('/')))
+        .filter((failure): failure is { count: number; retryAt: number } => !!failure && failure.count < 3 && failure.retryAt > Date.now())
+        .map(failure => failure.retryAt);
+      if (retryTimes.length) queueLoad(Math.max(100, Math.min(...retryTimes) - Date.now()));
+      report('部分图层加载失败，可重试补齐');
+      return;
+    }
     if (!missing.length && routeTiles.length) {
       const visibleKeys = new Set(tiles.map(tile => tile.join('/')));
       const ahead = routeTiles.filter(tile => {
@@ -187,6 +262,15 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     }
     const prefetch = missing.length === 0;
     const candidates = prefetch ? surroundingTiles(tiles).filter(needsTile) : missing;
+    const coldNeighbours=prefetch?candidates.filter(tile=>!hydrated.has(tile.join('/'))).slice(0,8):[];
+    if(coldNeighbours.length) {
+      loading=true;
+      const id=generation;
+      try {await hydrateTiles(coldNeighbours);}
+      finally {loading=false;}
+      if(!disposed && id===generation && active) return load();
+      return;
+    }
     if (!candidates.length) {
       const retryTimes = [...failures.values()].filter(f => f.count < 3 && f.retryAt > Date.now()).map(f => f.retryAt);
       if (retryTimes.length) queueLoad(Math.max(100, Math.min(...retryTimes) - Date.now()));
@@ -205,8 +289,13 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       const deadline = Date.now() + 90000;
       const fetchReady = async (path: string) => {
         while (true) {
-          const response = await axios.post(path, { level, tiles: batch.map(t => t.slice(1)) },
+          const response = await postMapTiles(path, { level, tiles: batch.map(t => t.slice(1)) },
             { signal: controller.signal, timeout: 70000 });
+          if (response.data?.status === 'need_login') {
+            authRequired = true;
+            report('TMC 登录已失效，请登录后重试地图');
+            throw new Error('map login required');
+          }
           if (response.status !== 202 || !response.data.data?.pending) return response;
           if (Date.now() >= deadline) throw new Error('地图加载超时');
           await new Promise(resolve => setTimeout(resolve, 750));
@@ -217,7 +306,8 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       try {
         response = await fetchReady(rawUnavailable ? '/api/amap-app/map' : '/api/amap-app/map/bmd');
       } catch (error) {
-        if (rawUnavailable || controller.signal.aborted || disposed || id !== generation) throw error;
+        if (rawUnavailable || authRequired || controller.signal.aborted || disposed || id !== generation ||
+            !rawBmdUnsupported(error)) throw error;
         rawUnavailable = true;
         response = await fetchReady('/api/amap-app/map');
       }
@@ -227,7 +317,9 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       if (!rawUnavailable) {
         try {
           receivedTiles = await decodeRaw(receivedTiles, response.data.data.paints || {});
-        } catch {
+          transientDecodeFailures = 0;
+        } catch (error) {
+          if (!rawBmdDecodeUnsupported(error) && ++transientDecodeFailures < 2) throw error;
           rawUnavailable = true;
           response = await fetchReady('/api/amap-app/map');
           if (response.data.status !== 'ok') throw new Error('地图回退请求失败');
@@ -241,9 +333,15 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         if (!batch.some(t => t.join('/') === key)) continue;
         returned.add(key);
         if (tile.error) { markFailed([tile.level, tile.x, tile.y]); continue; }
-        cache.delete(key); cache.set(key, { time: tile.missingLayers?.length ? 0 : Date.now(), collection: tile.collection, surfaces: tile.surfaces, transit: tile.transit, placeLabels: tile.placeLabels, missingLayers: tile.missingLayers });
+        cache.delete(key); cache.set(key, { time: tile.missingLayers?.length ? 0 : Date.now(), collection: tile.collection, surfaces: tile.surfaces, transit: tile.transit, placeLabels: tile.placeLabels,
+          roadPaints: tile.roadPaints, missingLayers: tile.missingLayers });
         if (tile.missingLayers?.length) markFailed([tile.level, tile.x, tile.y]); else failures.delete(key);
       }
+      // Decoded BMD tiles contain the same road, surface, label and paint data
+      // that the 3D ground uses. Share them across 2D/3D so switching views
+      // does not download the same App tile again. Older rendered rows remain
+      // readable through hydrateTiles for existing browser caches.
+      void storeMapTiles('full',receivedTiles);
       for (const tile of batch) if (!returned.has(tile.join('/'))) markFailed(tile);
       const protectedKeys = new Set(visible().map(t => t.join('/')));
       for (const key of cache.keys()) {
@@ -252,11 +350,11 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       }
       draw(visible(), true);
     } catch {
-      if (!disposed && id === generation) batch.forEach(markFailed);
+      if (!disposed && id === generation && !authRequired) batch.forEach(markFailed);
     } finally {
       loading = false;
       if (request === controller) request = undefined;
-      if (!disposed && active) {
+      if (!disposed && active && !authRequired) {
         queueLoad(100);
       }
     }
@@ -272,7 +370,12 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         { level: 14, tiles: batch.map(tile => tile.slice(1)) },
         { signal: controller.signal, timeout: 12000 });
       if (disposed || id !== generation || routeId !== routeGeneration) return;
-      if (response.status === 202 && response.data.data?.pending) { delay = 2000; return; }
+      if (response.data?.status === 'need_login') {
+        authRequired = true;
+        report('TMC 登录已失效，请登录后重试地图');
+        return;
+      }
+      if (response.status === 202) { delay = 2000; return; }
       // A failed tile is attempted only once per route window. Visible loads
       // retain their own retry policy if the vehicle reaches that tile.
       batch.forEach(tile => routeAttempted.add(tile.join('/')));
@@ -282,7 +385,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     } finally {
       loading = false;
       if (request === controller) request = undefined;
-      if (!disposed && active) {
+      if (!disposed && active && !authRequired) {
         if (timer) clearTimeout(timer);
         timer = setTimeout(() => void load(), delay);
       }
@@ -326,7 +429,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       routeTiles = nextRoute ? routeCorridorTiles(nextRoute, progress) : [];
       if (active) schedule();
     },
-    retry: () => { failures.clear(); drawnView = ''; void load(); },
+    retry: () => { authRequired = false; failures.clear(); drawnView = ''; void load(); },
     releaseMemory() {
       renderQueue.cancel();
       cache.clear(); rendered.clear();

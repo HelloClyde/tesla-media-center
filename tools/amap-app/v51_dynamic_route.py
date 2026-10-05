@@ -54,6 +54,7 @@ def extract(raw: bytes, route_index: int = 0) -> dict:
     lengths: list[int] = []
     road_classes: list[int] = []
     link_starts: list[tuple[float, float]] = []
+    link_points: list[list[tuple[float, float]]] = []
     segment_link_counts: list[int] = []
     segment_boundary_properties: list[list[tuple[int, int]]] = []
     segment_adcodes: list[list[int]] = []
@@ -111,6 +112,7 @@ def extract(raw: bytes, route_index: int = 0) -> dict:
             boundary_properties.append((_signed_word(road_class), road_property))
             adcodes.append(adcode)
             link_starts.append((xs[start], ys[start]))
+            link_points.append(list(zip(xs[start:start + count], ys[start:start + count])))
             covered = start + count - 1
             if len(raw_deltas) > 100000:
                 raise ValueError("too many links")
@@ -149,6 +151,7 @@ def extract(raw: bytes, route_index: int = 0) -> dict:
         "route_links_length_candidate": lengths,
         "route_links_road_class_candidate": road_classes,
         "route_links_start_point_candidate": link_starts,
+        "route_links_points_candidate": link_points,
     }
 
 

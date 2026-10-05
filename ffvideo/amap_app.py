@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "tools/amap-app/tmc_route_helper.py"
 PROBE_LOCK = threading.Lock()
 JUNCTION_SLOTS = threading.BoundedSemaphore(2)
+ROUTE_TRAFFIC_SLOTS = threading.BoundedSemaphore(1)
 SESSION_LOCK = threading.Lock()
 SESSION_DIR = Path(tempfile.gettempdir()) / "tmc-amap-route-sessions"
 SESSION_TTL = 2 * 60 * 60
@@ -37,6 +38,30 @@ def validate_point(value):
     return value
 
 
+def clean_traffic_runs(runs, length):
+    if not isinstance(runs, list) or len(runs) > 10000:
+        raise ValueError("invalid route traffic")
+    safe, point_count, previous_end = [], 0, 0
+    for run in runs:
+        if not isinstance(run, dict):
+            raise ValueError("invalid route traffic")
+        status, start, end, path = (run.get("status"), run.get("start"),
+                                    run.get("end"), run.get("path"))
+        if (type(status) is not int or status not in (2, 3, 4)
+                or type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end)
+                or not previous_end <= start < end <= length + 1
+                or not isinstance(path, list) or not 2 <= len(path) <= 10000):
+            raise ValueError("invalid route traffic")
+        point_count += len(path)
+        if point_count > 100000:
+            raise ValueError("route traffic too large")
+        safe.append({"status": status, "start": start, "end": end,
+                     "path": [validate_point(point) for point in path]})
+        previous_end = end
+    return safe
+
+
 def invoke_helper(payload=None):
     command = [sys.executable, str(HELPER)]
     if payload is None:
@@ -48,14 +73,24 @@ def invoke_helper(payload=None):
         raise ValueError("adapter output limit")
     result = json.loads(completed.stdout)
     if not isinstance(result, dict) or result.get("state") not in {
-        "configured", "partial", "unsupported-response", "unavailable", "ready"
+        "configured", "partial", "unsupported-response", "unavailable", "absent", "ready"
     }:
         raise ValueError("adapter output contract")
     # Explicit allowlist: raw protocol fields and signing material never reach UI.
     clean = {"state": result["state"], "navigationAvailable": False}
+    if payload and payload.get("action") == "route-traffic":
+        if result["state"] != "ready":
+            return {"state": "unavailable"}
+        length = result.get("distance")
+        timestamp = result.get("updatedAt")
+        if (type(length) not in (int, float) or not math.isfinite(length) or not 0 < length <= 20000000
+                or type(timestamp) is not int or not 0 < timestamp <= time.time() + 60):
+            raise ValueError("invalid route traffic metadata")
+        return {"state": "ready", "trafficRuns": clean_traffic_runs(result.get("trafficRuns"), length),
+                "updatedAt": timestamp}
     if payload and payload.get("action") == "navigation-events":
         if result["state"] != "ready":
-            return {"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []}
+            return {"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": [], "laneGuides": []}
         signs = result.get("speedSigns")
         if not isinstance(signs, list) or len(signs) > 10000:
             raise ValueError("invalid speed signs")
@@ -101,8 +136,38 @@ def invoke_helper(payload=None):
                 raise ValueError("invalid speed camera")
             safe_cameras.append({"at": at, "type": kind, "speed": speeds})
             previous_at = at
+        guides = result.get("laneGuides", [])
+        if not isinstance(guides, list) or len(guides) > 10000:
+            raise ValueError("invalid lane guides")
+        safe_guides, previous_at = [], -1
+        for guide in guides:
+            if not isinstance(guide, dict):
+                raise ValueError("invalid lane guide")
+            at, variants = guide.get("at"), guide.get("variants")
+            if (type(at) not in (int, float) or not math.isfinite(at)
+                    or not previous_at <= at <= 20000000
+                    or not isinstance(variants, list) or not 1 <= len(variants) <= 8):
+                raise ValueError("invalid lane guide")
+            safe_variants = []
+            for variant in variants:
+                if not isinstance(variant, dict):
+                    raise ValueError("invalid lane variant")
+                start, end = variant.get("startHour"), variant.get("endHour")
+                back, front = variant.get("back"), variant.get("front")
+                if (type(start) is not int or type(end) is not int
+                        or not 0 <= start < end <= 24
+                        or not isinstance(back, list) or not isinstance(front, list)
+                        or not 1 <= len(back) == len(front) <= 12
+                        or any(type(code) is not int or code not in range(101) and code != 255
+                               for code in back + front)):
+                    raise ValueError("invalid lane variant")
+                safe_variants.append({"startHour": start, "endHour": end,
+                                      "back": back, "front": front})
+            safe_guides.append({"at": at, "variants": safe_variants})
+            previous_at = at
         return {"state": "ready", "speedSigns": safe,
-                "speedLimits": safe_sections, "speedCameras": safe_cameras}
+                "speedLimits": safe_sections, "speedCameras": safe_cameras,
+                "laneGuides": safe_guides}
     if payload and payload.get("action") == "traffic":
         if result["state"] != "ready":
             return {"state": "unavailable", "lights": []}
@@ -128,7 +193,7 @@ def invoke_helper(payload=None):
         return {"state": "ready", "updatedAt": updated, "lights": safe}
     if payload and payload.get("action") == "junction":
         if result["state"] != "ready":
-            return {"state": "unavailable"}
+            return {"state": "absent" if result["state"] == "absent" else "unavailable"}
         width, height = result.get("width"), result.get("height")
         if (type(width) is not int or type(height) is not int
                 or not 0 < width <= 4096 or not 0 < height <= 4096):
@@ -168,6 +233,7 @@ def invoke_helper(payload=None):
                     or type(traffic_light_count) is not int or traffic_light_count != len(traffic_lights)):
                 raise ValueError("invalid traffic lights")
             traffic_lights = [validate_point(point) for point in traffic_lights]
+            safe_traffic_runs = clean_traffic_runs(route.get("trafficRuns", []), length)
             speed_limits = route.get("speedLimits", [])
             if not isinstance(speed_limits, list) or len(speed_limits) > 10000:
                 raise ValueError("invalid speed limit sections")
@@ -237,6 +303,7 @@ def invoke_helper(payload=None):
                 summary['tolls'] = None
             clean["routes"].append({**summary, "id": index, "path": path, "steps": safe_steps, "breaks": breaks,
                                     "trafficLights": traffic_lights, "trafficLightCount": traffic_light_count,
+                                    "trafficRuns": safe_traffic_runs,
                                     "speedLimits": safe_speed_limits,
                                     "speedCameras": safe_speed_cameras,
                                     "distance": length, "labels": labels[:10]})
@@ -304,6 +371,31 @@ def load_route_session(token):
 
 
 def add_amap_app_route(app):
+    @app.post("/api/amap-app/route-traffic")
+    @login_check
+    def amap_app_route_traffic():
+        if request.content_length and request.content_length > 4096:
+            return json_fail(message="请求内容过大"), 413
+        payload = request.get_json(silent=True)
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            raw_route = load_route_session(payload.get("routeToken"))
+            index = payload.get("routeIndex")
+            if type(index) is not int or not 0 <= index <= 9:
+                raise ValueError("invalid route index")
+        except (ValueError, OSError):
+            return json_fail(message="路线会话已过期，请重新规划路线"), 400
+        if not ROUTE_TRAFFIC_SLOTS.acquire(blocking=False):
+            return json_ok({"state": "unavailable"})
+        try:
+            return json_ok(invoke_helper({"action": "route-traffic", "rawRoute": raw_route,
+                                          "routeIndex": index}))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return json_ok({"state": "unavailable"})
+        finally:
+            ROUTE_TRAFFIC_SLOTS.release()
+
     @app.post("/api/amap-app/navigation-events")
     @app.post("/api/amap-app/speed-signs")
     @login_check
@@ -324,9 +416,9 @@ def add_amap_app_route(app):
             return json_ok(invoke_helper({"action": "navigation-events", "rawRoute": raw_route,
                                           "routeIndex": index}))
         except subprocess.TimeoutExpired:
-            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []})
+            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": [], "laneGuides": []})
         except (OSError, ValueError, subprocess.SubprocessError):
-            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": []})
+            return json_ok({"state": "unavailable", "speedSigns": [], "speedLimits": [], "speedCameras": [], "laneGuides": []})
 
     @app.post("/api/amap-app/junction-image")
     @login_check
@@ -402,9 +494,13 @@ def add_amap_app_route(app):
             position = validate_point(payload.get("position"))
             index = payload.get("routeIndex")
             speed, heading = payload.get("speed", 0), payload.get("heading", 0)
+            progress = payload.get("progress")
             if (type(index) is not int or not 0 <= index <= 9
                     or type(speed) not in (int, float) or not math.isfinite(speed) or not 0 <= speed <= 100
-                    or type(heading) not in (int, float) or not math.isfinite(heading) or not 0 <= heading <= 360):
+                    or type(heading) not in (int, float) or not math.isfinite(heading) or not 0 <= heading <= 360
+                    or (progress is not None and (type(progress) not in (int, float)
+                                                  or not math.isfinite(progress)
+                                                  or not 0 <= progress <= 10_000_000))):
                 raise ValueError("导航状态无效")
         except (ValueError, OSError):
             return json_fail(message="路线会话已过期，请重新规划路线"), 400
@@ -412,6 +508,7 @@ def add_amap_app_route(app):
             return json_ok(invoke_helper({"action": "traffic", "rawRoute": raw_route,
                                           "routeIndex": index, "position": position,
                                           "speed": speed, "heading": heading,
+                                          "progress": progress,
                                           "adiu": TRAFFIC_ADIU}))
         except subprocess.TimeoutExpired:
             return json_fail(message="红绿灯数据请求超时"), 504

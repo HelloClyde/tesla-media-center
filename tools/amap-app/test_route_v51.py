@@ -30,8 +30,13 @@ def packed(values):
     return result
 
 
-def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None, facility=None, assistant_action=0):
+def fixture(xs=(116.4, 116.401), ys=(39.9, 39.9), link_flags=None, facility=None, assistant_action=0,
+            link_statuses=None):
     links = {} if link_flags is None else {'f3': msg(f6=link_flags, f8=msg(f1=0, f2=2))}
+    if link_statuses is not None:
+        links = {'f3': [msg(f2=round(8500 / len(link_statuses)), f3=status,
+                            f8=msg(f1=index, f2=2))
+                        for index, status in enumerate(link_statuses)]}
     segment = msg(f1=2, f2=assistant_action, f4=msg(f1=packed(xs), f2=packed(ys)),
                   **links, **({'f5': msg(f1=200, f2=8500, f3=b'G60', f4=facility.encode())} if facility else {}))
     protobuf = msg(f1=msg(f1=51, f3=0), f2=msg(f1=0, f5=b"", f7=msg(f1=8500, f10=segment)))
@@ -64,6 +69,16 @@ class RouteV51Test(unittest.TestCase):
         self.assertEqual(route['trafficLightCount'], 1)
         self.assertEqual(route['trafficLights'], [[116.401, 39.9]])
         self.assertEqual(decode(fixture(link_flags=8))[0]['trafficLightCount'], 0)
+
+    def test_apk_link_status_maps_directly_to_congestion_geometry(self):
+        route = decode(fixture(xs=(116.4, 116.4005, 116.401), ys=(39.9, 39.9, 39.9),
+                               link_statuses=[2, 4]))[0]
+        self.assertEqual([run['status'] for run in route['trafficRuns']], [2, 4])
+        self.assertEqual(route['trafficRuns'][0]['path'], [[116.4, 39.9], [116.4005, 39.9]])
+        self.assertAlmostEqual(route['trafficRuns'][0]['end'], route['trafficRuns'][1]['start'], delta=.1)
+        self.assertEqual(decode(fixture(link_statuses=[1]))[0]['trafficRuns'], [])
+        with self.assertRaises(ValueError):
+            decode(fixture(link_statuses=[99]))
     def test_decodes_middle_fork_assistant_action(self):
         step = decode(fixture(assistant_action=6))[0]['steps'][0]
         self.assertEqual(step['actionCode'], 2)

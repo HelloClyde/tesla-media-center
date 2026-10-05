@@ -7,6 +7,7 @@ import AppViewVue from '@/views/AppView.vue';
 import BilibiliVue from '@/views/apps/Bilibili.vue';
 import TeslaView from '@/views/apps/TeslaView.vue';
 import GbaView from '@/views/apps/GbaView.vue';
+import { requireTmcSession } from './auth'
 
 const router = createRouter({
   history: createWebHashHistory(import.meta.env.BASE_URL),
@@ -79,5 +80,7 @@ const router = createRouter({
     
   ]
 })
+
+router.beforeEach(requireTmcSession)
 
 export default router

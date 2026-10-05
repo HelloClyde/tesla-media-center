@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, isOverSpeed, speedLimitAt, upcomingSpeedCamera, upcomingSpeedLimit, upcomingSpeedSign } from './amapSpeedLimit';
+import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, isOverSpeed, speedWarningLevel, speedLimitAt, upcomingSpeedCamera, upcomingSpeedLimit, upcomingSpeedSign } from './amapSpeedLimit';
 
 describe('navigation road speed limit', () => {
   it('never treats an absent or invalid limit as a real speed sign', () => {
@@ -16,6 +16,17 @@ describe('navigation road speed limit', () => {
     expect(upcomingSpeedLimit([section], 100)).toBeUndefined();
     expect(isOverSpeed(87, 80)).toBe(false);
     expect(isOverSpeed(89, 80)).toBe(true);
+  });
+  it('reserves the edge warning for serious excess over a known road limit',()=>{
+    expect(speedWarningLevel(0,80)).toBe(0);
+    expect(speedWarningLevel(87,80)).toBe(0);
+    expect(speedWarningLevel(89,80)).toBe(1);
+    expect(speedWarningLevel(103,80)).toBe(1);
+    expect(speedWarningLevel(104,80)).toBe(2);
+    expect(speedWarningLevel(49,30)).toBe(1);
+    expect(speedWarningLevel(50,30)).toBe(2);
+    expect(speedWarningLevel(150,undefined)).toBe(0);
+    expect(speedWarningLevel(NaN,80)).toBe(0);
   });
   it('requires sustained overspeed and does not repeat on each GPS fix', () => {
     const section = { start: 100, end: 250, limit: 80 };

@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,6 +20,8 @@ HASHES = {
     "libamapr.so": "91491e00f582f610fe36cdbc4ca03bef942d0da8ce24dc1f672c53be73e88e08",
     "style-day.data": "3e3ebec698a750969c2b4184d38d0aa4a0abf67f37582a7af01f0f38192fb8ba",
     "style-night.data": "586a06dccb22873918c684d2644f39faf00409f8af37a64d1241333d893224c9",
+    "style-navigation-day.data": "39c8495d761cc031073e37d48fa7036b8704cdc92242e1242df2bd8d0545daa0",
+    "style-navigation-night.data": "3f595fbe0dffefb68fd86c195a023489bdd3394feff8af742526f407f822f066",
     "signing-certificate.rsa": "80a52915ce984adcfb8a7e37660702c50d4e1a5666d223f4f342f386612c6146",
     "libserverkey.so": "92bfe9abf10918954dcef8713a1734a5448e9bcfc413ca1836e853f6dfbddaa8",
 }
@@ -136,7 +139,8 @@ def traffic(payload):
         raise ValueError("invalid-motion")
     contexts = [extract(raw, i) for i in range(len(routes))]
     material = load_material(ASSETS)
-    body = build_eta_body(routes, contexts, index, position, speed=speed, heading=heading)
+    body = build_eta_body(routes, contexts, index, position, speed=speed,
+                          heading=heading, progress_hint=payload.get("progress"))
     query = eta_query(material, payload["adiu"], ASSETS)
     with requests.post(ETA_URL, params={"ent": "2", "in": query,
                        "csid": str(uuid.uuid4()), "is_bin": "1"}, data=body,
@@ -168,6 +172,38 @@ def navigation_events(payload):
         raise ValueError("invalid-route-index")
     guidance = fetch_guidance(raw, routes, load_material(ASSETS), ASSETS)
     return {"state": "ready", **guidance[index]}
+
+
+def route_traffic(payload):
+    """Refresh App link TMC only when the planned route still matches exactly."""
+    from route_v51 import decode, distance
+    from v51_dynamic_route import extract
+
+    encoded, index = payload.get("rawRoute"), payload.get("routeIndex")
+    if not isinstance(encoded, str) or len(encoded) > 6 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    raw = base64.b64decode(encoded, validate=True)
+    if not 0 < len(raw) <= 4 * 1024 * 1024:
+        raise ValueError("invalid-route-session")
+    routes = decode(raw)
+    if type(index) is not int or not 0 <= index < len(routes):
+        raise ValueError("invalid-route-index")
+    original = routes[index]
+    old_links = extract(raw, index)["route_links_candidate"]
+    fresh = probe({"origin": original["path"][0], "destination": original["path"][-1]})
+    if fresh.get("state") != "ready" or not fresh.get("rawRoute"):
+        return {"state": "unavailable"}
+    refreshed = base64.b64decode(fresh["rawRoute"], validate=True)
+    for new_index, candidate in enumerate(fresh["routes"]):
+        if (len(candidate["path"]) != len(original["path"])
+                or abs(candidate["distance"] - original["distance"]) > 1
+                or extract(refreshed, new_index)["route_links_candidate"] != old_links):
+            continue
+        if any(distance(a, b) > 3 for a, b in zip(original["path"], candidate["path"])):
+            continue
+        return {"state": "ready", "distance": original["distance"], "trafficRuns": candidate["trafficRuns"],
+                "updatedAt": int(time.time())}
+    return {"state": "unavailable"}
 
 
 def junction(payload):
@@ -203,8 +239,11 @@ def junction(payload):
             raise ValueError("cross-response-too-large")
     try:
         picture = decode_cross_picture(answer, expected_navigation_id=navi_id)
-    except ValueError:
-        # Most ordinary turns have no original raster illustration.
+    except ValueError as error:
+        # A complete App response without image layers is a definitive miss;
+        # transport failures or malformed responses may succeed on retry.
+        if str(error) == "cross response image layers are incomplete":
+            return {"state": "absent"}
         return {"state": "unavailable"}
     return {"state": "ready", "width": picture.width, "height": picture.height,
             "roadJpeg": base64.b64encode(picture.road_jpeg).decode("ascii"),
@@ -223,10 +262,11 @@ def main():
             # A traffic token can only come from a previously verified route
             # response, so skip rehashing the ~400 MB APK on every poll.
             action = payload.get("action")
-            check_assets(validate_digest=action not in ("traffic", "junction", "navigation-events"))
+            check_assets(validate_digest=action not in ("traffic", "junction", "navigation-events", "route-traffic"))
             result = (traffic(payload) if action == "traffic" else
                       junction(payload) if action == "junction" else
-                      navigation_events(payload) if action == "navigation-events" else probe(payload))
+                      navigation_events(payload) if action == "navigation-events" else
+                      route_traffic(payload) if action == "route-traffic" else probe(payload))
     except Exception:
         # Exception messages from requests may contain signed URLs. Never emit them.
         result = {"state": "unavailable", "navigationAvailable": False,

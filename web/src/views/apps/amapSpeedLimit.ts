@@ -90,10 +90,18 @@ export function createSpeedLimitSectionEvents() {
   };
 }
 
+/** The APK exposes ordinary and serious speed-widget states. Its serious
+ * transition is not available to the browser, so use a conservative visual
+ * threshold only with a verified road-section limit. */
+export function speedWarningLevel(speed: number | null, limit: number | undefined): 0 | 1 | 2 {
+  if (speed === null || !Number.isFinite(speed) || !Number.isFinite(limit) || limit! <= 0) return 0;
+  if (speed < limit! * 1.1) return 0;
+  return speed >= Math.max(limit! * 1.3, limit! + 20) ? 2 : 1;
+}
+
 /** Apply the App's default 1.1 overspeed factor only to an actual road limit. */
 export function isOverSpeed(speed: number | null, limit: number | undefined): boolean {
-  return speed !== null && Number.isFinite(speed) && Number.isFinite(limit)
-    && limit! > 0 && speed >= limit! * 1.1;
+  return speedWarningLevel(speed, limit) > 0;
 }
 
 export function createSpeedReminder() {

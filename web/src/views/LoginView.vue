@@ -1,10 +1,17 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { ArrowRight, Lock, View, Hide } from '@element-plus/icons-vue';
 
 const router = useRouter();
+const route = useRoute();
+function destination() {
+  const redirect = route.query.redirect;
+  return typeof redirect === 'string' && redirect.startsWith('/apps/') && !redirect.startsWith('//')
+    ? redirect
+    : '/apps/home';
+}
 const password = ref('');
 const visible = ref(false);
 const busy = ref(false);
@@ -14,7 +21,7 @@ onBeforeUnmount(() => { disposed = true; });
 onMounted(async () => {
   try {
     const response = await axios.get('/api/config', { timeout: 10000 });
-    if (!disposed && !busy.value && response.data.status === 'ok') await router.replace('/apps/home');
+    if (!disposed && !busy.value && response.data.status === 'ok') await router.replace(destination());
   } catch { /* The login form remains usable if the session check fails. */ }
 });
 async function onSubmit() {
@@ -26,7 +33,7 @@ async function onSubmit() {
     const response = await axios.post('/api/login', { password: password.value }, { timeout: 15000 });
     if (disposed) return;
     if (response.data.status !== 'ok') { error.value = '服务器未接受登录，请确认当前站点的访问密码'; return; }
-    await router.replace('/apps/home');
+    await router.replace(destination());
   } catch (cause) {
     if (disposed) return;
     const status = axios.isAxiosError(cause) ? cause.response?.status : undefined;

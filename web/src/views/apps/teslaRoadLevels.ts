@@ -2,6 +2,33 @@ import * as THREE from 'three';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
 
 export type RoadSpan = { points: number[][]; level: number; rampStart: boolean; rampEnd: boolean };
+export type RoadDeckEdge = { a: MapPoint; b: MapPoint; from: number; to: number; width: number; level: number };
+
+/** Pick the closest aligned BMD road surface, including level zero. A known
+ * height from the preceding point may resolve an XY tie on the same line;
+ * without that context, an indistinguishable stack stays on the ground. */
+export function nearestRoadHeight(edges: readonly RoadDeckEdge[], x:number,z:number,
+  direction:readonly [number,number], preferredHeight?:number) {
+  const directionLength=Math.hypot(...direction);
+  const candidates:{distance2:number;height:number;level:number}[]=[];
+  for(const edge of edges) {
+    const dx=edge.b[0]-edge.a[0],dz=edge.b[1]-edge.a[1],length2=dx*dx+dz*dz;
+    if(length2<.01 || (directionLength &&
+        Math.abs((dx*direction[0]+dz*direction[1])/(Math.sqrt(length2)*directionLength))<.72)) continue;
+    const t=Math.max(0,Math.min(1,((x-edge.a[0])*dx+(z-edge.a[1])*dz)/length2));
+    const distance2=(x-edge.a[0]-t*dx)**2+(z-edge.a[1]-t*dz)**2;
+    if(distance2<(edge.width/2+2)**2) candidates.push({distance2,
+      height:edge.from+(edge.to-edge.from)*t,level:edge.level});
+  }
+  if(!candidates.length) return 0;
+  const nearest=Math.min(...candidates.map(candidate=>candidate.distance2));
+  const tied=candidates.filter(candidate=>candidate.distance2<=nearest+.25);
+  if(Number.isFinite(preferredHeight) && tied.length>1) {
+    tied.sort((a,b)=>Math.abs(a.height-preferredHeight!)-Math.abs(b.height-preferredHeight!) ||
+      a.distance2-b.distance2 || a.level-b.level);
+  } else tied.sort((a,b)=>a.level-b.level || a.distance2-b.distance2);
+  return tied[0].height;
+}
 
 /** App markers delimit spans; -1 is a terminator, never a -1 metre height. */
 export function roadSpans(points: number[][], markers?: number[][]): RoadSpan[] {

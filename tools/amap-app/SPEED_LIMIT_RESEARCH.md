@@ -61,3 +61,20 @@
 本轮复核仍在运行的蓝叠导航画面：已进入石桥路至秋石高架的实景导航，车速圆牌为 `-- km/h`，尚未触发可采集的道路限速事件。虽然能看到禁压线、摄像头图标，这不能证明摄像头限速 `speed[]` 已进入路线对象；不能凭图标制造测速限速数值。
 
 研究时还发现 5.1 route 的 link 长度字段可大于 16 位（杭州样本 66,600 cm）；`v51_dynamic_route.py` 的边界已修正，保证长高架路段不会阻断后续动态请求分析。
+
+## 严重超速红色警告
+
+APK 的 AJX 定义了速度控件状态 `WidgetSpeedStateNotOverSpeed=0`、
+`WidgetSpeedStateOverSpeed=1`、`WidgetSpeedStateOverSpeedSerious=2`，并在
+`TripNaviSpeedView` 中准备超速 Lottie 图层。`TripNaviRenderWidgetConfig`
+为资源 220001 配置 `halo-left.json`、`halo-top.json`，横竖屏分别沿左右、
+上下边缘镜像铺设。APK 的 `assets/horusAssets/horusAssets.pack` 内实际包含
+两个 20 fps／40 帧动画及 `red-left.png`、`beam1.png`；图像已原样复制到
+`web/public/amap/overspeed/`，TMC 用 CSS 按两秒一轮复现边缘红光和扫动。
+
+浏览器无法订阅 APK 运行时的速度控件状态 87 事件，原生严重级别的数值
+分界尚未确认。TMC 的普通超速仍按 APK 默认的 1.1 倍限速判断；边缘特效
+暂以 `车速 ≥ max(1.3 × 道路限速, 道路限速 + 20 km/h)` 作为保守触发条件，
+且仅在可信的实时定位车速和已知道路限速时显示。模拟导航、估算车速、
+未知限速和偏离路线时不显示。此阈值是 TMC 的显示策略，不能标作 APK
+原生严重超速判定。

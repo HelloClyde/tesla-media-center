@@ -29,6 +29,10 @@ def test_native_route_and_link_lengths_use_whole_metres():
     assert result["route_links_length_candidate"] == [15, 176]
     assert sum(result["route_links_length_candidate"]) == result["length_candidate"]
     assert result["links_adcode_candidate"] == {"110101": "1,2"}
+    assert result["route_links_points_candidate"] == [
+        [(116.4, 39.9), (116.4002, 39.9)],
+        [(116.4002, 39.9), (116.401, 39.9)],
+    ]
 
 
 def test_long_highway_link_is_not_truncated_to_16_bits():

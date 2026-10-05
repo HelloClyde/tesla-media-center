@@ -135,9 +135,8 @@ function geographic(point: number[], [level, x, y]: Grid, width = 13): number[] 
   return [(x * extent + point[0]) * unit - 180, 90 - (y + 1) * 180 / 2 ** level + point[1] * unit];
 }
 
-function bindings(raw: Uint8Array | undefined, featureCount: number): Map<number, string> {
-  const result = new Map<number, string>();
-  if (!raw) return result;
+function attribute(raw: Uint8Array | undefined, kind: number): Uint8Array | undefined {
+  if (!raw) return;
   const directory = new Reader(raw), count = directory.variable();
   if (count < 1 || count > 32) throw new Error('invalid BMD attribute count');
   const entries: [number, number][] = [];
@@ -145,10 +144,17 @@ function bindings(raw: Uint8Array | undefined, featureCount: number): Map<number
   const start = directory.offset, offsets = entries.map(e => e[1]);
   if (new Set(entries.map(e => e[0])).size !== count || new Set(offsets).size !== count ||
       offsets.some(o => o >= raw.length - start)) throw new Error('invalid BMD attribute directory');
-  const selected = entries.find(e => e[0] === 1);
-  if (!selected) return result;
+  const selected = entries.find(e => e[0] === kind);
+  if (!selected) return;
   const end = Math.min(...offsets.filter(o => o > selected[1]), raw.length - start);
-  const r = new Reader(raw.subarray(start + selected[1], start + end));
+  return raw.subarray(start + selected[1], start + end);
+}
+
+function bindings(raw: Uint8Array | undefined, featureCount: number): Map<number, string> {
+  const result = new Map<number, string>();
+  const block = attribute(raw, 1);
+  if (!block) return result;
+  const r = new Reader(block);
   const mode = r.integer(1), rows = r.variable();
   if (![1, 2].includes(mode) || rows > featureCount) throw new Error('invalid BMD bindings');
   for (let i = 0; i < rows; i++) {
@@ -162,6 +168,31 @@ function bindings(raw: Uint8Array | undefined, featureCount: number): Map<number
     }
   }
   r.done(); return result;
+}
+
+function roadLevels(raw: Uint8Array | undefined, pointCounts: number[]): Map<number, number[][]> {
+  const result = new Map<number, number[][]>();
+  const block = attribute(raw, 40);
+  if (!block) return result;
+  const r = new Reader(block), mode = r.integer(1), rows = r.variable();
+  if (![1, 2].includes(mode) || rows > 500000) throw new Error('invalid BMD road levels');
+  let total = 0;
+  for (let i = 0; i < rows; i++) {
+    const size = mode === 2 ? r.variable() : 1;
+    if (size < 1 || size > pointCounts.length || total + size > 500000) throw new Error('too many BMD road level references');
+    const indexes = Array.from({ length: size }, () => r.variable());
+    const point = r.variable(), byte = r.integer(1), value = byte >= 128 ? byte - 256 : byte;
+    for (const index of indexes) {
+      if (index >= pointCounts.length || point >= pointCounts[index]) throw new Error('invalid BMD road level point');
+      const markers = result.get(index) || [];
+      if (markers.some(entry => entry[0] === point)) throw new Error('duplicate BMD road level point');
+      markers.push([point, value]); result.set(index, markers);
+    }
+    total += size;
+  }
+  r.done();
+  for (const markers of result.values()) markers.sort((a, b) => a[0] - b[0]);
+  return result;
 }
 
 function roads(parts: Map<number, Uint8Array>, grid: Grid) {
@@ -201,7 +232,135 @@ function roads(parts: Map<number, Uint8Array>, grid: Grid) {
         geometry: { type: 'LineString', coordinates } });
     }
   }
-  r.done(); return { type: 'FeatureCollection', features };
+  r.done();
+  const attributes = parts.get(31), keys = bindings(attributes, features.length);
+  const levels = roadLevels(attributes, features.map(feature => feature.geometry.coordinates.length));
+  for (let i = 0; i < features.length; i++) {
+    if (keys.has(i)) features[i].properties.paintKey = keys.get(i);
+    if (levels.has(i)) features[i].properties.levelMarkers = levels.get(i);
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+class BuildingReader extends Reader {
+  v32(signed = false): number {
+    let value = 0;
+    for (let i = 0; i < 5; i++) {
+      const byte = this.integer(1);
+      value += (byte & 127) * 2 ** (i * 7);
+      if (byte < 128 || i === 4) {
+        value >>>= 0;
+        return signed && value >= 2 ** 31 ? value - 2 ** 32 : value;
+      }
+    }
+    throw new Error('invalid building varint');
+  }
+  count(maximum: number): number {
+    const value = this.v32();
+    if (value > maximum) throw new Error('building count limit');
+    return value;
+  }
+  id(): string {
+    let value = 0n;
+    for (let i = 0; i < 8; i++) value |= BigInt(this.integer(1)) << BigInt(i * 8);
+    return value.toString();
+  }
+}
+
+function buildingPoint(point: number[], [level, x, y]: Grid, width: number): number[] {
+  if (level !== 15) throw new Error('unsupported building grid');
+  const extent = 2 ** (width - 1);
+  if (point.some(value => value < -extent || value > extent * 2)) throw new Error('building point outside tile');
+  const unit = 360 / 2 ** (level + width - 1);
+  return [Math.round(((x * extent + point[0]) * unit - 180) * 1e8) / 1e8,
+    Math.round((90 - (y + 1) * 180 / 2 ** level + point[1] * unit) * 1e8) / 1e8];
+}
+
+function buildings(parts: Map<number, Uint8Array>, grid: Grid, paints: Paints) {
+  const raw = parts.get(50);
+  if (!raw) throw new Error('missing building chapter');
+  const r = new BuildingReader(raw), width = r.integer(1);
+  if (width < 11 || width > 20) throw new Error('unsupported building precision');
+  const shapes: {points:number[][]; edges:boolean}[] = [];
+  let pointTotal = 0;
+  for (let i = 0, count = r.count(10000); i < count; i++) {
+    if (r.v32() !== 1) throw new Error('unsupported building contour');
+    const count = r.count(10000); pointTotal += count;
+    if (count < 3 || pointTotal > 200000) throw new Error('building point limit');
+    r.beginBits(); let x = r.bits(width), y = r.bits(width);
+    r.bits(1); r.bits(1); const delta = r.bits(5); r.endBits();
+    const points = [[x,y]];
+    r.beginBits();
+    for (let j = 1; j < count; j++) {
+      x += r.bits(delta, true); y += r.bits(delta, true); r.bits(1);
+      points.push([x,y]);
+    }
+    r.endBits();
+    let edges = false;
+    for (let j = 0; j < Math.ceil(count / 8); j++) { const byte = r.integer(1); edges = edges || byte !== 0; }
+    shapes.push({points,edges});
+  }
+  type Part = {shape:number;scaleX:number;scaleY:number;dx:number;dy:number;angle:number;base:number;height:number;flags:number};
+  const features: {id:string;height:number;parts:Part[];unsupported:number}[] = [];
+  let partTotal = 0;
+  for (let i = 0, groups = r.count(4096); i < groups; i++) {
+    r.integer(4);
+    for (let j = 0, count = r.count(10000); j < count; j++) {
+      if (features.length >= 20000) throw new Error('building feature limit');
+      const id = r.id(), shape = r.v32(), height = r.v32(), partCount = r.integer(2);
+      partTotal += partCount;
+      if (partTotal > 50000) throw new Error('building part limit');
+      const lengths = Array.from({length:partCount},() => r.count(65536));
+      const featureParts: Part[] = []; let unsupported = 0;
+      for (const length of lengths) {
+        const end = r.offset + length;
+        if (length < 1 || end > raw.length) throw new Error('invalid building part length');
+        const kind = r.integer(1);
+        if (kind === 1) {
+          const part = {shape:r.v32(),scaleX:r.v32(),scaleY:r.v32(),dx:r.v32(true),dy:r.v32(true),
+            angle:r.integer(2),base:r.v32(),height:r.v32(),flags:r.integer(1)};
+          if (part.shape >= shapes.length) throw new Error('invalid building shape reference');
+          featureParts.push(part);
+        } else unsupported++;
+        if (r.offset > end) throw new Error('building part overflow');
+        r.offset = end;
+      }
+      if (!partCount) featureParts.push({shape,scaleX:10000,scaleY:10000,dx:0,dy:0,angle:0,base:0,height,flags:2});
+      if (featureParts.some(part => part.shape >= shapes.length)) throw new Error('invalid building shape reference');
+      features.push({id,height,parts:featureParts,unsupported});
+    }
+  }
+  r.done();
+  const keys = bindings(parts.get(51), features.length);
+  const result: any[] = []; let skipped = 0;
+  for (let i = 0; i < features.length; i++) {
+    const feature = features[i], resolved: any[] = [], seen = new Set<string>();
+    skipped += feature.unsupported;
+    for (const part of feature.parts) {
+      if (part.scaleX !== 10000 || part.scaleY !== 10000 || part.angle !== 0 ||
+          part.height <= 0 || part.height > 1000 || part.base < 0 || part.base > 1000) { skipped++; continue; }
+      const shape = shapes[part.shape];
+      const ring = shape.points.map(([x,y]) => buildingPoint([x+part.dx,y+part.dy],grid,width));
+      const identity = JSON.stringify([ring,part.base,part.height]);
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      let smoothWalls = false;
+      if (!shape.edges && shape.points.length >= 8) {
+        const cx = shape.points.reduce((sum,p) => sum+p[0],0)/shape.points.length;
+        const cy = shape.points.reduce((sum,p) => sum+p[1],0)/shape.points.length;
+        const radii = shape.points.map(p => Math.hypot(p[0]-cx,p[1]-cy));
+        const average = radii.reduce((sum,n) => sum+n,0)/radii.length;
+        smoothWalls = average > 0 && radii.every(radius => Math.abs(radius-average) < average*.3);
+      }
+      resolved.push({ring,base:part.base,height:part.height,flags:part.flags,smoothWalls});
+    }
+    if (!resolved.length) continue;
+    const key = keys.get(i);
+    result.push({id:feature.id,parts:resolved,
+      ...(feature.height > 0 && feature.height <= 2000 ? {overallHeight:feature.height} : {}),
+      ...(key ? {paints:Object.fromEntries(Object.entries(paints).map(([theme,lookup]) => [theme,lookup[key] || []]))} : {})});
+  }
+  return {result,skipped};
 }
 
 function surfaces(parts: Map<number, Uint8Array>, grid: Grid, paints: Paints): any[] {
@@ -283,16 +442,22 @@ function points(parts: Map<number, Uint8Array>, grid: Grid, places: boolean): an
   return result;
 }
 
-export type RawMapTile = { level: number; x: number; y: number; collectionBmd?: string; surfacesBmd?: string;
-  transitBmd?: string; placeLabelsBmd?: string; missingLayers?: string[]; error?: string };
+export type RawMapTile = { level: number; x: number; y: number; collectionBmd?: string | Uint8Array; surfacesBmd?: string | Uint8Array; buildingsBmd?: string | Uint8Array;
+  transitBmd?: string | Uint8Array; placeLabelsBmd?: string | Uint8Array; roadPaints?: Record<string, Record<string, any[]>>;
+  missingLayers?: string[]; error?: string };
 
 export function decodeMapTile(tile: RawMapTile, paints: Paints) {
   const grid: Grid = [tile.level, tile.x, tile.y];
-  const part = (value?: string) => value ? sections(base64Bytes(value)) : new Map<number, Uint8Array>();
+  const part = (value?: string | Uint8Array) => value ? sections(typeof value === 'string' ? base64Bytes(value) : value) : new Map<number, Uint8Array>();
+  const buildingData = tile.buildingsBmd ? buildings(part(tile.buildingsBmd),grid,paints) : undefined;
   return { level: tile.level, x: tile.x, y: tile.y,
     collection: roads(part(tile.collectionBmd), grid),
+    roadPaints: tile.roadPaints,
+    buildings: buildingData?.result,
+    unsupportedBuildingParts: buildingData?.skipped,
     surfaces: surfaces(part(tile.surfacesBmd), grid, paints),
     transit: points(part(tile.transitBmd), grid, false),
     placeLabels: points(part(tile.placeLabelsBmd), grid, true),
-    missingLayers: tile.missingLayers, error: tile.error };
+    missingLayers: buildingData?.skipped ? [...(tile.missingLayers || []), 'building-parts'] : tile.missingLayers,
+    error: tile.error };
 }

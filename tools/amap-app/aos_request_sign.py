@@ -10,10 +10,10 @@ from collections.abc import Mapping, Sequence
 
 def sign_input(
     fields: Sequence[str],
-    request_params: Mapping[str, str],
-    common_params: Mapping[str, str],
+    request_params: Mapping[str, str | None],
+    common_params: Mapping[str, str | None],
     aos_key: str,
-    extended_params: Mapping[str, str] | None = None,
+    extended_params: Mapping[str, str | None] | None = None,
 ) -> str:
     """Build AosRequest.buildHttpRequest's input to IAosEncryptor.sign.
 
@@ -44,10 +44,10 @@ def sign_input(
 
 def sign(
     fields: Sequence[str],
-    request_params: Mapping[str, str],
-    common_params: Mapping[str, str],
+    request_params: Mapping[str, str | None],
+    common_params: Mapping[str, str | None],
     aos_key: str,
-    extended_params: Mapping[str, str] | None = None,
+    extended_params: Mapping[str, str | None] | None = None,
 ) -> str:
     return hashlib.md5(
         sign_input(fields, request_params, common_params, aos_key, extended_params).encode("utf-8")

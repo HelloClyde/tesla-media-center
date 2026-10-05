@@ -15,6 +15,10 @@ class EtaLiveTest(unittest.TestCase):
                         "eta_data_vers": 2695, "wire_route_field6": 1234,
                         "route_links_candidate": ["91234", "-42"],
                         "route_links_start_point_candidate": [(120.1, 30.1), (120.18, 30.18)],
+                        "route_links_points_candidate": [
+                            [(120.1, 30.1), (120.18, 30.18)],
+                            [(120.18, 30.18), (120.2, 30.2)],
+                        ],
                         "route_links_length_candidate": [20, 4]}
         self.route = {"path": [[120.1, 30.1], [120.2, 30.2]]}
 
@@ -54,6 +58,51 @@ class EtaLiveTest(unittest.TestCase):
         self.assertEqual(root.findtext("path/routestartpoint/x"), "120.100000")
         self.assertEqual(root.findtext("path/roadlinks"), "91192")
         self.assertEqual(root.find("path/linklens").attrib["startlen"], "2")
+
+    def test_curved_link_matches_native_vertices_instead_of_endpoint_chord(self):
+        self.context["route_links_candidate"] = ["91234"]
+        self.context["route_links_start_point_candidate"] = [(120.0, 30.0)]
+        self.context["route_links_points_candidate"] = [[
+            (120.0, 30.0), (120.004, 30.0), (120.004, 30.004),
+        ]]
+        self.context["route_links_length_candidate"] = [900]
+        self.route["path"] = [[120.0, 30.0], [120.004, 30.004]]
+
+        wire = build_eta_body([self.route], [self.context], 0,
+                              [120.004, 30.0], now=1700000001)
+        root = ET.fromstring(wire[1:])
+        self.assertEqual(root.findtext("path/roadlinks"), "91234")
+        # The corner lies over 200 m from the endpoint chord, but exactly on
+        # the route. The travelled portion uses the real polyline length.
+        startlen = int(root.find("path/linklens").attrib["startlen"])
+        self.assertGreater(startlen, 350)
+        self.assertLess(startlen, 450)
+
+    def test_inconsistent_link_geometry_is_rejected(self):
+        self.context["route_links_points_candidate"][0][0] = (120.11, 30.1)
+        with self.assertRaisesRegex(ValueError, "geometry"):
+            build_eta_body([self.route], [self.context], 0, [120.15, 30.15])
+
+    def test_route_progress_disambiguates_repeated_road_geometry(self):
+        self.context["route_links_candidate"] = ["91234", "1"]
+        self.context["route_links_start_point_candidate"] = [
+            (120.0, 30.0), (120.004, 30.0)]
+        self.context["route_links_points_candidate"] = [
+            [(120.0, 30.0), (120.004, 30.0)],
+            [(120.004, 30.0), (120.0, 30.0)],
+        ]
+        self.context["route_links_length_candidate"] = [385, 385]
+        self.route = {"path": [[120.0, 30.0], [120.004, 30.0], [120.0, 30.0]],
+                      "distance": 770}
+        position = [120.002, 30.0]
+        first = ET.fromstring(build_eta_body(
+            [self.route], [self.context], 0, position, progress_hint=190)[1:])
+        returning = ET.fromstring(build_eta_body(
+            [self.route], [self.context], 0, position, progress_hint=580)[1:])
+        self.assertEqual(first.findtext("path/roadlinks"), "91234;1")
+        self.assertEqual(returning.findtext("path/roadlinks"), "91235")
+        with self.assertRaisesRegex(ValueError, "progress"):
+            build_eta_body([self.route], [self.context], 0, position, progress_hint=2000)
 
     def test_live_phases_require_matching_session_path_and_fresh_timestamp(self):
         raw = self.frame(None)

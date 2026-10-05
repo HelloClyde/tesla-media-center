@@ -3,6 +3,7 @@
 libamapr: ReadShape 15a5f3c, ReadFeature 15a63ec, ParseBuilding 15a66a8.
 This path does not use the unrelated legacy type-3 multi-data format.
 """
+import math
 from bmd_geometry import Reader
 from bmd_tile import directory
 
@@ -92,7 +93,8 @@ def building_section(data):
                                   angle=0, base=0, height=height, flags=2))
             if any(part['shape'] >= len(shapes) for part in parts):
                 raise ValueError('invalid building shape reference')
-            features.append(dict(id=identity, style=style, parts=parts, unsupported=unsupported))
+            features.append(dict(id=identity, style=style, height=height,
+                                 parts=parts, unsupported=unsupported))
     if r.offset != len(data):
         raise ValueError('unconsumed building bytes')
     return width, shapes, features
@@ -110,6 +112,17 @@ def building_point(point, grid, width):
     unit = 360 / (1 << (level + width - 1))
     return [round((x * extent + px) * unit - 180, 8),
             round(90 - (y + 1) * 180 / (1 << level) + py * unit, 8)]
+
+
+def rounded_wall_candidate(shape):
+    points = shape['points']
+    if shape['edges'] != 0 or len(points) < 8:
+        return False
+    cx = sum(point[0] for point in points) / len(points)
+    cy = sum(point[1] for point in points) / len(points)
+    radii = [math.hypot(point[0] - cx, point[1] - cy) for point in points]
+    average = sum(radii) / len(radii)
+    return average > 0 and max(abs(radius - average) for radius in radii) < average * 0.3
 
 
 def geographic_buildings(data, grid, paints=None):
@@ -140,9 +153,15 @@ def geographic_buildings(data, grid, paints=None):
             if key in seen:
                 continue
             seen.add(key)
-            parts.append(dict(ring=ring, base=p['base'], height=p['height']))
+            parts.append(dict(ring=ring, base=p['base'], height=p['height'], flags=p['flags'],
+                              smoothWalls=rounded_wall_candidate(shapes[p['shape']])))
         if parts:
             binding = bindings.get(feature_number)
             styles = {theme: lookup.get(binding, []) for theme, lookup in (paints or {}).items()}
-            buildings.append(dict(id=feature['id'], parts=parts, **({'paints': styles} if binding else {})))
+            # This is the feature-level height from the APK's type-5 building
+            # record. Its upper roof parts can extend above it; keep both.
+            overall_height = feature['height']
+            buildings.append(dict(id=feature['id'], parts=parts,
+                                  **({'overallHeight': overall_height} if 0 < overall_height <= 2000 else {}),
+                                  **({'paints': styles} if binding else {})))
     return buildings, skipped

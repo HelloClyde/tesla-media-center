@@ -2,11 +2,11 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
 import LoginView from './LoginView.vue';
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), replace: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), replace: vi.fn(), query: {} as Record<string, string> }));
 vi.mock('axios', () => ({ default: { get: mocks.get, post: mocks.post, isAxiosError: (error: any) => error.isAxiosError } }));
-vi.mock('vue-router', () => ({ useRouter: () => ({ replace: mocks.replace }) }));
+vi.mock('vue-router', () => ({ useRouter: () => ({ replace: mocks.replace }), useRoute: () => ({ query: mocks.query }) }));
 let view: VueWrapper;
-beforeEach(() => { vi.clearAllMocks(); mocks.get.mockResolvedValue({ data: { status: 'need_login' } }); });
+beforeEach(() => { vi.clearAllMocks(); mocks.query = {}; mocks.get.mockResolvedValue({ data: { status: 'need_login' } }); });
 afterEach(() => view?.unmount());
 it.each([[401, '服务器未接受登录（401）'], [502, 'HTTP 502'], [undefined, '暂时无法连接服务']])('distinguishes login HTTP %s from a network failure', async (status, message) => {
   mocks.post.mockRejectedValue({ isAxiosError: true, response: status ? { status } : undefined });
@@ -20,4 +20,12 @@ it('reuses a valid existing session after a refresh', async () => {
   view = mount(LoginView); await flushPromises();
   expect(mocks.replace).toHaveBeenCalledWith('/apps/home');
   expect(mocks.post).not.toHaveBeenCalled();
+});
+
+it('returns to the requested app after login', async () => {
+  mocks.query = { redirect: '/apps/amap' };
+  mocks.post.mockResolvedValue({ data: { status: 'ok' } });
+  view = mount(LoginView); await flushPromises();
+  await view.get('input').setValue('test-password'); await view.get('form').trigger('submit'); await flushPromises();
+  expect(mocks.replace).toHaveBeenCalledWith('/apps/amap');
 });

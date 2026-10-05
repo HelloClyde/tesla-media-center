@@ -13,6 +13,61 @@ export interface UpcomingTrafficSignal {
   phases: LiveTrafficLight['phases'];
 }
 
+/** The APK has a dedicated red-three-seconds status; only announce it when
+ * the live phase plan actually changes from red to green near the car. */
+export function nearGreenReminder(signal: UpcomingTrafficSignal | null, updatedAt: number, nowMs: number) {
+  if (!signal || signal.color !== 'red' || signal.distance > 200
+      || signal.seconds < 1 || signal.seconds > 3
+      || nowMs - updatedAt > 20_000 || updatedAt - nowMs > 1_000) return null;
+  const now = nowMs / 1000;
+  const red = signal.phases.find(phase => phase.color === 'red' && phase.start <= now && now < phase.end);
+  const green = signal.phases.find(phase => phase.color === 'green' && red
+    && phase.start >= red.end && phase.start - red.end <= 1 && phase.end > phase.start);
+  if (!red || !green || red.end - now > 3 || red.end <= now) return null;
+  return { point: signal.point, phaseEnd: red.end, text: '红灯即将变绿' };
+}
+
+/** Route link flags identify signalized crossings even when no live phase is available. */
+const routeLightIndexes = new WeakMap<AppRoute, { lights?: Point[]; path: Point[]; positions: { point: Point; at: number }[] }>();
+export function upcomingRouteTrafficLight(route: AppRoute, progress: number, horizon = 450) {
+  if (!Number.isFinite(progress) || !route.path.length) return null;
+  let indexed = routeLightIndexes.get(route);
+  if (!indexed || indexed.lights !== route.trafficLights || indexed.path !== route.path) {
+    const lengths = cumulative(route), byCoordinate = new Map<string, number[]>();
+    route.path.forEach((point, index) => {
+      const key = point.join(',');
+      const positions = byCoordinate.get(key) || [];
+      positions.push(lengths[index]); byCoordinate.set(key, positions);
+    });
+    const positions: { point: Point; at: number }[] = [];
+    for (const point of route.trafficLights || []) {
+      if (!Array.isArray(point) || point.length !== 2) continue;
+      const exact = byCoordinate.get(point.join(','));
+      if (exact) for (const at of exact) positions.push({ point, at });
+      else {
+        const matched = matchPosition(route, point, 0, true);
+        if (matched.distance <= 25) positions.push({ point, at: matched.progress });
+      }
+    }
+    indexed = { lights: route.trafficLights, path: route.path, positions };
+    routeLightIndexes.set(route, indexed);
+  }
+  let nearest: { point: Point; distance: number } | null = null;
+  for (const { point, at } of indexed.positions) {
+    const ahead = at - progress;
+    if (ahead < -15 || ahead > horizon) continue;
+    if (!nearest || ahead < nearest.distance) nearest = { point, distance: Math.max(0, ahead) };
+  }
+  return nearest;
+}
+
+/** Live phases should only be tied to a recent, confidently matched car fix. */
+export function trustedTrafficSignalFix(accuracy: number,
+                                        fusion?: { state: string; estimated?: boolean }) {
+  return Number.isFinite(accuracy) && accuracy >= 0 && accuracy <= 25
+    && (!fusion || (fusion.state === 'tracking' && !fusion.estimated));
+}
+
 export function upcomingTrafficSignal(route: AppRoute, progress: number, lights: LiveTrafficLight[],
                                       updatedAt: number, nowMs: number) {
   if (!route.path.length || nowMs - updatedAt > 45_000 || updatedAt - nowMs > 15_000) return null;

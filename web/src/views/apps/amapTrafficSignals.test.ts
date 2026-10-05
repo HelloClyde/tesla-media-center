@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { greenWaveSpeedWindow, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { greenWaveSpeedWindow, nearGreenReminder, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import type { AppRoute } from './amapNavigation';
 
 const route: AppRoute = {
@@ -46,5 +46,40 @@ describe('upcoming live traffic light', () => {
     expect(upcomingTrafficSignal(route, 0, [{ ...light(30.001, 'red'), phases: [
       { start: now / 1000 - 20, end: now / 1000 - 1, color: 'red' },
     ] }], now, now)).toBeNull();
+  });
+});
+
+describe('near-green voice cue', () => {
+  const phases: LiveTrafficLight['phases'] = [
+    { start: now / 1000 - 20, end: now / 1000 + 3, color: 'red' },
+    { start: now / 1000 + 3, end: now / 1000 + 33, color: 'green' },
+  ];
+  const signal = () => upcomingTrafficSignal(route, 50, [{ point: [120, 30.001], phases }], now, now);
+
+  it('announces the APK red-three-seconds cue only with a following green phase', () => {
+    expect(nearGreenReminder(signal(), now, now)).toMatchObject({ text: '红灯即将变绿', phaseEnd: now / 1000 + 3 });
+    expect(nearGreenReminder(signal(), now - 21_000, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, seconds: 4 }, now, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, distance: 201 }, now, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, phases: phases.slice(0, 1) }, now, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, phases: [phases[0], { ...phases[1], start: phases[1].start + 2 }] }, now, now)).toBeNull();
+  });
+});
+
+it('shows route traffic lights during navigation without inventing a live phase', () => {
+  const withLights = { ...route, trafficLights: [[120, 30.001], [120, 30.0018]] as [number, number][] };
+  expect(upcomingRouteTrafficLight(withLights, 0)?.distance).toBeGreaterThan(100);
+  expect(upcomingRouteTrafficLight(withLights, 150)?.point).toEqual([120, 30.0018]);
+  expect(upcomingRouteTrafficLight(withLights, 230)).toBeNull();
+});
+
+describe('live traffic light position quality', () => {
+  it('accepts a precise matched fix but rejects weak or estimated tunnel positions', () => {
+    expect(trustedTrafficSignalFix(1.3)).toBe(true);
+    expect(trustedTrafficSignalFix(25, { state: 'tracking', estimated: false })).toBe(true);
+    expect(trustedTrafficSignalFix(26)).toBe(false);
+    expect(trustedTrafficSignalFix(NaN)).toBe(false);
+    expect(trustedTrafficSignalFix(1, { state: 'estimated', estimated: true })).toBe(false);
+    expect(trustedTrafficSignalFix(1, { state: 'recovering', estimated: false })).toBe(false);
   });
 });
