@@ -4,6 +4,16 @@ import { meters, type AppRoute } from './amapNavigation';
 const route: AppRoute = { id: 1, path: [[120,30],[120.02,30]], breaks: [], steps: [{start:0,end:1,road:'测试路'}], distance: 1900, labels: [] };
 const fix = (x: number, timestamp: number, accuracy = 5, speed = 10) => ({point: [120+x/96300,30] as [number,number], timestamp, accuracy, speed, heading:90});
 describe('route fusion', () => {
+ it('accepts moving car fixes with repeated timestamps and guides from confirmed position before the map car catches up', () => {
+  const engine=createRouteFusion(route);
+  engine.accept(fix(0,1),0);
+  const result=engine.accept(fix(20,1),1000)!;
+  expect(result.progress).toBeLessThan(result.guidanceProgress!);
+  expect(result.guidanceProgress).toBeCloseTo(20,0);
+  const withoutNewGps=engine.tick(1250)!;
+  expect(withoutNewGps.guidanceProgress).toBeGreaterThanOrEqual(result.guidanceProgress!);
+  expect(engine.accept(fix(20,1),1250)).toBeUndefined();
+ });
  it('ignores a burst of accurate fixes at a tunnel opening', () => {
   const engine=createRouteFusion(route); engine.accept(fix(0,1),0);
   engine.accept(fix(200,2,800),1000);
@@ -11,7 +21,9 @@ describe('route fusion', () => {
    const result=engine.accept(fix(70+i,i+3,3),2000+i*100)!;
    expect(result.state).toBe('estimating');
   }
-  expect(engine.tick(3500)!.progress).toBeCloseTo(35,0);
+  const result=engine.tick(3500)!;
+  expect(result.progress).toBeCloseTo(35,0);
+  expect(result.guidanceProgress).toBe(result.progress);
  });
  it('rejects precise but slow positions inconsistent with measured speed', () => {
   const engine=createRouteFusion(route); engine.accept(fix(0,1),0);

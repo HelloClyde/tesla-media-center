@@ -68,9 +68,16 @@ export function trustedTrafficSignalFix(accuracy: number,
     && (!fusion || (fusion.state === 'tracking' && !fusion.estimated));
 }
 
+/** A brief positioning correction must not erase an already received phase plan. */
+export function recentTrafficSignalFix(lastTrustedAt: number, nowMs: number) {
+  return lastTrustedAt > 0 && nowMs - lastTrustedAt <= 20_000 && lastTrustedAt - nowMs <= 1_000;
+}
+
 export function upcomingTrafficSignal(route: AppRoute, progress: number, lights: LiveTrafficLight[],
                                       updatedAt: number, nowMs: number) {
-  if (!route.path.length || nowMs - updatedAt > 45_000 || updatedAt - nowMs > 15_000) return null;
+  // The server accepts App ETA frames up to 90 seconds old. The absolute
+  // phase end still bounds the countdown; never invent time beyond that plan.
+  if (!route.path.length || nowMs - updatedAt > 90_000 || updatedAt - nowMs > 15_000) return null;
   const lengths = cumulative(route);
   const now = nowMs / 1000;
   let best: UpcomingTrafficSignal | null = null;

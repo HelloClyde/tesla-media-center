@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { greenWaveSpeedWindow, nearGreenReminder, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { greenWaveSpeedWindow, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import type { AppRoute } from './amapNavigation';
 
 const route: AppRoute = {
@@ -40,12 +40,21 @@ describe('upcoming live traffic light', () => {
   });
 
   it('hides an expired, old, off-route, or already passed signal', () => {
-    expect(upcomingTrafficSignal(route, 0, [light(30.001, 'red')], now - 46_000, now)).toBeNull();
+    expect(upcomingTrafficSignal(route, 0, [light(30.001, 'red')], now - 91_000, now)).toBeNull();
     expect(upcomingTrafficSignal(route, 150, [light(30.001, 'red')], now, now)).toBeNull();
     expect(upcomingTrafficSignal(route, 0, [{ ...light(30.001, 'red'), point: [120.002, 30.001] }], now, now)).toBeNull();
     expect(upcomingTrafficSignal(route, 0, [{ ...light(30.001, 'red'), phases: [
       { start: now / 1000 - 20, end: now / 1000 - 1, color: 'red' },
     ] }], now, now)).toBeNull();
+  });
+
+  it('keeps an absolute 75-second phase through a temporarily old ETA frame', () => {
+    const lights: LiveTrafficLight[] = [{ point: [120, 30.001], phases: [
+      { start: now / 1000 - 60, end: now / 1000 + 75, color: 'red' },
+    ] }];
+    expect(upcomingTrafficSignal(route, 0, lights, now - 50_000, now)?.seconds).toBe(75);
+    expect(upcomingTrafficSignal(route, 0, lights, now - 50_000, now + 25_000)?.seconds).toBe(50);
+    expect(upcomingTrafficSignal(route, 0, lights, now - 50_000, now + 41_000)).toBeNull();
   });
 });
 
@@ -81,5 +90,10 @@ describe('live traffic light position quality', () => {
     expect(trustedTrafficSignalFix(NaN)).toBe(false);
     expect(trustedTrafficSignalFix(1, { state: 'estimated', estimated: true })).toBe(false);
     expect(trustedTrafficSignalFix(1, { state: 'recovering', estimated: false })).toBe(false);
+  });
+  it('keeps a previously trusted signal through a short positioning correction only', () => {
+    expect(recentTrafficSignalFix(now, now + 19_000)).toBe(true);
+    expect(recentTrafficSignalFix(now, now + 20_001)).toBe(false);
+    expect(recentTrafficSignalFix(0, now)).toBe(false);
   });
 });

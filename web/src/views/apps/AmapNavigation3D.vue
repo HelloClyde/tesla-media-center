@@ -49,7 +49,13 @@ function loadVehicle() {
     model.scale.setScalar(scale);
     model.position.set(-center.x*scale, -bounds.min.y*scale, -center.z*scale);
     model.rotation.y = Math.PI;
-    model.traverse(child => { if ((child as THREE.Mesh).isMesh) (child as THREE.Mesh).castShadow = false; });
+    model.traverse(child => {
+      if (!(child as THREE.Mesh).isMesh) return;
+      (child as THREE.Mesh).castShadow = false;
+      // The route ribbon is an overlay. Draw the car after it while retaining
+      // depth testing among the model's own 3D parts.
+      child.renderOrder = 15;
+    });
     vehicle.add(model); vehicleModel = model; arrow.visible = false;
   }, undefined, () => { vehicleRequested = false; });
 }
@@ -237,7 +243,7 @@ function updateTraffic(cutProgress: number) {
       if (!vertices.length) continue;
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-      const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: run.status === 4 ? '#923d6d' : run.status === 3 ? '#e44650' : '#f5a623', side: THREE.DoubleSide, depthTest: false }));
+      const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ color: run.status === 4 ? '#923d6d' : run.status === 3 ? '#e44650' : '#f5a623', side: THREE.DoubleSide, depthTest: false, depthWrite: false }));
       mesh.renderOrder = 12; trafficGroup.add(mesh);
       trafficRibbons.set(mesh, { end: run.end, spans, original: new Float32Array(vertices) });
     }
@@ -350,7 +356,7 @@ function update() {
       }
       for (const [positions,color,heightOrder] of [[outlines,'#e4f8ee',10],[vertices,props.navigating?'#25c66e':'#13b68a',11]] as const) {
         const geometry=new THREE.BufferGeometry(); geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
-        const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,depthTest:false}));
+        const mesh=new THREE.Mesh(geometry,new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,depthTest:false,depthWrite:false}));
         mesh.renderOrder=heightOrder; routeGroup.add(mesh);
         routeRibbons.set(mesh,new Float32Array(positions));
       }

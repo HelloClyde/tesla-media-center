@@ -10,6 +10,7 @@ import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
 const viewActive = ref(true);
 import { navigationVoicePhrase } from './amapVoicePhrases';
+import { turnVoiceDistances } from './amapTurnVoice';
 import { upcomingServiceAreas, shouldAnnounceServiceArea, type UpcomingServiceArea } from './amapServiceAreas';
 import { advanceDemoProgress, demoCruiseSpeed } from './amapSimulation';
 import NavigationTurnIcon from '@/components/NavigationTurnIcon.vue';
@@ -77,7 +78,7 @@ import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
-import { greenWaveSpeedWindow, nearGreenReminder, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { greenWaveSpeedWindow, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 import { cameraAssetReady, cameraSign, mapSignUrl, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
 const mapElement = ref<HTMLElement>();
@@ -176,32 +177,36 @@ const routeToken = ref('');
 const liveLights = ref<LiveTrafficLight[]>([]), liveUpdatedAt = ref(0), signalClock = ref(Date.now());
 const signalFixTrusted = ref(false), signalFixAt = ref(0);
 let signalTimer: ReturnType<typeof setInterval> | undefined;
-let signalBusy = false, signalLastRequest = 0, signalGeneration = 0;
+let signalBusy = false, signalLastRequest = 0, signalGeneration = 0, signalEmptyRefreshes = 0;
 let signalAbort: AbortController | undefined;
 const nearGreenSpoken = new Map<string, number>();
-function setSignalFixTrust(trusted: boolean) {
+function setSignalFixTrust(trusted: boolean, discard = false) {
   if (trusted) {
     signalFixTrusted.value = true;
     signalFixAt.value = Date.now();
     return;
   }
-  if (signalFixTrusted.value) {
+  signalFixTrusted.value = false;
+  if (discard) {
     signalGeneration++;
     signalAbort?.abort(); signalAbort = undefined;
-    liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
+    liveLights.value = []; liveUpdatedAt.value = 0; signalFixAt.value = 0;
+    signalLastRequest = 0; signalEmptyRefreshes = 0;
   }
-  signalFixTrusted.value = false; signalFixAt.value = 0;
 }
-const upcomingSignal = computed(() => mode.value !== 'idle' && current.value && signalFixTrusted.value
-  && signalClock.value - signalFixAt.value <= 10000
+const upcomingSignal = computed(() => mode.value !== 'idle' && current.value
+  && recentTrafficSignalFix(signalFixAt.value, signalClock.value)
   ? upcomingTrafficSignal(current.value, progress.value, liveLights.value, liveUpdatedAt.value, signalClock.value) : null);
 const nextRouteLight = computed(() => mode.value !== 'idle' && current.value
   ? upcomingRouteTrafficLight(current.value, progress.value) : null);
 const signalLabel = computed(() => upcomingSignal.value?.color === 'red' ? '红灯'
   : upcomingSignal.value?.color === 'green' ? '绿灯' : '黄灯');
-const greenWave = computed(() => greenWaveSpeedWindow(upcomingSignal.value, signalClock.value, liveSpeed.value));
+const signalAwaitingUpdate = computed(() => !!upcomingSignal.value && signalClock.value - liveUpdatedAt.value > 20_000);
+const greenWave = computed(() => signalAwaitingUpdate.value ? null
+  : greenWaveSpeedWindow(upcomingSignal.value, signalClock.value, liveSpeed.value));
 function announceNearGreen() {
-  if (muted.value || localSpeechState.speaking) return;
+  if (muted.value || localSpeechState.speaking
+      || (next.value?.distance ?? Infinity) <= turnVoiceDistances(liveSpeed.value).ahead) return;
   const cue = nearGreenReminder(upcomingSignal.value, liveUpdatedAt.value, signalClock.value);
   if (!cue) return;
   const key = cue.point.map(value => value.toFixed(6)).join(',');
@@ -227,16 +232,19 @@ async function refreshSignals() {
     if (generation !== signalGeneration || !navigationRunning()) return;
     const result = response.data?.data;
     if (response.data?.status === 'ok' && result?.state === 'ready' && Array.isArray(result.lights)) {
-      liveLights.value = result.lights; liveUpdatedAt.value = result.updatedAt;
+      if (result.lights.length || ++signalEmptyRefreshes >= 2) {
+        liveLights.value = result.lights; liveUpdatedAt.value = result.updatedAt;
+        if (result.lights.length) signalEmptyRefreshes = 0;
+      }
       signalClock.value = Date.now(); announceNearGreen();
     }
   } catch { /* A missing live signal never blocks route guidance. */ }
   finally { if (signalAbort === controller) signalAbort = undefined; signalBusy = false; }
 }
 function stopSignals() {
-  setSignalFixTrust(false);
+  setSignalFixTrust(false, true);
   signalGeneration++; clearInterval(signalTimer); signalTimer = undefined;
-  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
+  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0; signalEmptyRefreshes = 0;
   signalAbort?.abort(); signalAbort = undefined;
   nearGreenSpoken.clear();
 }
@@ -253,7 +261,7 @@ function closePointMenuOnOutsideClick(event: PointerEvent) {
 const origin = ref<Point>([0, 0]), destination = ref<Point>([0, 0]);
 const hasOrigin = ref(false), hasDestination = ref(false);
 const originName = ref('等待车辆定位'), destinationName = ref('请选择目的地');
-const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), following = ref(true), muted = ref(false);
+const mode = ref<'idle' | 'live' | 'demo'>('idle'), progress = ref(0), guidanceProgress = ref<number>(), following = ref(true), muted = ref(false);
 function navigationRunning() { return mode.value !== 'idle'; }
 const navigationFixValid = ref(false);
 watch(following, value => appMap?.setFollowing(value), { flush: 'sync' });
@@ -371,7 +379,8 @@ watch([mode, routeToken, selected, trafficEnabled], ([, , , enabled], previous) 
   if (enabled && previous?.[3] === false && routeTrafficTimer) void refreshRouteTraffic();
 });
 watch(routeToken, () => { trafficUpdatedAt.value = routeToken.value ? Date.now() : 0; });
-const next = computed(() => current.value ? instruction(current.value, progress.value) : undefined);
+const next = computed(() => current.value ? instruction(current.value,
+  mode.value === 'live' ? guidanceProgress.value ?? progress.value : progress.value) : undefined);
 type JunctionPicture = { state: 'ready'; width: number; height: number; roadJpeg: string; arrowPng: string };
 const junctionPicture = ref<{ key: string; picture: JunctionPicture }>();
 const junctionRequested = new Set<string>();
@@ -449,12 +458,12 @@ const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
 let simulation: ReturnType<typeof setInterval> | undefined;
-let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '';
+let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '', lastTurnVoiceAttemptAt = 0, lastTurnVoiceAttemptKey = '';
 const announcedServiceAreas = new Set<string>();
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
-function speak(text: string) {
-  if (muted.value) return;
-  void speakLocal(text, 15000).catch(() => {});
+function speak(text: string, maxDelayMs = 15000, isRelevant?: () => boolean): Promise<boolean> {
+  if (muted.value) return Promise.resolve(false);
+  return speakLocal(text, maxDelayMs, isRelevant).catch(() => false);
 }
 function prepareVoice() { if (!muted.value) void prepareLocalSpeech().catch(e => { localSpeechState.error=String(e); }); }
 
@@ -742,9 +751,9 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (!route || mode.value === 'idle') { setSignalFixTrust(false); return; }
   if (!onRoute) {
     speedFixTrusted.value = false;
-    setSignalFixTrust(false);
     clearSpeedGuidance();
     offCount++;
+    setSignalFixTrust(false, fusion?.state === 'off-route' || offCount >= 3);
     status.value = '已偏离路线';
     if (mode.value === 'live' && offCount >= 3 && !busy.value && Date.now() - lastReplan > 20000) {
       lastReplan = Date.now(); origin.value = point; originName.value = '当前位置'; status.value = '正在重新规划'; void plan(true);
@@ -769,49 +778,62 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   }
   if (fusion?.state === 'waiting') { speedFixTrusted.value = false; clearSpeedGuidance(); return; }
   const turn = next.value;
-  if (turn && turn.distance < 250) {
-    const key = `${turn.key}:${turn.distance < 40 ? 'near' : 'ahead'}`;
-    if (key !== spoken) { spoken = key; speak(navigationVoicePhrase(turn, turn.distance < 40)); }
+  const voiceDistances = turnVoiceDistances(liveSpeed.value);
+  if (!muted.value && turn && turn.distance <= voiceDistances.ahead) {
+    const near = turn.distance <= voiceDistances.near;
+    const key = `${turn.key}:${near ? 'near' : 'ahead'}`;
+    if (key !== spoken && (key !== lastTurnVoiceAttemptKey || Date.now() - lastTurnVoiceAttemptAt >= 1500)) {
+      spoken = key; lastTurnVoiceAttemptAt = Date.now(); lastTurnVoiceAttemptKey = key;
+      const activeRoute = current.value;
+      void speak(navigationVoicePhrase(turn, near), 4000, () =>
+        mode.value !== 'idle' && current.value === activeRoute && next.value?.key === turn.key
+        && next.value.distance > 8 && (near
+          ? next.value.distance <= voiceDistances.near + 30 : next.value.distance > voiceDistances.near)
+      ).then(started => { if (!started && spoken === key) spoken = ''; });
+    }
   }
+  // Secondary alerts must not replace a turn instruction while approaching a junction.
+  const canAnnounceOther = !turn || turn.distance > Math.max(450, voiceDistances.ahead);
   const reliableSpeed = !fusion?.estimated && accuracy <= 25
     && (turn?.distance ?? Infinity) > 100 ? liveSpeed.value : null;
-  if (mode.value !== 'demo' && speedReminder.update(speedLimitSection.value, reliableSpeed, Date.now())) {
-    speak(`当前道路限速${speedLimit.value}公里，您已超速，请减速慢行`);
-  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+  if (canAnnounceOther && mode.value !== 'demo' && speedReminder.update(speedLimitSection.value, reliableSpeed, Date.now())) {
+    void speak(`当前道路限速${speedLimit.value}公里，您已超速，请减速慢行`);
+  } else if (canAnnounceOther && reliableSpeed !== null
       && speedCamera.value && speedCamera.value.distance <= 200
       && !announcedSpeedCameras.has(speedCamera.value.at)) {
     announcedSpeedCameras.add(speedCamera.value.at);
-    speak(`前方${speedCamera.value.type === 25 || speedCamera.value.type === 26 ? '区间测速' : '测速'}限速${speedCamera.value.limit}公里，请留意道路标志`);
-  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+    void speak(`前方${speedCamera.value.type === 25 || speedCamera.value.type === 26 ? '区间测速' : '测速'}限速${speedCamera.value.limit}公里，请留意道路标志`);
+  } else if (canAnnounceOther && reliableSpeed !== null
       && !speedCamera.value && nextSpeedSign.value && nextSpeedSign.value.distance <= 200
       && !announcedSpeedSigns.has(nextSpeedSign.value.sign.at)) {
     announcedSpeedSigns.add(nextSpeedSign.value.sign.at);
-    speak(`前方限速标志${nextSpeedSign.value.sign.limit}公里，请留意道路标志`);
-  } else if (reliableSpeed !== null && (turn?.distance ?? Infinity) > 250
+    void speak(`前方限速标志${nextSpeedSign.value.sign.limit}公里，请留意道路标志`);
+  } else if (canAnnounceOther && reliableSpeed !== null
       && !speedCamera.value
       && nextSpeedLimit.value && nextSpeedLimit.value.distance <= 200
       && nextSpeedLimit.value.section.limit !== speedLimit.value
       && !announcedSpeedLimits.has(nextSpeedLimit.value.section)) {
     announcedSpeedLimits.add(nextSpeedLimit.value.section);
-    speak(`前方限速${nextSpeedLimit.value.section.limit}公里，请留意道路标志`);
+    void speak(`前方限速${nextSpeedLimit.value.section.limit}公里，请留意道路标志`);
   }
   const area = serviceAreas.value[0];
-  if (!muted.value && area && !announcedServiceAreas.has(area.key) &&
+  if (!muted.value && canAnnounceOther && area && !announcedServiceAreas.has(area.key) &&
       shouldAnnounceServiceArea(area, progress.value, turn?.distance ?? Infinity)) {
     announcedServiceAreas.add(area.key);
-    speak(`前方有${area.name}，请留意入口`);
+    void speak(`前方有${area.name}，请留意入口`);
   }
 }
-function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else prepareVoice(); }
+function toggleVoice() { muted.value = !muted.value; if (muted.value) stopLocalSpeech(); else { spoken = ''; prepareVoice(); } }
 let routeFusion: ReturnType<typeof createRouteFusion> | undefined;
 let fusionTimer: ReturnType<typeof setInterval> | undefined;
 function renderFusion(result?: FusionPosition) {
   if (!result || disposed || mode.value !== 'live') return;
   liveSpeed.value = result.speed * 3.6;
   speedEstimated.value = !!result.estimated;
+  guidanceProgress.value = result.guidanceProgress;
   updatePosition(result.point, 0, result.heading, result.speed, result.state === 'off-route', result);
 }
-function stopFusion() { clearInterval(fusionTimer); fusionTimer = undefined; routeFusion = undefined; }
+function stopFusion() { clearInterval(fusionTimer); fusionTimer = undefined; routeFusion = undefined; guidanceProgress.value = undefined; }
 function startFusion() {
   stopFusion();
   if (navigationEngine.value !== 'route-fusion' || mode.value !== 'live' || !current.value) return;
@@ -1038,7 +1060,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
         <AmapJunctionPreview v-if="visibleJunction" :road-jpeg="visibleJunction.roadJpeg" :arrow-png="visibleJunction.arrowPng" :width="visibleJunction.width" :height="visibleJunction.height" />
       </div>
       <div v-if="!overviewActive && (upcomingSignal || nextRouteLight)" class="signal-card glass" role="status">
-        <img class="signal-icon" src="/amap/icons/traffic-light-map.png" alt="" /><div><strong>{{ upcomingSignal ? `${signalLabel} ${upcomingSignal.seconds} 秒` : '前方红绿灯' }}</strong><small>前方 {{ Math.round(upcomingSignal?.distance ?? nextRouteLight!.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
+        <span class="signal-icon" :class="upcomingSignal?.color" aria-hidden="true"><span class="signal-lamp red"></span><span class="signal-lamp yellow"></span><span class="signal-lamp green"></span></span><div><strong>{{ upcomingSignal ? `${signalLabel} ${upcomingSignal.seconds} 秒${signalAwaitingUpdate ? ' · 待更新' : ''}` : '前方红绿灯' }}</strong><small>前方 {{ Math.round(upcomingSignal?.distance ?? nextRouteLight!.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
       </div>
     </div>
     <div v-if="mode !== 'idle' && (liveSpeed !== null || speedLimit !== undefined || speedCamera || nextSpeedSign || nextSpeedLimit)" class="speed-badges" :aria-label="speedLimit === undefined ? '当前车速' : '当前车速与道路限速'">
@@ -1102,14 +1124,14 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 
 <style scoped>
 .road-switch{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.road-switch span{font-size:12px;color:#5c746c;margin-right:4px}.navigation-app .road-switch button{min-width:64px;min-height:42px;background:#e4f8ef;border-color:#b6e7d6;color:#087b5d;font-weight:600}
-.navigation-guidance{position:absolute;z-index:501;top:14px;left:16px;max-width:calc(100% - 90px);display:flex;flex-direction:column;align-items:flex-start;gap:8px}
-@media(max-width:700px){.navigation-guidance{top:10px;left:10px;max-width:calc(100% - 76px)}}
+.navigation-guidance{position:absolute;z-index:501;top:14px;left:16px;width:calc(100% - 90px);display:flex;align-items:flex-start;gap:8px}
+@media(max-width:700px){.navigation-guidance{top:10px;left:10px;width:calc(100% - 76px)}}
 .layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:18px;max-width:calc(100% - 90px);padding:16px 24px;background:#123f38f2;color:white}.turn-arrow{width:56px;height:64px;flex-shrink:0;display:block}.turn-card h2{font-size:23px;margin:5px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{pointer-events:none;position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:12px;gap:10px}.turn-card h2{font-size:19px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
 .search-line{align-items:center;min-width:0}.point-picker{position:relative;flex:none}.navigation-app .point-picker-trigger{display:flex;align-items:center;gap:5px;min-height:36px;padding:5px 8px;border:1px solid #cee7dc;border-radius:10px;background:#eef8f2;color:#176b4e;font-size:13px;font-weight:700;box-shadow:none}.point-picker-dot{width:8px;height:8px;flex:none;border-radius:50%}.point-picker-dot.destination{background:#f18662}.point-picker-dot.origin{background:#13b987}.point-picker-chevron{width:6px;height:6px;margin:-3px 1px 0 2px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .16s}.point-picker-chevron.open{margin-top:3px;transform:rotate(225deg)}
 .point-picker-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;display:grid;gap:2px;min-width:112px;padding:5px;border:1px solid #dcebe3;border-radius:12px;background:#fff;box-shadow:0 10px 30px #183c3426}.navigation-app .point-picker-option{display:flex;align-items:center;gap:8px;width:100%;min-height:36px;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:#39534b;text-align:left;font-size:13px}.navigation-app .point-picker-option:hover,.navigation-app .point-picker-option.selected{background:#e5f7ed;color:#087e55}.navigation-app .point-picker-trigger:focus-visible,.navigation-app .point-picker-option:focus-visible{outline:2px solid #0d9f75;outline-offset:2px}
 @media(max-width:520px){.search-line{display:grid;grid-template-columns:72px minmax(0,1fr);gap:6px}.search-line input{min-width:0;width:100%;box-sizing:border-box}.search-line>button{width:100%;min-width:0}}
 .route-options button{flex:1 0 180px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;text-align:left;align-items:center}.route-options .route-lights{justify-self:end}.route-options .route-cost,.route-options .route-label{grid-column:1/-1;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap}
-.signal-card{display:flex;align-items:center;gap:12px;padding:10px 14px;color:#213c36;max-width:100%;box-sizing:border-box;min-width:0}.signal-card strong{display:block;font-size:19px;font-variant-numeric:tabular-nums}.signal-card small{display:block;color:#6f837b;font-size:12px}.signal-icon{width:24px;height:38px;object-fit:contain;flex:none}
+.signal-card{display:flex;flex:0 1 235px;align-items:center;gap:12px;padding:10px 14px;color:#213c36;max-width:100%;box-sizing:border-box;min-width:0}.signal-card>div{min-width:0}.signal-card strong{display:block;font-size:19px;font-variant-numeric:tabular-nums}.signal-card small{display:block;color:#6f837b;font-size:12px}.signal-icon{width:24px;height:38px;box-sizing:border-box;display:flex;flex:none;flex-direction:column;align-items:center;justify-content:space-evenly;padding:3px 0;border:2px solid #b7c8d5;border-radius:12px;background:#293443;box-shadow:0 1px 4px #172a3150}.signal-lamp{width:8px;height:8px;border-radius:50%;background:#626d76;box-shadow:inset 0 1px 2px #111a27}.signal-icon.red .signal-lamp.red{background:#ff4a51;box-shadow:0 0 7px #ff4a51,inset 0 1px 2px #ffffff88}.signal-icon.yellow .signal-lamp.yellow{background:#ffd243;box-shadow:0 0 7px #ffd243,inset 0 1px 2px #ffffff88}.signal-icon.green .signal-lamp.green{background:#37db75;box-shadow:0 0 7px #37db75,inset 0 1px 2px #ffffff88}
 .signal-card .green-wave{margin-top:5px;color:#087f5b;font-weight:600}
 </style>
 <style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
@@ -1129,13 +1151,14 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 <style scoped>
 .turn-card .turn-summary{display:flex;align-items:center;gap:18px;min-width:0}
 .turn-card .turn-summary>div{min-width:0}
-.navigation-guidance .turn-card{position:relative;left:auto;top:auto;max-width:100%;box-sizing:border-box}
+.navigation-guidance .turn-card{position:relative;left:auto;top:auto;flex:0 1 auto;min-width:0;max-width:100%;box-sizing:border-box}
 .turn-card.has-junction,.turn-card.has-lanes{display:block;width:min(390px,100%);max-width:none;padding:0;overflow:hidden}
 .turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{min-height:104px;padding:12px 18px}
 .turn-card.has-junction .turn-arrow,.turn-card.has-lanes .turn-arrow{width:46px;height:54px}
 .turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:21px;white-space:nowrap}
 .turn-card.has-junction p,.turn-card.has-lanes p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:700px){.turn-card .turn-summary{gap:10px}.turn-card.has-junction,.turn-card.has-lanes{width:min(360px,100%)}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{min-height:92px;padding:10px 12px}.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:19px}}
+@media(max-width:520px){.navigation-guidance{gap:6px}.navigation-guidance .turn-card{padding:9px}.turn-card .turn-summary{gap:6px}.turn-card .turn-arrow{width:34px;height:42px}.turn-card h2,.turn-card.has-junction h2,.turn-card.has-lanes h2{font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.turn-card.has-junction .turn-summary,.turn-card.has-lanes .turn-summary{padding:9px}.signal-card{flex-basis:145px;gap:6px;padding:8px}.signal-card strong{font-size:14px}.signal-card small{font-size:10px}}
 .service-area-card{position:absolute;z-index:500;left:16px;bottom:102px;width:min(330px,calc(100% - 90px));padding:11px 15px;display:grid;gap:6px;background:#123f38ed;color:white}.service-area-card>strong{font-size:13px;color:#85dfbd}.service-area-item{display:flex;justify-content:space-between;gap:12px;align-items:baseline;font-size:14px}.service-area-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.service-area-item b{flex-shrink:0;font-size:12px;font-weight:600}.service-area-card small{font-size:10px;color:#c2d7d0}@media(max-width:700px){.service-area-card{left:10px;bottom:82px;width:min(300px,calc(100% - 74px));padding:8px 11px}}
 .map-controls .dimension-mode{font-size:15px;font-weight:700}
 .map-controls .view-mode{display:grid;place-items:center}

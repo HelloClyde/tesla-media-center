@@ -17,11 +17,13 @@ const cache=new Map<string,Audio>();
 let cacheBytes=0, preloadSequence=0, engineGeneration=0;
 const synthesizing=new Map<string,Promise<Audio>>();
 const phrase=(text:string)=>text.trim().slice(0,300);
-function synthesize(value:string):Promise<Audio> {
+function synthesize(value:string, urgent=false):Promise<Audio> {
   const cached=cache.get(value);if(cached)return Promise.resolve(cached);
   const existing=synthesizing.get(value);if(existing)return existing;
   const engine=engineGeneration;
-  const task=tail.catch(()=>{}).then(async()=>{
+  // Playback goes straight to the worker. A warmup may already be running, but
+  // queued warmups must never get ahead of an instruction for the current road.
+  const task=(urgent?Promise.resolve():tail.catch(()=>{})).then(async()=>{
     if(engine!==engineGeneration)throw new Error('语音任务已取消');
     await loadLocalSpeech();
     if(engine!==engineGeneration)throw new Error('语音任务已取消');
@@ -36,7 +38,7 @@ function synthesize(value:string):Promise<Audio> {
     }
     return audio;
   });
-  synthesizing.set(value,task);tail=task;
+  synthesizing.set(value,task);if(!urgent)tail=task;
   const clean=()=>{if(synthesizing.get(value)===task)synthesizing.delete(value);};
   void task.then(clean,clean);
   return task;
@@ -108,25 +110,26 @@ export function stopLocalSpeech() {
   localSpeechState.speaking=false;
   if(localSpeechState.ready)localSpeechState.status='已停止';
 }
-export async function speakLocal(text:string, maxDelayMs=Infinity) {
+export async function speakLocal(text:string, maxDelayMs=Infinity, isRelevant:()=>boolean=()=>true):Promise<boolean> {
   stopLocalSpeech();const token=sequence, started=Date.now();
-  const value=text.trim().slice(0,300);if(!value)return;
+  const value=text.trim().slice(0,300);if(!value)return false;
   localSpeechState.error='';
   try {
     await prepareLocalSpeech();
-    if(token!==sequence||Date.now()-started>maxDelayMs)return;
+    if(token!==sequence||Date.now()-started>maxDelayMs||!isRelevant())return false;
     localSpeechState.cacheHit=cache.has(value);
     if(!localSpeechState.cacheHit)localSpeechState.status='正在本地合成语音…';
-    const audio=await synthesize(value);
+    const audio=await synthesize(value,true);
       localSpeechState.synthesisMs=audio.ms;localSpeechState.audioSeconds=audio.samples.length/audio.sampleRate;
-      if(token!==sequence)return;
-      if(Date.now()-started>maxDelayMs){localSpeechState.status='语音已过时，跳过本次播报';return;}
+      if(token!==sequence)return false;
+      if(Date.now()-started>maxDelayMs||!isRelevant()){localSpeechState.status='语音已过时，跳过本次播报';return false;}
       if(context!.state!=='running')throw new Error('声音通道未启用，请点击语音按钮');
       const buffer=context!.createBuffer(1,audio.samples.length,audio.sampleRate);buffer.getChannelData(0).set(audio.samples);
       source=context!.createBufferSource();source.buffer=buffer;source.connect(voiceGain!);
       localSpeechState.speaking=true;localSpeechState.status='正在播放端侧合成语音';
       const current=source;current.onended=()=>{current.disconnect();if(source===current){source=undefined;localSpeechState.speaking=false;localSpeechState.status='播报完成';}};
       current.start();
+      return true;
   }catch(e){if(token===sequence){localSpeechState.error=e instanceof Error?e.message:String(e);localSpeechState.status=localSpeechState.error;}throw e;}
 }
 export function releaseLocalSpeech() {

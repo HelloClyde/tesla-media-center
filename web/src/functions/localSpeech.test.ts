@@ -73,3 +73,21 @@ it('shares an in-flight phrase with playback and cancels obsolete remaining warm
   workers[0].emit({type:'audio',id:workers[0].messages[0].id,samples:new Float32Array([.1]),sampleRate:22050,ms:5});
   await Promise.all([warm,playback]);expect(starts).toBe(1);expect(workers[0].messages).toHaveLength(1);m.releaseLocalSpeech();
 });
+
+it('sends an urgent turn before queued warmups and rejects a turn that is already passed',async()=>{
+  const m=await import('./localSpeech');const warm=m.preloadLocalSpeech(['前方左转','请左转']);await tick();
+  workers[0].emit({type:'ready'});await tick();
+  const first=workers[0].messages[0];
+  let relevant=true;
+  const urgent=m.speakLocal('前方右转',4000,()=>relevant);await tick();
+  expect(workers[0].messages.map(message=>message.text)).toEqual(['前方左转','前方右转']);
+  workers[0].emit({type:'audio',id:first.id,samples:new Float32Array([.1]),sampleRate:24000,ms:5});await tick();
+  const turn=workers[0].messages[1];
+  relevant=false;
+  workers[0].emit({type:'audio',id:turn.id,samples:new Float32Array([.1]),sampleRate:24000,ms:5});
+  expect(await urgent).toBe(false);expect(starts).toBe(0);
+  m.cancelLocalSpeechPreload();
+  const remaining=workers[0].messages.find(message=>message.text==='请左转');
+  if(remaining)workers[0].emit({type:'audio',id:remaining.id,samples:new Float32Array([.1]),sampleRate:24000,ms:5});
+  await warm;m.releaseLocalSpeech();
+});

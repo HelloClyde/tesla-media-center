@@ -2,7 +2,7 @@ import { cumulative, matchPosition, meters, pointAt, type AppRoute, type Point }
 import { bearingBetween } from './amapHeading';
 
 export interface FusionFix { point: Point; accuracy: number; speed?: number | null; heading?: number | null; timestamp: number }
-export interface FusionPosition { point: Point; progress?: number; heading?: number; speed: number; estimated: boolean; estimationSeconds?: number; state: 'tracking' | 'estimating' | 'recovering' | 'waiting' | 'off-route' }
+export interface FusionPosition { point: Point; progress?: number; guidanceProgress?: number; heading?: number; speed: number; estimated: boolean; estimationSeconds?: number; state: 'tracking' | 'estimating' | 'recovering' | 'waiting' | 'off-route' }
 /** Route-constrained positioning, not an IMU engine. All elapsed times are monotonic milliseconds. */
 export function createRouteFusion(route: AppRoute) {
   const speedGraceMs = 12000;
@@ -11,8 +11,9 @@ export function createRouteFusion(route: AppRoute) {
   const lengths = cumulative(route), total = lengths[lengths.length - 1];
   let progress: number | undefined, target: number | undefined;
   let clock = 0, trustedAt = -Infinity, speedAt = -Infinity, speed = 0, travelled = 0;
+  let confirmedProgress: number | undefined;
   let staleTravelled = 0, speedStreamEstablished = false;
-  let lastFix: FusionFix | undefined, lastTimestamp = -Infinity;
+  let lastFix: FusionFix | undefined, lastInput: FusionFix | undefined, lastInputAt = 0;
   let trustedStream = false, odometer = 0;
   type Evidence = { since: number; last: number; count: number; distance: number; progress: number; point: Point };
   let recovery: Evidence | undefined, departure: Evidence | undefined;
@@ -35,7 +36,11 @@ export function createRouteFusion(route: AppRoute) {
     const point = pointAt(route, progress);
     const staleFor = clock - speedAt;
     const estimatedSpeed = state === 'waiting' ? 0 : speed * clamp((speedGraceMs - staleFor) / (speedGraceMs - speedFadeMs), 0, 1);
-    return { point, progress, speed: staleFor <= speedFadeMs ? speed : estimatedSpeed, heading: bearingBetween(point, pointAt(route, Math.min(total, progress + 8))),
+    // The map car is smoothed through GPS recovery. Maneuver instructions use
+    // the last confirmed route match so they neither lag by the visual
+    // correction distance nor jump backwards when GPS briefly disappears.
+    const guidanceProgress = Math.max(progress, confirmedProgress ?? progress);
+    return { point, progress, guidanceProgress, speed: staleFor <= speedFadeMs ? speed : estimatedSpeed, heading: bearingBetween(point, pointAt(route, Math.min(total, progress + 8))),
       estimated: state !== 'tracking', estimationSeconds: Math.max(0, Math.floor((clock - trustedAt) / 1000)), state };
   }
   function tick(now: number) {
@@ -76,9 +81,19 @@ export function createRouteFusion(route: AppRoute) {
     return output();
   }
   function accept(fix: FusionFix, now: number): FusionPosition | undefined {
-    if (!Number.isFinite(fix.timestamp) || fix.timestamp <= lastTimestamp || !Number.isFinite(fix.accuracy) || fix.accuracy < 0
+    if (!Number.isFinite(fix.timestamp) || !Number.isFinite(fix.accuracy) || fix.accuracy < 0
       || !fix.point.every(Number.isFinite)) return;
-    tick(now); lastTimestamp = fix.timestamp;
+    // Some vehicle browsers reuse or regress the geolocation timestamp even
+    // while coordinates change. Ignore only an identical replayed sample.
+    if (lastInput && fix.timestamp <= lastInput.timestamp && fix.accuracy === lastInput.accuracy
+        && fix.speed === lastInput.speed && fix.heading === lastInput.heading
+        && fix.point[0] === lastInput.point[0] && fix.point[1] === lastInput.point[1]) return;
+    if (lastInput && fix.timestamp <= lastInput.timestamp && fix.accuracy <= 25 && lastInput.accuracy <= 25) {
+      const elapsed = Math.max(0, (now - lastInputAt) / 1000);
+      const plausibleTravel = Math.max(50, (Math.max(fix.speed ?? 0, lastInput.speed ?? 0) + 5) * elapsed + 30);
+      if (meters(lastInput.point, fix.point) > plausibleTravel) return;
+    }
+    tick(now); lastInput = fix; lastInputAt = now;
     const match = matchPosition(route, fix.point, progress ?? 0, progress === undefined);
     const elapsed = lastFix ? Math.max(.1, (now - lastFixNow) / 1000) : 1;
     const plausible = !lastFix || meters(lastFix.point, fix.point) <= 60 * elapsed + lastFix.accuracy + fix.accuracy;
@@ -99,6 +114,7 @@ export function createRouteFusion(route: AppRoute) {
         trustedStream = true;
         lastFix = fix; lastFixNow = now;
         trustedAt = now; travelled = 0;
+        confirmedProgress = match.progress;
         if (Math.abs(match.progress - progress) > 1) { target = match.progress; state = 'recovering'; }
         else { target = undefined; state = 'tracking'; }
       }
