@@ -33,6 +33,9 @@ COPY web/scripts/ ./scripts/
 COPY web/public/*.js ./public/
 COPY web/public/tmc-mark.svg web/public/screen-cap.jpg ./public/
 COPY web/public/icon/ ./public/icon/
+# Vite resolves CSS url('/amap/...') against public during the build. The
+# runtime assets are still copied separately from public-assets below.
+COPY web/public/amap/ ./public/amap/
 RUN TMC_SEPARATE_PUBLIC=1 npm run build
 
 FROM asset-compressor AS tts-assets
