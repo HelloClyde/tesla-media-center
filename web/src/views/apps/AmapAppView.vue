@@ -815,8 +815,12 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
     status.value = '定位精度不足，等待更准确的位置';
     return;
   }
-  const match = navigating ? matchPosition(route, point, progress.value, recovered) : undefined;
-  const onRoute = match && match.distance <= Math.max(40, accuracy * 1.5);
+  // Fusion already selected an along-route position. Rematching it globally
+  // could jump to the adjoining arm of a loop ramp or an overlapping bridge.
+  const match = navigating ? fusion?.progress !== undefined && fusion.state !== 'off-route'
+    ? { point, progress: fusion.progress, distance: 0 }
+    : matchPosition(route, point, progress.value, recovered, { heading: gpsHeading, speed, accuracy }) : undefined;
+  const onRoute = match && fusion?.state !== 'off-route' && match.distance <= Math.max(40, accuracy * 1.5);
   const visualPoint = onRoute ? match.point : point;
   const firstNavigationFix = navigating && !navigationFixValid.value;
   const direction = movementHeading(headingAnchor, visualPoint, accuracy, gpsHeading, speed);

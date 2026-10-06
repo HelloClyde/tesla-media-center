@@ -14,6 +14,8 @@ export function createRouteFusion(route: AppRoute) {
   let confirmedProgress: number | undefined;
   let staleTravelled = 0, speedStreamEstablished = false;
   let lastFix: FusionFix | undefined, lastInput: FusionFix | undefined, lastInputAt = 0;
+  let motionAnchor: { fix: FusionFix; point: Point; progress: number; now: number } | undefined;
+  let motionConfirmedAt = -Infinity;
   let trustedStream = false, odometer = 0;
   type Evidence = { since: number; last: number; count: number; distance: number; progress: number; point: Point };
   let recovery: Evidence | undefined, departure: Evidence | undefined;
@@ -93,18 +95,52 @@ export function createRouteFusion(route: AppRoute) {
       const plausibleTravel = Math.max(50, (Math.max(fix.speed ?? 0, lastInput.speed ?? 0) + 5) * elapsed + 30);
       if (meters(lastInput.point, fix.point) > plausibleTravel) return;
     }
+    const previousInput = lastInput, previousInputAt = lastInputAt;
     tick(now); lastInput = fix; lastInputAt = now;
-    const match = matchPosition(route, fix.point, progress ?? 0, progress === undefined);
+    const inputMovement = previousInput ? meters(previousInput.point, fix.point) : 0;
+    const movementReliable = previousInput && fix.accuracy <= 25 && previousInput.accuracy <= 25
+      && now - previousInputAt <= 2500 && inputMovement >= Math.max(4, (fix.accuracy + previousInput.accuracy) * .75);
+    const matchHeading = movementReliable ? bearingBetween(previousInput.point, fix.point) : fix.heading;
+    const match = matchPosition(route, fix.point, target ?? progress ?? 0, progress === undefined,
+      { heading: matchHeading, speed: fix.speed, accuracy: fix.accuracy });
     const elapsed = lastFix ? Math.max(.1, (now - lastFixNow) / 1000) : 1;
     const plausible = !lastFix || meters(lastFix.point, fix.point) <= 60 * elapsed + lastFix.accuracy + fix.accuracy;
     const routeHeading = bearingBetween(route.path[match.index], route.path[Math.min(match.index + 1, route.path.length - 1)]);
-    const headingOK = fix.heading == null || !Number.isFinite(fix.heading) || (fix.speed ?? 0) < 2
-      || Math.abs(((fix.heading - routeHeading + 540) % 360) - 180) < 65;
     const precise = fix.accuracy <= 25 && plausible;
+    const continuous = progress === undefined || state === 'waiting' || Math.abs(match.progress - (target ?? progress)) < Math.max(80, speed * elapsed + 40);
+    // GPS course may lag by several seconds on a tight loop. Fresh positions
+    // advancing along this same section independently corroborate the turn.
+    // Keep an anchor until movement exceeds the fixes' uncertainty, so this
+    // also works when per-sample movement is small. Backwards motion and jumps
+    // to another arm of the ramp do not satisfy this evidence.
+    let positionTracksRoute = false;
+    let motionConfirmed = false;
+    if (motionAnchor && precise && continuous && match.distance <= 30 && now - motionAnchor.now <= 6000) {
+      const dt = Math.max(.1, (now - motionAnchor.now) / 1000);
+      const advance = match.progress - motionAnchor.progress;
+      const movement = meters(motionAnchor.fix.point, fix.point);
+      const routeMovement = meters(motionAnchor.point, match.point);
+      const minMovement = Math.max(4, (fix.accuracy + motionAnchor.fix.accuracy) * .75);
+      const observedHeading = bearingBetween(motionAnchor.fix.point, fix.point);
+      const expectedHeading = bearingBetween(motionAnchor.point, match.point);
+      const aligned = advance > 0 && advance <= Math.max(30, (Math.max(fix.speed ?? 0, motionAnchor.fix.speed ?? 0) + 5) * dt + 20)
+        && movement > 1 && routeMovement > 1
+        && Math.abs(((observedHeading - expectedHeading + 540) % 360) - 180) < 45;
+      motionConfirmed = aligned && movement >= minMovement && routeMovement >= minMovement;
+      // Retain the corroboration between anchor updates. Requiring a fresh
+      // 40-metre movement every callback would reject slow/sparse car fixes.
+      positionTracksRoute = aligned && (motionConfirmed || now - motionConfirmedAt <= 6000);
+      if (motionConfirmed) motionConfirmedAt = now;
+    }
+    const headingOK = fix.heading == null || !Number.isFinite(fix.heading) || (fix.speed ?? 0) < 2
+      || Math.abs(((fix.heading - routeHeading + 540) % 360) - 180) < 65 || positionTracksRoute;
+    if (precise && continuous && match.distance <= 30) {
+      if (!motionAnchor || motionConfirmed || now - motionAnchor.now > 6000)
+        motionAnchor = { fix, point: match.point, progress: match.progress, now };
+    } else { motionAnchor = undefined; motionConfirmedAt = -Infinity; }
     // Repeated accurate off-route fixes must escape the route constraint and permit replanning.
     departure = precise && (match.distance > 40 || !headingOK) ? corroborate(departure, fix, match.progress, now, true) : undefined;
     if (departure && confirmed(departure, now)) { state = 'off-route'; return { point: fix.point, speed: fix.speed ?? 0, heading: fix.heading ?? undefined, estimated: false, state }; }
-    const continuous = progress === undefined || state === 'waiting' || Math.abs(match.progress - (target ?? progress)) < Math.max(80, speed * elapsed + 40);
     const good = precise && match.distance <= 30 && headingOK && continuous;
     if (trustedStream && progress !== undefined && Math.abs(match.progress - (target ?? progress)) > 20) trustedStream = false;
     recovery = good ? corroborate(recovery, fix, match.progress, now) : undefined;
@@ -129,7 +165,7 @@ export function createRouteFusion(route: AppRoute) {
     const speedElapsed = Math.max(.1, (now - speedAt) / 1000);
     const predictedHeading = progress === undefined ? routeHeading
       : bearingBetween(pointAt(route, progress), pointAt(route, Math.min(total, progress + 10)));
-    const speedHeadingOK = fix.heading == null || !Number.isFinite(fix.heading) || (fix.speed ?? 0) < 2
+    const speedHeadingOK = good || fix.heading == null || !Number.isFinite(fix.heading) || (fix.speed ?? 0) < 2
       || Math.abs(((fix.heading - predictedHeading + 540) % 360) - 180) < 75;
     const validSpeed = !frozen && speedHeadingOK && typeof fix.speed === 'number' && Number.isFinite(fix.speed)
       && fix.speed >= 0 && fix.speed <= 60

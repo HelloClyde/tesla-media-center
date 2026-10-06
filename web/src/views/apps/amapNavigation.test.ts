@@ -14,6 +14,16 @@ describe('navigation geometry', () => {
     expect(match.distance).toBeLessThan(.01);
     expect(match.progress).toBeCloseTo(55.6, 0);
   });
+  it('keeps the current arm of a nearby loop using motion and route progress', () => {
+    const xy = (x: number, y: number): [number,number] => [120+x/96300,30+y/111195];
+    const loop: AppRoute = { ...route, path:[xy(0,0),xy(100,0),xy(100,20),xy(0,20)], breaks:[] };
+    // This noisy fix is two metres closer to the return arm, 140 metres
+    // farther along the route. The vehicle is still moving east on entry.
+    const result=matchPosition(loop,xy(40,11),40,false,{heading:90,speed:10,accuracy:12});
+    expect(result.index).toBe(0);
+    expect(result.progress).toBeCloseTo(40,0);
+    expect(result.distance).toBeCloseTo(11,0);
+  });
   it('gives a right turn for north then east', () => {
     expect(instruction(route, 30).text).toBe('右转');
     expect(instruction(route, 30).road).toBe('乙路');

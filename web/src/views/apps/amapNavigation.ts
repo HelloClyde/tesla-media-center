@@ -10,21 +10,34 @@ export function cumulative(route: AppRoute) {
   for (let i = 1; i < route.path.length; i++) values.push(values[i - 1] + (breaks.has(i) ? 0 : meters(route.path[i - 1], route.path[i])));
   return values;
 }
-export function matchPosition(route: AppRoute, position: Point, previous = 0, reacquire = false) {
+export interface MatchMotion { heading?: number | null; speed?: number | null; accuracy?: number }
+export function matchPosition(route: AppRoute, position: Point, previous = 0, reacquire = false, motion?: MatchMotion) {
   const lengths = cumulative(route), breaks = new Set(route.breaks);
   let best = { distance: Infinity, progress: 0, index: 0, point: route.path[0] };
   const scale = Math.cos(position[1] * Math.PI / 180);
+  let bestScore = Infinity;
+  const motionHeading = typeof motion?.heading === 'number' && Number.isFinite(motion.heading) ? motion.heading : undefined;
+  const motionSpeed = typeof motion?.speed === 'number' && Number.isFinite(motion.speed) ? Math.max(0, motion.speed) : 0;
+  const motionAccuracy = typeof motion?.accuracy === 'number' && Number.isFinite(motion.accuracy) ? Math.max(0, motion.accuracy) : 0;
+  const headingValid = motionHeading !== undefined && motionSpeed > 2;
+  const behind = motion ? Math.max(50, Math.min(120, motionSpeed * 3 + motionAccuracy * 2)) : 50;
   for (let i = 0; i < route.path.length - 1; i++) {
-    if (breaks.has(i + 1) || (!reacquire && lengths[i + 1] < previous - 50)) continue;
+    if (breaks.has(i + 1) || (!reacquire && lengths[i + 1] < previous - behind)) continue;
     const a = route.path[i], b = route.path[i + 1];
     const dx = (b[0] - a[0]) * scale, dy = b[1] - a[1];
     const t = Math.max(0, Math.min(1, (((position[0] - a[0]) * scale * dx) + (position[1] - a[1]) * dy) / (dx * dx + dy * dy || 1)));
     const point: Point = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
     const distance = meters(point, position), progress = lengths[i] + (lengths[i + 1] - lengths[i]) * t;
-    // Nearby overlapping roads favour the current section instead of jumping ahead.
-    const score = distance + (reacquire ? 0 : Math.max(0, progress - previous - 150) * .03);
-    const bestScore = best.distance + (reacquire ? 0 : Math.max(0, best.progress - previous - 150) * .03);
-    if (score < bestScore) best = { distance, progress, index: i, point };
+    // Loop ramps bring distant/opposing parts of the route close together.
+    // Motion and along-route continuity distinguish them without hiding the
+    // actual perpendicular distance used by the departure detector.
+    const continuity = reacquire ? 0 : motion ? Math.abs(progress - previous) * .12
+      : Math.max(0, progress - previous - 150) * .03;
+    const segmentHeading = headingValid ? Math.atan2(dx, dy) * 180 / Math.PI : 0;
+    const angle = headingValid ? Math.abs((((motionHeading! - segmentHeading + 540) % 360 + 360) % 360) - 180) : 0;
+    const direction = headingValid ? 30 * (angle / 180) ** 2 : 0;
+    const score = distance + continuity + direction;
+    if (score < bestScore) { best = { distance, progress, index: i, point }; bestScore = score; }
   }
   return best;
 }

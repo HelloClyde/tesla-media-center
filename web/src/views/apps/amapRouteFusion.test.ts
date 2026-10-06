@@ -1,9 +1,38 @@
 import { describe, it, expect } from 'vitest';
 import { createRouteFusion } from './amapRouteFusion';
-import { meters, type AppRoute } from './amapNavigation';
+import { cumulative, meters, pointAt, type AppRoute } from './amapNavigation';
+import { bearingBetween } from './amapHeading';
 const route: AppRoute = { id: 1, path: [[120,30],[120.02,30]], breaks: [], steps: [{start:0,end:1,road:'测试路'}], distance: 1900, labels: [] };
 const fix = (x: number, timestamp: number, accuracy = 5, speed = 10) => ({point: [120+x/96300,30] as [number,number], timestamp, accuracy, speed, heading:90});
 describe('route fusion', () => {
+ it('follows a looping exit ramp when GPS heading lags through the turn', () => {
+  const xy = (x: number, y: number): [number,number] => [120+x/96300,30+y/111195];
+  const path = [xy(0,0),xy(100,0)];
+  for(let i=1;i<=32;i++) {
+   const angle=-Math.PI/2+i*Math.PI/32;
+   path.push(xy(100+40*Math.cos(angle),40+40*Math.sin(angle)));
+  }
+  path.push(xy(0,80));
+  const rampLengths=cumulative({...route,path});
+  const ramp: AppRoute={...route,path,distance:rampLengths[rampLengths.length-1]};
+  for(const accuracy of [3,25]) for(const interval of [1,2]) {
+   const engine=createRouteFusion(ramp);
+   for(let i=0;i<=28;i+=interval) {
+    const at=i*10;
+    const result=engine.accept({point:pointAt(ramp,at),accuracy,speed:10,timestamp:i+1,
+     heading:at<100?bearingBetween(pointAt(ramp,at),pointAt(ramp,at+3)):90},i*1000)!;
+    expect(result.state,`ramp progress ${at}`).not.toBe('off-route');
+    expect(result.state,`ramp progress ${at}`).not.toBe('waiting');
+    expect(Math.abs(result.guidanceProgress!-at)).toBeLessThan(15);
+   }
+  }
+ });
+ it('still releases sustained wrong-way travel on a straight road for replanning', () => {
+  const engine=createRouteFusion(route); engine.accept(fix(100,1),0);
+  let result;
+  for(let i=1;i<=7;i++) result=engine.accept({...fix(100-i*10,i+1,3),heading:270},i*1000);
+  expect(result!.state).toBe('off-route');
+ });
  it('accepts moving car fixes with repeated timestamps and guides from confirmed position before the map car catches up', () => {
   const engine=createRouteFusion(route);
   engine.accept(fix(0,1),0);
