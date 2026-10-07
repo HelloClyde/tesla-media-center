@@ -110,7 +110,11 @@ function updateSceneLighting() {
   vehicleLights?.setEnabled(headlights.value);
   vehicleSky.visible = !night;
   vehicleScene.background = new THREE.Color(night ? '#070e20' : '#c6d9e5');
-  vehicleScene.fog = new THREE.Fog(night ? '#070e20' : '#c6d9e5', 65, 220);
+  const [fogStart, fogEnd] = activeWeather.value === 'fog' ? [35, 145]
+    : activeWeather.value === 'snow' ? [65, 235]
+    : activeWeather.value === 'rain' ? [75, 280]
+    : activeWeather.value === 'cloudy' ? [95, 325] : [110, 390];
+  vehicleScene.fog = new THREE.Fog(night ? '#070e20' : '#c6d9e5', fogStart, fogEnd);
   applyStreetLighting(vehicleScene, sunLight, skyLight, night);
   vehicleStreet?.setNight(night);
   vehicleStreet?.setWeather(activeWeather.value, night);
@@ -1386,14 +1390,6 @@ function renderVehicleViewer(refreshShadows = true) {
   if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
     return;
   }
-  const target = vehicleControls?.target ?? DEFAULT_VEHICLE_CAMERA_TARGET;
-  const dx = vehicleCamera.position.x - target.x;
-  const dz = vehicleCamera.position.z - target.z;
-  // In P gear the entire car and street pivot by 90°, so judge the camera
-  // against the street's local forward axis rather than world Z.
-  const streetYaw = vehicleModelPivot?.rotation.y ?? 0;
-  const localForward = Math.sin(streetYaw) * dx + Math.cos(streetYaw) * dz;
-  vehicleStreet?.setViewAlignment(Math.abs(localForward) / (Math.hypot(dx, dz) || 1));
   if (refreshShadows) vehicleRenderer.shadowMap.needsUpdate = true;
   if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
     streetReflectionsDirty=false;

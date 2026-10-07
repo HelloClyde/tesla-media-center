@@ -78,6 +78,18 @@ class DouyinTests(unittest.TestCase):
         page = '<script id="RENDER_DATA">' + quote(json.dumps({'app': {'videoDetail': detail}})) + '</script>'
         self.assertEqual(_source_from_render(page, VID)['urls'], [small])
 
+    def test_selects_lowest_bitrate_when_only_large_renditions_exist(self):
+        import json
+        from urllib.parse import quote
+        smaller = 'https://v96-test.douyinvod.com/low-bitrate.mp4'
+        detail = {'awemeId': VID, 'video': {'duration': 30000, 'bitRateList': [
+            {'height': 1280, 'bitRate': 4000000, 'videoFormat': 'mp4', 'isH265': 0,
+             'playAddr': [{'src': MEDIA}]},
+            {'height': 1920, 'bitRate': 900000, 'videoFormat': 'mp4', 'isH265': 0,
+             'playAddr': [{'src': smaller}]}]}}
+        page = '<script id="RENDER_DATA">' + quote(json.dumps({'app': {'videoDetail': detail}})) + '</script>'
+        self.assertEqual(_source_from_render(page, VID)['urls'], [smaller])
+
     def test_short_link_rejects_external_redirect(self):
         remote = Mock(status_code=302, headers={'Location': 'http://127.0.0.1/private'})
         remote.__enter__ = Mock(return_value=remote); remote.__exit__ = Mock(return_value=False)
@@ -132,6 +144,32 @@ class DouyinTests(unittest.TestCase):
             self.assertEqual(self.client.get('/api/douyin/search', query_string={'q': 'a/b?c'}).status_code, 200)
             self.assertEqual(read.call_args.args[0], 'https://www.douyin.com/search/a%2Fb%3Fc?type=video')
         self.assertEqual(self.client.get('/api/douyin/search?q=').status_code, 400)
+
+    def test_catalog_cursor_is_validated_and_forwarded(self):
+        self.login()
+        with patch('ffvideo.douyin.read_page', return_value={'items': [], 'hasMore': True, 'nextCursor': 3}) as read:
+            response = self.client.get('/api/douyin/home?cursor=2')
+            self.assertEqual(response.json['data']['nextCursor'], 3)
+            self.assertEqual(read.call_args.args[0], 'https://www.douyin.com/jingxuan?cursor=2')
+            self.client.get('/api/douyin/search?q=test&cursor=2')
+            self.assertEqual(read.call_args.args[0], 'https://www.douyin.com/search/test?type=video&cursor=2')
+        self.assertEqual(self.client.get('/api/douyin/home?cursor=999').status_code, 400)
+
+    def test_catalog_uses_later_feed_pages(self):
+        from ffvideo import douyin_browser as browser
+        item = {'aweme_id': VID, 'desc': 'next page', 'video': {'cover': {}}}
+        last_vid = '7674149236469451483'
+        last = {'aweme_id': last_vid, 'desc': 'newer seed', 'video': {'cover': {}}}
+        client = Mock()
+        with patch.object(browser, '_visitor', return_value=client), patch.object(browser, '_api', side_effect=[
+                {'aweme_list': [item, last], 'has_more': 1}, {'aweme_list': []}]) as api:
+            result = browser._read_page('https://www.douyin.com/jingxuan?cursor=2', False, [])
+        self.assertEqual([card['vid'] for card in result['items']], [VID, last_vid])
+        self.assertEqual(result['nextCursor'], 3)
+        self.assertTrue(result['hasMore'])
+        self.assertEqual(api.call_args_list[0].args[2]['max_cursor'], '40')
+        self.assertEqual(api.call_args_list[0].args[2]['refresh_index'], '2')
+        self.assertEqual(api.call_args_list[1].args[2]['aweme_id'], last_vid)
 
     def test_simultaneous_devices_share_one_page_load(self):
         from ffvideo import douyin_browser as browser

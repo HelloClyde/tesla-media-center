@@ -104,12 +104,17 @@ def add_routes(app):
     @login_check
     def douyin_catalog():
         try:
+            cursor = request.args.get('cursor', '0')
+            if not re.fullmatch(r'\d{1,2}', cursor) or int(cursor) > 50:
+                raise ValueError('无效的列表页码')
             if request.path.endswith('/search'):
                 query = request.args.get('q', '').strip()
                 if not query or len(query) > 80: raise ValueError('请输入 1–80 字的搜索词')
                 url = 'https://www.douyin.com/search/' + quote(query, safe='') + '?type=video'
             else:
                 url = 'https://www.douyin.com/jingxuan'
+            if int(cursor):
+                url += ('&' if '?' in url else '?') + 'cursor=' + cursor
             response = json_ok(read_page(url, cookies=accounts.credentials()))
             response.headers['Cache-Control'] = 'private, no-store'
             return response

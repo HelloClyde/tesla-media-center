@@ -13,8 +13,10 @@ const clip = { vid, title: '公开短视频', pageUrl: `https://www.douyin.com/v
 const response = (data: unknown) => ({ ok: true, json: async () => ({ status: 'ok', data }) });
 class FakePlayer {
   destroy = vi.fn(); play = vi.fn(() => ({ e: 0 })); pause = vi.fn(); resume = vi.fn();
-  setLoadingDiv = vi.fn(); setTrack = vi.fn(); setFinishCallback = vi.fn((callback: () => void) => { this.finish = callback; }); setTimeCallback = vi.fn();
+  setLoadingDiv = vi.fn(); setTrack = vi.fn(); setFinishCallback = vi.fn((callback: () => void) => { this.finish = callback; });
+  setTimeCallback = vi.fn((callback: (time: number) => void) => { this.time = callback; });
   finish: (() => void) | undefined;
+  time: ((time: number) => void) | undefined;
   getState = () => 1;
   constructor() { players.push(this); }
 }
@@ -52,6 +54,63 @@ it('destroys the previous player on next video, close and unmount', async () => 
   expect(players[0].destroy).toHaveBeenCalledOnce();
   view!.unmount(); view = undefined;
   expect(players[1].destroy).toHaveBeenCalledOnce();
+});
+it('preloads the next source and reuses its first media chunk when switching', async () => {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  const warmBytes = new ArrayBuffer(1024 * 1024);
+  fetchMock.mockImplementation((url: string, options?: RequestInit) => url.includes('/media/')
+    ? Promise.resolve({ status: 206, headers: new Headers({ 'Content-Range': 'bytes 0-1048575/2097152' }),
+        arrayBuffer: async () => warmBytes }) : normalFetch(url, options));
+  await openFirst();
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes('/source'))).toHaveLength(2);
+  players[0].time?.(2); await flushPromises();
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes('/media/'))).toHaveLength(1);
+  await view!.findAll('button').find(b => b.text() === '下一条')!.trigger('click'); await flushPromises();
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes('/source'))).toHaveLength(2);
+  expect((players[1].play.mock.calls[0] as unknown[])[7]).toEqual({ data: warmBytes, total: 2097152 });
+});
+it('appends the next catalog page without repeating videos', async () => {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  const first = Array.from({ length: 12 }, (_, index) => ({ ...clip, vid: String(BigInt(vid) + BigInt(index)),
+    pageUrl: `https://www.douyin.com/video/${BigInt(vid) + BigInt(index)}` }));
+  fetchMock.mockImplementation((url: string, options?: RequestInit) => {
+    if (url.includes('/home?cursor=1')) return Promise.resolve(response({
+      items: [first[11], { ...clip, vid: String(BigInt(vid) + 12n), pageUrl: `https://www.douyin.com/video/${BigInt(vid) + 12n}` }],
+      hasMore: false, nextCursor: 2,
+    }));
+    if (url.includes('/home')) return Promise.resolve(response({ items: first, hasMore: true, nextCursor: 1 }));
+    return normalFetch(url, options);
+  });
+  await openFirst();
+  await view!.findAll('button').find(button => button.text() === '视频列表')!.trigger('click');
+  expect(view!.findAll('.card')).toHaveLength(12);
+  await view!.findAll('button').find(button => button.text() === '加载更多视频')!.trigger('click'); await flushPromises();
+  expect(view!.findAll('.card')).toHaveLength(13);
+  expect(fetchMock.mock.calls.some(([url]) => url.includes('/home?cursor=1'))).toBe(true);
+  expect(view!.findAll('button').some(button => button.text() === '加载更多视频')).toBe(false);
+});
+it('fetches another page before playback reaches the end of a short queue', async () => {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  const second = { ...clip, vid: String(BigInt(vid) + 1n), pageUrl: `https://www.douyin.com/video/${BigInt(vid) + 1n}` };
+  const third = { ...clip, vid: String(BigInt(vid) + 2n), pageUrl: `https://www.douyin.com/video/${BigInt(vid) + 2n}` };
+  fetchMock.mockImplementation((url: string, options?: RequestInit) => {
+    if (url.includes('/home?cursor=1')) return Promise.resolve(response({ items: [third], hasMore: false, nextCursor: 2 }));
+    if (url.includes('/home')) return Promise.resolve(response({ items: [clip, second], hasMore: true, nextCursor: 1 }));
+    return normalFetch(url, options);
+  });
+  await openFirst(); await flushPromises();
+  expect(view!.find('.details .eyebrow').text()).toBe('1 / 3');
+  expect(fetchMock.mock.calls.filter(([url]) => url.includes('/home?cursor=1'))).toHaveLength(1);
+});
+it('falls back to normal playback if the next media chunk cannot be preloaded', async () => {
+  const normalFetch = fetchMock.getMockImplementation()!;
+  fetchMock.mockImplementation((url: string, options?: RequestInit) => url.includes('/media/')
+    ? Promise.resolve({ status: 403, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(0) })
+    : normalFetch(url, options));
+  await openFirst(); players[0].time?.(2); await flushPromises();
+  await view!.findAll('button').find(b => b.text() === '下一条')!.trigger('click'); await flushPromises();
+  expect(players[1].play.mock.calls[0]).toHaveLength(7);
+  expect(view!.text()).not.toContain('预加载分段无效');
 });
 it('switches videos with vertical swipes on the whole video surface', async () => {
   await openFirst();

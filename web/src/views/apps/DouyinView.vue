@@ -5,9 +5,12 @@ import { useAudioChannel } from '@/functions/useAudioChannel';
 
 interface Clip { vid: string; title: string; pageUrl: string; cover?: string }
 interface Source extends Clip { url: string; urls: string[] }
+interface WarmRange { data: ArrayBuffer; total: number }
+interface PreparedClip { pageUrl: string; controller: AbortController; source: Promise<Source | null>; warm?: WarmRange; warming?: boolean }
 const items = ref<Clip[]>([]), recent = ref<Clip[]>([]), recentQueue = ref<Clip[]>([]);
 const query = ref(''), link = ref(''), mode = ref<'home' | 'search' | 'recent'>('home');
-const catalogBusy = ref(false), catalogError = ref(''), busy = ref(false), error = ref('');
+const catalogBusy = ref(false), moreBusy = ref(false), catalogHasMore = ref(false), catalogCursor = ref(0);
+const catalogError = ref(''), busy = ref(false), error = ref('');
 const current = ref<Source | null>(null), playing = ref(false), audioBlocked = ref(false);
 const panel = ref<'comments' | 'queue'>('comments');
 const comments = ref<{id:string; author:string; text:string; likes:number | null}[]>([]);
@@ -31,22 +34,112 @@ const visible = computed(() => mode.value === 'recent' ? recentQueue.value : ite
 const index = computed(() => visible.value.findIndex(v => v.vid === current.value?.vid));
 let player: any = null, disposed = false, generation = 0, catalogGeneration = 0;
 let sourceController: AbortController | undefined, catalogController: AbortController | undefined;
+let nextPrepared: PreparedClip | undefined;
+let catalogQuery = '', morePromise: Promise<boolean> | undefined, lastAutoMoreCursor = -1;
 let watchdog: ReturnType<typeof setTimeout> | undefined;
 let touchStartPoint: { x: number; y: number } | undefined;
 let resizeObserver: ResizeObserver | undefined;
 
 function stop() {
   ++generation; clearTimeout(watchdog); sourceController?.abort(); sourceController = undefined;
+  nextPrepared?.controller.abort(); nextPrepared = undefined;
   resizeObserver?.disconnect(); resizeObserver = undefined;
   player?.destroy(); player = null; playing.value = false; audioBlocked.value = false; busy.value = false;
   channelAudio.value?.pause();
 }
 function close() { ++commentGeneration; commentsController?.abort(); commentsBusy.value = false; stop(); current.value = null; error.value = ''; }
+async function fetchSource(pageUrl: string, signal: AbortSignal): Promise<Source> {
+  const response = await fetch('/api/douyin/source', { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: pageUrl }), signal });
+  const result = await response.json();
+  if (!response.ok || result.status !== 'ok') throw new Error(result.status === 'need_login'
+    ? '请先登录媒体中心' : result.message || '获取视频失败');
+  return result.data;
+}
+async function fetchWarmRange(url: string, signal: AbortSignal): Promise<WarmRange> {
+  const response = await fetch(url, { headers: { Range: 'bytes=0-1048575' },
+    credentials: 'same-origin', signal });
+  const range = /^bytes 0-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') || '');
+  const total = Number(range?.[2]);
+  if (response.status !== 206 || !range || !Number.isSafeInteger(total) || total <= 0 ||
+    Number(range[1]) !== Math.min(1048575, total - 1)) throw new Error('预加载分段无效');
+  const data = await response.arrayBuffer();
+  if (data.byteLength !== Number(range[1]) + 1) throw new Error('预加载分段不完整');
+  return { data, total };
+}
+function prepareNext() {
+  if (index.value < 0) return;
+  const next = visible.value[index.value + 1];
+  if (mode.value !== 'recent' && catalogHasMore.value && index.value >= visible.value.length - 4 &&
+      lastAutoMoreCursor !== catalogCursor.value) {
+    lastAutoMoreCursor = catalogCursor.value;
+    void loadMore();
+  }
+  if (!player) return;
+  if (!next) { nextPrepared?.controller.abort(); nextPrepared = undefined; return; }
+  if (nextPrepared?.pageUrl === next.pageUrl) return;
+  nextPrepared?.controller.abort();
+  const entry: PreparedClip = { pageUrl: next.pageUrl, controller: new AbortController(), source: Promise.resolve(null) };
+  nextPrepared = entry;
+  entry.source = fetchSource(next.pageUrl, entry.controller.signal).catch(() => null);
+}
+function warmNext() {
+  const entry = nextPrepared;
+  if (!entry || entry.warming) return;
+  entry.warming = true;
+  void entry.source.then(async source => {
+    if (!source || disposed || nextPrepared !== entry) return;
+    const timer = setTimeout(() => entry.controller.abort(), 25000);
+    try {
+      const warm = await fetchWarmRange(source.url, entry.controller.signal);
+      if (nextPrepared === entry) entry.warm = warm;
+    } catch { /* Playback can still fetch the normal source. */ }
+    finally { clearTimeout(timer); }
+  });
+}
+function loadMore(): Promise<boolean> {
+  if (morePromise) return morePromise;
+  if (disposed || mode.value === 'recent' || !catalogHasMore.value || catalogBusy.value) return Promise.resolve(false);
+  const ticket = catalogGeneration, cursor = catalogCursor.value, nextMode = mode.value;
+  const controller = new AbortController(); catalogController = controller;
+  moreBusy.value = true;
+  const task = (async () => {
+    const timer = setTimeout(() => controller.abort(), 60000);
+    try {
+      const params = new URLSearchParams({ cursor: String(cursor) });
+      if (nextMode === 'search') params.set('q', catalogQuery);
+      const response = await fetch(`/api/douyin/${nextMode}?${params}`, { credentials: 'same-origin', signal: controller.signal });
+      const result = await response.json();
+      if (disposed || ticket !== catalogGeneration) return false;
+      if (!response.ok || result.status !== 'ok') throw new Error(result.message || '加载更多视频失败');
+      const seen = new Set(items.value.map(item => item.vid));
+      const additions = (result.data.items as Clip[]).filter(item => !seen.has(item.vid) && seen.add(item.vid));
+      items.value = [...items.value, ...additions];
+      catalogHasMore.value = !!result.data.hasMore;
+      catalogCursor.value = Number(result.data.nextCursor) || cursor + 1;
+      catalogError.value = '';
+      return additions.length > 0;
+    } catch (cause: any) {
+      if (!disposed && ticket === catalogGeneration && cause.name !== 'AbortError')
+        catalogError.value = cause.message || '加载更多视频失败';
+      return false;
+    } finally {
+      clearTimeout(timer);
+      if (ticket === catalogGeneration) moreBusy.value = false;
+    }
+  })();
+  morePromise = task;
+  void task.finally(() => { if (morePromise === task) morePromise = undefined; });
+  return task;
+}
 async function loadCatalog(nextMode: 'home' | 'search' | 'recent' = mode.value) {
   if (nextMode === 'search' && !query.value.trim()) return;
-  catalogController?.abort(); const ticket = ++catalogGeneration;
-  catalogError.value = ''; catalogBusy.value = false;
-  if (nextMode === 'recent') { mode.value = nextMode; recentQueue.value = [...recent.value]; panel.value = 'queue'; return; }
+  catalogController?.abort(); morePromise = undefined; const ticket = ++catalogGeneration;
+  catalogError.value = ''; catalogBusy.value = false; moreBusy.value = false;
+  if (nextMode === 'recent') {
+    catalogHasMore.value = false; catalogCursor.value = 0; lastAutoMoreCursor = -1;
+    mode.value = nextMode; recentQueue.value = [...recent.value]; panel.value = 'queue'; return;
+  }
   if (nextMode === 'search') panel.value = 'queue';
   catalogBusy.value = true; catalogController = new AbortController();
   const controller = catalogController;
@@ -59,6 +152,10 @@ async function loadCatalog(nextMode: 'home' | 'search' | 'recent' = mode.value) 
     if (!response.ok || result.status !== 'ok') throw new Error(result.status === 'need_login'
       ? '请先登录媒体中心' : result.message || '抖音列表加载失败');
     mode.value = nextMode; items.value = result.data.items;
+    catalogQuery = nextMode === 'search' ? query.value.trim() : '';
+    catalogHasMore.value = !!result.data.hasMore;
+    catalogCursor.value = Number(result.data.nextCursor) || 1;
+    lastAutoMoreCursor = -1;
     if (nextMode === 'home' && items.value.length) void open(items.value[0].pageUrl);
     if (nextMode === 'search') panel.value = 'queue';
   } catch (cause: any) {
@@ -68,20 +165,22 @@ async function loadCatalog(nextMode: 'home' | 'search' | 'recent' = mode.value) 
 }
 async function open(value = link.value) {
   if (disposed || !value.trim()) return;
+  const prepared = nextPrepared?.pageUrl === value ? nextPrepared : undefined;
+  if (prepared) nextPrepared = undefined;
   ++commentGeneration; commentsController?.abort(); commentsBusy.value = false;
   stop(); error.value = ''; busy.value = true; comments.value = []; commentsError.value = ''; link.value = value;
   const ticket = generation, active = () => !disposed && ticket === generation;
   sourceController = new AbortController(); const controller = sourceController;
+  controller.signal.addEventListener('abort', () => prepared?.controller.abort(), { once: true });
   const timer = setTimeout(() => controller.abort(), 100000);
   startAudioChannel();
   try {
-    const response = await fetch('/api/douyin/source', { method: 'POST', credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: value }), signal: controller.signal });
-    const result = await response.json();
+    const source = (prepared ? await prepared.source : null) || await fetchSource(value, controller.signal);
     if (!active()) return;
-    if (!response.ok || result.status !== 'ok') throw new Error(result.status === 'need_login'
-      ? '请先登录媒体中心' : result.message || '获取视频失败');
-    current.value = result.data; link.value = current.value!.pageUrl; void loadComments();
+    current.value = source;
+    const warm = prepared?.warm;
+    prepared?.controller.abort();
+    link.value = current.value!.pageUrl; void loadComments();
     await nextTick(); if (!active()) return;
     const resize = () => {
       if (!canvas.value?.parentElement) return;
@@ -103,20 +202,31 @@ async function open(value = link.value) {
       if (!active()) return;
       playing.value = false; clearTimeout(watchdog);
       if (loading.value) loading.value.style.display = 'none';
-      const next = visible.value[index.value + 1];
-      if (autoNext.value && index.value >= 0 && next) {
-        queueMicrotask(() => { if (active() && autoNext.value) void open(next.pageUrl); });
+      if (autoNext.value && index.value >= 0) {
+        queueMicrotask(async () => {
+          if (!active() || !autoNext.value) return;
+          if (!visible.value[index.value + 1]) await loadMore();
+          const next = visible.value[index.value + 1];
+          if (active() && autoNext.value && next) void open(next.pageUrl);
+        });
       }
     });
-    player.setTimeCallback((time: number) => { if (active() && time > 0) clearTimeout(watchdog); });
+    player.setTimeCallback((time: number) => {
+      if (!active() || time <= 0) return;
+      clearTimeout(watchdog);
+      if (time >= 2) warmNext();
+    });
     watchdog = setTimeout(() => { if (active()) { error.value = '视频加载超时，请重试'; stop(); } }, 70000);
-    const state = player.play(current.value!.url, canvas.value, (event: any) => {
+    const playArgs: any[] = [current.value!.url, canvas.value, (event: any) => {
       if (!active() || !event.error || event.error === 1) return;
       error.value = event.message || '视频播放失败，请重试'; stop();
-    }, 512 * 1024, false, undefined, [current.value!.url]);
+    }, 512 * 1024, false, undefined, [current.value!.url]];
+    if (warm) playArgs.push(warm);
+    const state = player.play(...playArgs);
     if (state?.e) throw new Error(state.m || '播放器启动失败');
     if (!active()) return;
     playing.value = true;
+    prepareNext();
     const { vid, title, pageUrl } = current.value!;
     recent.value = [{ vid, title, pageUrl }, ...recent.value.filter(v => v.vid !== vid)].slice(0, 24);
     try { localStorage.setItem(historyKey, JSON.stringify(recent.value)); } catch { /* Best effort. */ }
@@ -157,9 +267,11 @@ function toggle() {
   else if (player.getState() === 2) { startAudioChannel(); player.resume(); playing.value = true; }
   else if (current.value) void open(current.value.pageUrl);
 }
-function move(delta: number) {
+async function move(delta: number) {
   const next = index.value + delta;
-  if (!busy.value && index.value >= 0 && next >= 0 && next < visible.value.length) void open(visible.value[next].pageUrl);
+  if (busy.value || index.value < 0 || next < 0) return;
+  if (delta > 0 && next >= visible.value.length) await loadMore();
+  if (next < visible.value.length) void open(visible.value[next].pageUrl);
 }
 function beginSwipe(event: TouchEvent) {
   if (event.touches.length !== 1) { touchStartPoint = undefined; return; }
@@ -173,6 +285,11 @@ function swipe(event: TouchEvent) {
   }
   touchStartPoint = undefined;
 }
+watch(() => visible.value[index.value + 1]?.pageUrl, () => {
+  if (!player) return;
+  if (index.value < 0) { nextPrepared?.controller.abort(); nextPrepared = undefined; }
+  else prepareNext();
+});
 onMounted(() => { void loadCatalog('home'); });
 onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?.abort(); commentsController?.abort(); ++commentGeneration; stop(); });
 </script>
@@ -197,7 +314,7 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
         <h2>{{ current?.title || '抖音短视频' }}</h2>
         <p class="hint">在左侧上下滑动或滚动，切换视频</p>
         <div v-if="error" class="notice" role="alert">{{ error }}<button @click="open()">重试</button></div>
-        <div class="transport"><button :disabled="busy || index <= 0" @click="move(-1)">上一条</button><button class="primary" :disabled="busy || !current || !!error" @click="toggle">{{ audioBlocked ? '点击播放' : playing ? '暂停' : '播放' }}</button><button :disabled="busy || index < 0 || index >= visible.length - 1" @click="move(1)">下一条</button></div>
+        <div class="transport"><button :disabled="busy || index <= 0" @click="move(-1)">上一条</button><button class="primary" :disabled="busy || !current || !!error" @click="toggle">{{ audioBlocked ? '点击播放' : playing ? '暂停' : '播放' }}</button><button :disabled="busy || index < 0 || index >= visible.length - 1 && !catalogHasMore" @click="move(1)">下一条</button></div>
         <div class="timeline"><input ref="track" type="range" min="0" max="100" value="0" aria-label="播放进度"/><span ref="label">00:00:00/00:00:00</span></div>
         <label class="auto-next"><input v-model="autoNext" type="checkbox"/><span class="auto-next-track" aria-hidden="true"></span><span>播完自动播放下一条</span></label>
         <div class="actions"><button @click="restoreAudioChannel">开启 / 恢复声音</button><a v-if="current" :href="current.pageUrl" target="_blank" rel="noopener noreferrer">在抖音打开</a></div>
@@ -214,6 +331,7 @@ onBeforeUnmount(() => { disposed = true; ++catalogGeneration; catalogController?
         <div class="actions"><button @click="loadCatalog('home')">换一批</button><button @click="loadCatalog('recent')">最近观看</button></div>
         <p v-if="catalogBusy" role="status">正在加载视频…</p>
         <button v-for="clip in visible" :key="clip.vid" class="card" :class="{selected:clip.vid===current?.vid}" @click="open(clip.pageUrl)"><img v-if="clip.cover" :src="clip.cover" alt="" loading="lazy" referrerpolicy="no-referrer"/><span>{{ clip.title }}</span></button>
+        <button v-if="catalogHasMore && mode !== 'recent'" :disabled="moreBusy" @click="loadMore">{{ moreBusy ? '正在加载…' : '加载更多视频' }}</button>
       </section>
       <details class="share"><summary>打开分享链接</summary><form @submit.prevent="open()"><input v-model="link" aria-label="抖音分享链接" placeholder="粘贴分享链接" maxlength="4096"/><button :disabled="!link.trim() || busy">播放</button></form></details>
     </aside>

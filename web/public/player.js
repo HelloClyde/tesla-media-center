@@ -186,7 +186,7 @@ Player.prototype.initDecodeWorker = function () {
     }
 };
 
-Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource, httpSources) {
+Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream, browserSource, httpSources, prefetchedRange) {
     if (this.destroyed) return { e: -1, m: "Player destroyed" };
     this.logger.logInfo("Play " + url + ".");
     console.log('waitHeaderLength', waitHeaderLength);
@@ -289,10 +289,11 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStr
             var req = {
                 t: kGetFileInfoReq,
                 sources: httpSources,
+                prefetchedRange: prefetchedRange,
                 u: url,
                 p: this.downloadProto
             };
-            this.downloadWorker.postMessage(req);
+            this.downloadWorker.postMessage(req, prefetchedRange ? [prefetchedRange.data] : []);
         } else {
             this.onGetFileInfo({
                 sz: -1,

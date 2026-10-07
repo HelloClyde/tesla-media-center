@@ -153,16 +153,24 @@ def _source_from_render(page, vid):
     variants = [item for item in video.get('bitRateList', []) if isinstance(item, dict)
                 and item.get('videoFormat') == 'mp4' and not item.get('isH265')
                 and isinstance(item.get('playAddr'), list)]
-    preferred = [item for item in variants if 480 <= int(item.get('height') or 0) <= 1024]
-    if preferred:
-        chosen = min(preferred, key=lambda item: int(item.get('bitRate') or 10**10))
-    elif variants:
-        chosen = min(variants, key=lambda item: (abs(int(item.get('height') or 0) - 960), int(item.get('bitRate') or 10**10)))
-    else:
-        chosen = None
+    def number(value, default):
+        try:
+            parsed = int(value)
+            return parsed if parsed > 0 else default
+        except (TypeError, ValueError):
+            return default
+
+    # A known low-bitrate rendition is preferable to a larger file at the
+    # nominal target resolution. Ignore variants without a usable CDN URL.
+    variants = [item for item in variants if any(allowed_media(addr.get('src'))
+                for addr in item['playAddr'] if isinstance(addr, dict))]
+    preferred = [item for item in variants if 480 <= number(item.get('height'), 0) <= 1024]
+    candidates = preferred or variants
+    chosen = min(candidates, key=lambda item: (number(item.get('bitRate'), 10**10),
+                 number(item.get('height'), 10**10))) if candidates else None
     addresses = chosen['playAddr'] if chosen else video.get('playAddr', [])
-    urls = [entry.get('src') for entry in addresses if isinstance(entry, dict)]
-    urls = list(dict.fromkeys(u for u in urls if allowed_media(u)))
+    urls = list(dict.fromkeys(entry.get('src') for entry in addresses
+               if isinstance(entry, dict) and allowed_media(entry.get('src'))))
     if not urls:
         raise DouyinUnavailable('此视频未提供可播放的视频地址')
     return {'title': str(detail.get('desc') or detail.get('itemTitle') or '抖音视频')[:300],
@@ -194,26 +202,30 @@ def _read_page(url, source, cookies):
                 return {'items': [{'id': str(c.get('cid')), 'author': str((c.get('user') or {}).get('nickname') or '抖音用户')[:100],
                                    'text': str(c.get('text') or '')[:4000], 'likes': c.get('digg_count', 0)}
                                   for c in data.get('comments', [])[:50] if isinstance(c, dict) and c.get('cid')]}
+            cursor = int(parse_qs(parsed.query).get('cursor', ['0'])[0])
             if parsed.path.startswith('/search/'):
                 keyword = unquote(parsed.path[len('/search/'):])
                 data = _api(client, '/aweme/v1/web/search/item/',
-                            {'keyword': keyword, 'offset': '0', 'count': '20', 'search_source': 'normal_search'})
+                            {'keyword': keyword, 'offset': str(cursor * 20), 'count': '20',
+                             'search_source': 'normal_search'})
             elif parsed.path == '/jingxuan':
                 data = _api(client, '/aweme/v1/web/tab/feed/',
-                            {'count': '20', 'publish_video_strategy_type': '2'})
+                            {'count': '20', 'publish_video_strategy_type': '2',
+                             'max_cursor': str(cursor * 20), 'refresh_index': str(cursor)})
             else:
                 raise DouyinUnavailable('无效的抖音列表地址')
             cards = {item['vid']: item for item in catalog_items(data)}
             if parsed.path == '/jingxuan' and cards:
                 try:
                     related = _api(client, '/aweme/v1/web/aweme/related/',
-                                   {'aweme_id': next(iter(cards)), 'count': '20'})
+                                   {'aweme_id': next(reversed(cards)), 'count': '20'})
                     cards.update({item['vid']: item for item in catalog_items(related)})
                 except DouyinUnavailable:
                     pass
             if not cards:
                 raise DouyinUnavailable('抖音暂未返回公开视频列表，请稍后重试')
-            return {'items': list(cards.values())[:24]}
+            return {'items': list(cards.values())[:24], 'hasMore': bool(data.get('has_more')) and cursor < 50,
+                    'nextCursor': cursor + 1}
         finally:
             client.close()
     except curl_requests.RequestsError:

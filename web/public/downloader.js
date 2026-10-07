@@ -42,6 +42,12 @@ Downloader.prototype.reportData = function (start, end, seq, data, size=-1) {
 // Opt-in range transport: try CDN URLs first, then the authenticated byte relay.
 // Keep the selected source across reads (including seeks) without restarting decoding.
 Downloader.prototype.readRange = async function (start, end) {
+    var warm = this.prefetchedRange;
+    if (warm && start >= 0 && end >= start && end < warm.data.byteLength) {
+        return { data: warm.data.slice(start, end + 1), end: end, total: warm.total };
+    }
+    // The first chunk has been consumed; release the extra copy before fetching ahead.
+    if (warm && start >= warm.data.byteLength) this.prefetchedRange = null;
     var lastError;
     for (var index = this.sourceIndex; index < this.sources.length; index++) {
         var controller = new AbortController();
@@ -322,6 +328,11 @@ self.onmessage = function (evt) {
             self.downloader.sources = Array.isArray(objData.sources) && objData.sources.length ? objData.sources : null;
             self.downloader.sourceIndex = 0;
             self.downloader.sourceSize = 0;
+            var warm = objData.prefetchedRange;
+            self.downloader.prefetchedRange = warm && warm.data instanceof ArrayBuffer &&
+                Number.isSafeInteger(warm.total) && warm.total > 0 &&
+                warm.data.byteLength > 0 && warm.data.byteLength <= warm.total ? warm : null;
+            if (self.downloader.prefetchedRange) self.downloader.sourceSize = warm.total;
             self.downloader.getFileInfo(objData.p, objData.u);
             break;
         case kDownloadFileReq:
