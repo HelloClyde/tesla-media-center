@@ -50,7 +50,7 @@ async function fullPlayer() { open.value = false; await router.push('/apps/qqmus
             <article v-for="app in entries" :key="app.id" class="task-card" :aria-label="app.name + '后台卡片'">
               <div class="task-heading"><img :src="app.icon" alt=""/><div><strong>{{ app.name }}</strong><small>{{ app.running ? '正在后台运行' : '已暂停' }}</small></div></div>
               <template v-if="app.id === 'amap' && nav.active">
-                <div class="nav-guidance"><NavigationTurnIcon :arrow="nav.arrow"/><div><strong>{{ nav.instruction }}</strong><span>{{ nav.road }}</span><small>剩余 {{ nav.remaining }}{{ nav.simulated ? ' · 模拟导航' : '' }}</small></div></div>
+                <div class="nav-guidance"><NavigationTurnIcon :arrow="nav.arrow"/><div><strong>{{ nav.instruction }}</strong><span>{{ nav.road }}</span><small>剩余 {{ nav.remaining }} · {{ nav.remainingDuration }}{{ nav.simulated ? ' · 模拟导航' : '' }}</small></div></div>
                 <div class="task-actions"><button @click="navigationCommands.toggleVoice?.()">{{ nav.muted ? '开启语音' : '静音' }}</button><button @click="navigationCommands.stop?.()">结束导航</button><button @click="openApp(app)">打开导航</button></div>
               </template>
               <template v-else><p>{{ app.detail || (app.running ? '正在后台运行' : '已暂停') }}</p><button @click="openApp(app)">打开应用</button></template>

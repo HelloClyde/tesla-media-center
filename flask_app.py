@@ -9,7 +9,7 @@ from ffvideo import utils as futils
 from ffvideo.utils import login_check
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
-from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, tencent_video
+from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, amap_recent_places, tencent_video
 import time
 from cryptography import fernet
 import mimetypes
@@ -123,6 +123,7 @@ if __name__ == '__main__':
     qqmusic.add_qqmusic_route(app)
     amap_app.add_amap_app_route(app)
     amap_favorites.add_routes(app)
+    amap_recent_places.add_routes(app)
     from ffvideo.amap_map import add_amap_map_route
     add_amap_map_route(app)
     tesla.add_tesla_route(app)

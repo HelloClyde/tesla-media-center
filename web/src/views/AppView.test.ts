@@ -43,7 +43,7 @@ it('retains active navigation, exposes floating controls and removes it on logou
   const created = vi.fn(), stopped = vi.fn();
   const Navigation = defineComponent({ name: 'AmapAppView', setup() {
     created();
-    publishBackgroundNavigation({ simulated: false, muted: false, arrow: '↰', instruction: '200 米后左转', road: '测试路', remaining: '2 公里', status: '实时导航中' }, { toggleVoice: () => { backgroundNavigation.muted = !backgroundNavigation.muted; }, stop: clearBackgroundNavigation });
+    publishBackgroundNavigation({ simulated: false, muted: false, arrow: '↰', instruction: '200 米后左转', road: '测试路', remaining: '2 公里', remainingDuration: '约 5 分钟', status: '实时导航中' }, { toggleVoice: () => { backgroundNavigation.muted = !backgroundNavigation.muted; }, stop: clearBackgroundNavigation });
     onBeforeUnmount(() => { stopped(); clearBackgroundNavigation(); });
     return () => h('div', 'Navigation');
   } });
@@ -57,6 +57,7 @@ it('retains active navigation, exposes floating controls and removes it on logou
   await router.push('/apps/home'); await flushPromises();
   expect(stopped).not.toHaveBeenCalled(); expect(backgroundApps.amap.running).toBe(true);
   expect(wrapper.find('[aria-label="后台导航"]').text()).toContain('200 米后左转');
+  expect(wrapper.find('[aria-label="后台导航"]').text()).toContain('剩余 2 公里 · 约 5 分钟');
   await wrapper.findAll('button').find(button => button.text() === '静音')!.trigger('click');
   expect(backgroundNavigation.muted).toBe(true);
   await wrapper.find('[aria-label="返回高德导航"]').trigger('click'); await flushPromises();

@@ -62,6 +62,7 @@ let appMap: ReturnType<typeof attachAppMap> | undefined;
 function resumeAfterTmcLogin() {
   tmcLoginVisible.value = false;
   void refreshFavoritePlaces();
+  void refreshRecentPlaces();
   appMap?.retry();
   map3D.value?.retry();
   if (resumePlanAfterTmcLogin) {
@@ -77,7 +78,7 @@ function retryActiveMap() {
 }
 import 'leaflet/dist/leaflet.css';
 import { browserNavigationPoint } from '@/functions/navigationCoordinates';
-import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
+import { formatRemainingDuration, formatRouteDuration, formatRouteTolls, remainingRouteDuration } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
@@ -274,6 +275,58 @@ function stopSignals() {
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
 const favoritePlaces = ref<Place[]>([]);
+const recentPlaces = ref<Place[]>([]), recentLoading = ref(false), recentSaving = ref(false), recentMessage = ref('');
+let recentRevision = 0, recentWrites: Promise<void> = Promise.resolve();
+let recentRetry: () => void = () => { void refreshRecentPlaces(); };
+function retryRecentPlaces() { recentRetry(); }
+function recentResponsePlaces(body: { status?: string; data?: { places?: Place[] }; message?: string }): Place[] {
+  if (body?.status === 'need_login') {
+    tmcLoginVisible.value = true;
+    throw new Error('请先登录 TMC，才能使用最近搜索');
+  }
+  if (body?.status !== 'ok' || !Array.isArray(body.data?.places))
+    throw new Error(body?.message || '读取最近搜索失败');
+  return body.data.places.slice(0, 10);
+}
+async function refreshRecentPlaces() {
+  if (recentLoading.value || recentSaving.value) return;
+  recentLoading.value = true;
+  const revision = recentRevision;
+  try {
+    const response = await axios.get('/api/amap-app/recent-places', { timeout: 10000 });
+    if (disposed || revision !== recentRevision) return;
+    recentPlaces.value = recentResponsePlaces(response.data); recentMessage.value = '';
+  } catch (exception) {
+    if (!disposed && revision === recentRevision) {
+      recentRetry = () => { void refreshRecentPlaces(); };
+      recentMessage.value = exception instanceof Error ? exception.message : '最近搜索加载失败，请重试';
+    }
+  } finally { recentLoading.value = false; }
+}
+function saveRecentPlace(place?: Place) {
+  const revision = ++recentRevision;
+  recentSaving.value = true;
+  // Serialize rapid selections so the server records the same newest-first
+  // order as the clicks. A late GET must not overwrite a newer selection.
+  recentWrites = recentWrites.then(async () => {
+    try {
+      const response = await axios.post('/api/amap-app/recent-places', place
+        ? { action: 'add', place } : { action: 'clear' }, { timeout: 10000 });
+      if (disposed || revision !== recentRevision) return;
+      recentPlaces.value = recentResponsePlaces(response.data); recentMessage.value = '';
+    } catch (exception) {
+      if (!disposed && revision === recentRevision) {
+        recentRetry = () => saveRecentPlace(place);
+        recentMessage.value = exception instanceof Error ? exception.message : '最近搜索未保存，请重试';
+      }
+    } finally { if (revision === recentRevision) recentSaving.value = false; }
+  });
+}
+const visibleRecentPlaces = computed(() => {
+  const keyword = query.value.trim().toLocaleLowerCase();
+  return keyword ? recentPlaces.value.filter(place =>
+    `${place.name} ${place.address}`.toLocaleLowerCase().includes(keyword)) : recentPlaces.value;
+});
 const favoriteLoading = ref(false), favoriteSaving = ref(false), favoriteReady = ref(false), favoriteMessage = ref('');
 function favoriteResponsePlaces(body: { status?: string; data?: { places?: Place[] }; message?: string }): Place[] {
   if (body?.status === 'need_login') {
@@ -319,6 +372,11 @@ const visibleFavoritePlaces = computed(() => {
   return keyword ? favoritePlaces.value.filter(place =>
     `${place.name} ${place.address}`.toLocaleLowerCase().includes(keyword)) : favoritePlaces.value;
 });
+const quickPlaceChoice = ref<'recent' | 'favorite'>(), quickPlacesExpanded = ref(false);
+const quickPlaceTab = computed(() => quickPlaceChoice.value ?? (recentPlaces.value.length ? 'recent' : 'favorite'));
+const quickPlaces = computed(() => quickPlaceTab.value === 'recent' ? visibleRecentPlaces.value : visibleFavoritePlaces.value);
+const displayedQuickPlaces = computed(() => quickPlacesExpanded.value ? quickPlaces.value : quickPlaces.value.slice(0, 3));
+watch([quickPlaceTab, query, picking], () => { quickPlacesExpanded.value = false; });
 const favoriteIds = computed(() => new Set(favoritePlaces.value.map(place => place.id)));
 async function togglePlaceFavorite(place: Place) {
   if (!favoriteReady.value || favoriteLoading.value || favoriteSaving.value) return;
@@ -526,6 +584,8 @@ function serviceAreaDistance(area: UpcomingServiceArea) {
   return progress.value >= area.from ? '当前路段' : `约 ${formatDistance(area.distance)}后`;
 }
 const remaining = computed(() => current.value ? Math.max(0, cumulative(current.value)[current.value.path.length - 1] - progress.value) : 0);
+const remainingDurationLabel = computed(() => formatRemainingDuration(current.value
+  ? remainingRouteDuration(current.value, progress.value) : null));
 let map: L.Map, marker: L.Marker | undefined, startMarker: L.Marker | undefined, endMarker: L.Marker | undefined, lines: L.Polyline[] = [];
 let lightMarkers: { point: Point; marker: L.Marker; color?: TrafficLightColor; seconds?: number }[] = [], cameraMarkers: L.Marker[] = [];
 let liveLightMarker: L.Marker | undefined;
@@ -570,9 +630,22 @@ watch([current, () => next.value?.key, mode, muted], () => {
 
 function finishNavigationFollow(message: string) {
   const wasLive = mode.value === 'live';
+  const vehiclePoint = lastGpsPoint.value ?? (wasLive ? location.value : undefined);
   stop(wasLive);
   controller?.abort(); generation++; busy.value = false;
+  routes.value = []; routeToken.value = ''; selected.value = 0;
+  progress.value = 0; arrived.value = false; error.value = '';
+  hasDestination.value = false; destination.value = [0, 0]; destinationName.value = '请选择目的地';
+  cancelSearch(); query.value = ''; picking.value = 'destination'; pointMenuOpen.value = false;
+  cancelPositionAnimation();
+  location.value = vehiclePoint; displayedPosition.value = vehiclePoint;
+  hasOrigin.value = !!vehiclePoint; origin.value = vehiclePoint ?? [0, 0];
+  originName.value = vehiclePoint ? '当前位置' : '等待车辆定位';
+  headingAnchor = undefined;
+  if (!wasLive) { heading.value = undefined; displayedHeading.value = 0; }
+  if (!vehiclePoint) { marker?.remove(); marker = undefined; }
   overviewActive.value = false; overviewGeneration++; following.value = true;
+  orientation.value = 'north';
   // Live navigation keeps its existing GPS watch; simulation returns to real GPS.
   if (!wasLive && viewActive.value) locate(false, true);
   status.value = message;
@@ -620,7 +693,7 @@ watchEffect(() => {
   if (mode.value === 'idle' || !current.value) { clearBackgroundNavigation(); return; }
   publishBackgroundNavigation({ simulated: mode.value === 'demo', muted: muted.value,
     arrow: next.value?.arrow || '↑', instruction: next.value ? `${formatDistance(next.value.distance)}后${next.value.text}` : '继续前行',
-    road: next.value?.road || '', remaining: formatDistance(remaining.value), status: status.value,
+    road: next.value?.road || '', remaining: formatDistance(remaining.value), remainingDuration: remainingDurationLabel.value, status: status.value,
   }, { stop: endNavigation, toggleVoice });
 });
 onDeactivated(() => {
@@ -637,6 +710,7 @@ watch(show3D, enabled => {
 onActivated(async () => {
   viewActive.value = true;
   if (favoriteReady.value) void refreshFavoritePlaces();
+  void refreshRecentPlaces();
   await nextTick();
   if (disposed || !map || !viewActive.value) return;
   map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); endpoints(); draw(false);
@@ -653,7 +727,7 @@ function endpoints() {
   }
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
-  if (hasOrigin.value) startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
+  if (hasOrigin.value && hasDestination.value) startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
   if (hasDestination.value) endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
 }
 function mapSignIcon(sign: MapSign) {
@@ -763,6 +837,8 @@ function cancelSearch() {
 }
 watch([query, picking], cancelSearch, { flush: 'sync' });
 function selectPlace(place: Place) {
+  quickPlaceChoice.value = 'recent'; quickPlacesExpanded.value = false;
+  saveRecentPlace(place);
   setPoint(placeNavigationPoint(place), place.name);
   following.value = false;
   map?.setView(latLng(place.location), 16);
@@ -1101,6 +1177,7 @@ function beginMapTouch(event: TouchEvent) {
 onMounted(() => {
   document.addEventListener('pointerdown', closePointMenuOnOutsideClick);
   void refreshFavoritePlaces();
+  void refreshRecentPlaces();
   if (!mapElement.value) return;
   mapElement.value.addEventListener('touchstart', beginMapTouch, { passive: true, capture: true });
   map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: true, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
@@ -1150,12 +1227,21 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
       <p v-if="searchMessage" class="search-message" role="status">{{ searchMessage }}</p>
       <p v-if="favoriteLoading && !favoriteReady" class="favorite-status" role="status">正在加载收藏地点…</p>
       <div v-if="favoriteMessage" class="favorite-status" role="status"><span>{{ favoriteMessage }}</span><button type="button" :disabled="favoriteLoading || favoriteSaving" @click="refreshFavoritePlaces">重试</button></div>
-      <section v-if="visibleFavoritePlaces.length" class="place-section" aria-label="收藏地点">
-        <h3>收藏地点</h3>
-        <div class="place-list favorite-list"><div v-for="place in visibleFavoritePlaces" :key="place.id" class="place-row">
-          <button type="button" class="place-select" @click="selectPlace(place)"><strong>{{ place.name }}</strong><small>{{ place.address || '已收藏地点' }}</small></button>
-          <button type="button" class="favorite-toggle saved" :disabled="favoriteLoading || favoriteSaving || !favoriteReady" :aria-label="`取消收藏 ${place.name}`" :title="`取消收藏 ${place.name}`" aria-pressed="true" @click="togglePlaceFavorite(place)">★</button>
+      <div v-if="recentMessage" class="favorite-status" role="status"><span>{{ recentMessage }}</span><button type="button" :disabled="recentLoading || recentSaving" @click="retryRecentPlaces">重试</button></div>
+      <section v-if="!tips.length && !searching && (recentPlaces.length || favoritePlaces.length)" class="place-section" aria-label="快捷地点">
+        <div class="quick-place-heading">
+          <div class="quick-place-tabs" role="group" aria-label="快捷地点类型">
+            <button type="button" :class="{ selected: quickPlaceTab === 'recent' }" :aria-pressed="quickPlaceTab === 'recent'" @click="quickPlaceChoice = 'recent'">最近</button>
+            <button type="button" :class="{ selected: quickPlaceTab === 'favorite' }" :aria-pressed="quickPlaceTab === 'favorite'" @click="quickPlaceChoice = 'favorite'">收藏</button>
+          </div>
+          <button v-if="quickPlaceTab === 'recent' && recentPlaces.length" type="button" class="quick-place-clear" :disabled="recentSaving" @click="saveRecentPlace()">清空</button>
+        </div>
+        <div class="place-list"><div v-for="place in displayedQuickPlaces" :key="place.id" class="place-row">
+          <button type="button" class="place-select" @click="selectPlace(place)"><strong>{{ place.name }}</strong><small>{{ place.address || (place.id.startsWith('coordinate:') ? place.location.join(', ') : '最近选择的地点') }}</small></button>
+          <button type="button" class="favorite-toggle" :class="{ saved: favoriteIds.has(place.id) }" :disabled="favoriteLoading || favoriteSaving || !favoriteReady" :aria-label="`${favoriteIds.has(place.id) ? '取消收藏' : '收藏'} ${place.name}`" :aria-pressed="favoriteIds.has(place.id)" @click="togglePlaceFavorite(place)">{{ favoriteIds.has(place.id) ? '★' : '☆' }}</button>
         </div></div>
+        <p v-if="!quickPlaces.length" class="quick-place-empty">{{ query.trim() ? '没有匹配的地点' : quickPlaceTab === 'recent' ? '暂无最近搜索' : '暂无收藏地点' }}</p>
+        <button v-if="quickPlaces.length > 3" type="button" class="quick-place-more" :aria-expanded="quickPlacesExpanded" @click="quickPlacesExpanded = !quickPlacesExpanded">{{ quickPlacesExpanded ? '收起' : `展开全部 ${quickPlaces.length} 条` }}</button>
       </section>
       <section v-if="tips.length" class="place-section" aria-label="地点搜索结果">
         <h3>搜索结果</h3>
@@ -1219,12 +1305,12 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
-        <div class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
+        <div v-if="hasDestination" class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
         <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><small v-if="route.trafficLightCount !== undefined" class="route-lights">红绿灯 {{ route.trafficLightCount }} 处</small><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small class="route-label">{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button v-if="mode === 'live'" :disabled="busy || !lastGpsPoint" :aria-expanded="roadSwitchOpen" @click="roadSwitchOpen = !roadSwitchOpen">切换道路</button><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
+      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }} · {{ remainingDurationLabel }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button v-if="mode === 'live'" :disabled="busy || !lastGpsPoint" :aria-expanded="roadSwitchOpen" @click="roadSwitchOpen = !roadSwitchOpen">切换道路</button><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
       <div v-if="mode === 'live' && roadSwitchOpen" class="road-switch" role="group" aria-label="道路切换">
         <span>当前位置纠偏</span>
         <button :disabled="busy" @click="switchParallelRoad('main')">主路</button><button :disabled="busy" @click="switchParallelRoad('side')">辅路</button>
@@ -1235,6 +1321,8 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 </template>
 
 <style scoped>
+.route-search{max-height:calc(100% - 120px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain}
+.quick-place-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}.quick-place-tabs{display:flex;gap:4px;padding:3px;border-radius:10px;background:#edf4f1}.navigation-app .quick-place-tabs button{min-height:28px;padding:3px 14px;border:0;border-radius:8px;background:transparent;color:#6b8277;font-size:12px}.navigation-app .quick-place-tabs .selected{background:white;color:#078362;box-shadow:0 1px 4px #193a3214;font-weight:600}.navigation-app .quick-place-clear,.navigation-app .quick-place-more{min-height:30px;padding:3px 8px;border:0;background:transparent;color:#73877f;font-size:12px}.navigation-app .quick-place-more{width:100%;margin-top:3px;color:#087e61}.quick-place-empty{margin:8px;color:#7d9088;font-size:12px}
 .road-switch{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.road-switch span{font-size:12px;color:#5c746c;margin-right:4px}.navigation-app .road-switch button{min-width:64px;min-height:42px;background:#e4f8ef;border-color:#b6e7d6;color:#087b5d;font-weight:600}
 .navigation-guidance{position:absolute;z-index:501;top:14px;left:16px;width:calc(100% - 90px);display:flex;align-items:flex-start;gap:8px}
 @media(max-width:700px){.navigation-guidance{top:10px;left:10px;width:calc(100% - 76px)}}

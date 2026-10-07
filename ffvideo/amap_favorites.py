@@ -48,14 +48,17 @@ def clean_place(value):
 
 
 def read_favorites():
-    target = favorites_path()
+    return read_places(favorites_path(), MAX_FAVORITES)
+
+
+def read_places(target, maximum):
     if not target.exists():
         return []
     if target.stat().st_size > MAX_FILE_BYTES:
         raise ValueError('收藏文件大小异常')
     stored = json.loads(target.read_text(encoding='utf-8'))
     if (not isinstance(stored, dict) or not isinstance(stored.get('places'), list)
-            or len(stored['places']) > MAX_FAVORITES):
+            or len(stored['places']) > maximum):
         raise ValueError('收藏文件格式异常')
     places = [clean_place(place) for place in stored['places']]
     if len({place['id'] for place in places}) != len(places):
@@ -64,7 +67,10 @@ def read_favorites():
 
 
 def write_favorites(places):
-    target = favorites_path()
+    write_places(favorites_path(), places)
+
+
+def write_places(target, places):
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:

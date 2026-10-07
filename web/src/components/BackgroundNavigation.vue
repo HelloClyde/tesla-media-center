@@ -92,7 +92,7 @@ onBeforeUnmount(() => { finish(); observer?.disconnect(); });
     </button>
     <button class="guidance" aria-label="返回高德导航" title="点击返回导航，长按移动卡片" @click="router.push('/apps/amap')">
       <NavigationTurnIcon :arrow="nav.arrow" />
-      <span><small v-if="!collapsed">{{ nav.simulated ? '模拟导航' : '正在导航' }} · 剩余 {{ nav.remaining }}</small><strong>{{ nav.instruction }}</strong><span v-if="!collapsed">{{ nav.road }}</span></span>
+      <span><small v-if="!collapsed">{{ nav.simulated ? '模拟导航' : '正在导航' }} · 剩余 {{ nav.remaining }} · {{ nav.remainingDuration }}</small><strong>{{ nav.instruction }}</strong><span v-if="!collapsed">{{ nav.road }}</span></span>
     </button>
     <template v-if="!collapsed">
       <p v-if="nav.status">{{ nav.status }}</p>

@@ -9,7 +9,7 @@ afterEach(() => { clearBackgroundMusic(); clearBackgroundNavigation(); });
 it('uses one entry and shows music and navigation together with independent controls', async () => {
   const next = vi.fn(), stop = vi.fn(); musicCommands.next = next;
   Object.assign(music, { song: { title: '测试歌曲', singer: '歌手', cover: '' }, playing: true, nextDisabled: false });
-  publishBackgroundNavigation({ simulated: false, muted: false, arrow: '↑', instruction: '200 米后左转', road: '测试路', remaining: '2 公里', status: '' }, { stop });
+  publishBackgroundNavigation({ simulated: false, muted: false, arrow: '↑', instruction: '200 米后左转', road: '测试路', remaining: '2 公里', remainingDuration: '约 5 分钟', status: '' }, { stop });
   const router = createRouter({ history: createMemoryHistory(), routes: ['/apps/home', '/apps/amap', '/apps/qqmusic'].map(path => ({ path, component: { template: '<div />' } })) });
   await router.push('/apps/home'); await router.isReady();
   const view = mount(BackgroundAppDock, { global: { plugins: [router], stubs: { teleport: true } } });
@@ -20,6 +20,7 @@ it('uses one entry and shows music and navigation together with independent cont
     expect(view.findAll('.task-card')).toHaveLength(2);
     await view.get('[aria-label="下一首"]').trigger('click'); expect(next).toHaveBeenCalledOnce(); expect(stop).not.toHaveBeenCalled();
     expect(view.get('[aria-label="后台应用面板"]').text()).toContain('200 米后左转');
+    expect(view.get('[aria-label="后台应用面板"]').text()).toContain('剩余 2 公里 · 约 5 分钟');
     await view.findAll('button').find(button => button.text() === '打开播放器')!.trigger('click'); await flushPromises();
     expect(router.currentRoute.value.path).toBe('/apps/qqmusic'); expect(view.find('.dock-panel').exists()).toBe(false);
     clearBackgroundMusic(); await flushPromises(); expect(view.findAll('.background-slot')).toHaveLength(1);
