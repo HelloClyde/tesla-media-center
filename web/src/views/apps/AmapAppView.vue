@@ -80,7 +80,7 @@ import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRouteDuration, formatRouteTolls } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
-import { greenWaveSpeedWindow, mergeTrafficSignalLights, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 import { cameraAssetReady, cameraSign, mapSignUrl, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
 const mapElement = ref<HTMLElement>();
@@ -183,7 +183,9 @@ const signalLastTrustedSpeed = ref<number | null>(null);
 let signalTimer: ReturnType<typeof setInterval> | undefined;
 let signalBusy = false, signalLastRequest = 0, signalGeneration = 0;
 let signalAbort: AbortController | undefined;
-const nearGreenSpoken = new Map<string, number>();
+const signalReminder = createTrafficSignalReminder();
+let signalVoiceAttempt: object | undefined;
+let navigationVoiceRequests = 0;
 function setSignalFixTrust(trusted: boolean, discard = false) {
   if (trusted) {
     signalFixTrusted.value = true;
@@ -218,15 +220,22 @@ const signalAwaitingUpdate = computed(() => !!upcomingSignal.value
 const greenWave = computed(() => signalAwaitingUpdate.value ? null
   : greenWaveSpeedWindow(upcomingSignal.value, signalClock.value, liveSpeed.value));
 function announceNearGreen() {
-  if (muted.value || localSpeechState.speaking
-      || (next.value?.distance ?? Infinity) <= turnVoiceDistances(liveSpeed.value).ahead) return;
-  const cue = nearGreenReminder(upcomingSignal.value, signalClock.value);
-  if (!cue) return;
-  const key = cue.point.map(value => value.toFixed(6)).join(',');
-  if (signalClock.value - (nearGreenSpoken.get(key) || 0) < 90_000) return;
-  nearGreenSpoken.set(key, signalClock.value);
-  // An expired countdown must never be played from the synthesis queue.
-  void speakLocal(cue.text, 3000).catch(() => {});
+  const cue = signalReminder.update(upcomingSignal.value, signalClock.value);
+  if (!cue || muted.value || signalVoiceAttempt || navigationVoiceRequests || localSpeechState.speaking) return;
+  const attempt = {}, generation = signalGeneration;
+  signalVoiceAttempt = attempt;
+  // Give active turn speech priority, but do not suppress every signal at a
+  // junction. Check the phase again after synthesis and only consume playback.
+  void speakLocal(cue.text, Math.max(0, cue.expiresAt - Date.now()), () => {
+    if (muted.value || mode.value === 'idle' || generation !== signalGeneration || navigationVoiceRequests) return false;
+    signalClock.value = Date.now();
+    const active = signalReminder.update(upcomingSignal.value, signalClock.value);
+    return active?.key === cue.key && active.cycle === cue.cycle && active.text === cue.text;
+  }).then(started => {
+    if (started && generation === signalGeneration) signalReminder.markSpoken(cue);
+  }).catch(() => {}).finally(() => {
+    if (signalVoiceAttempt === attempt) signalVoiceAttempt = undefined;
+  });
 }
 async function refreshSignals() {
   const now = Date.now();
@@ -260,7 +269,7 @@ function stopSignals() {
   signalGeneration++; clearInterval(signalTimer); signalTimer = undefined;
   liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
   signalAbort?.abort(); signalAbort = undefined;
-  nearGreenSpoken.clear();
+  signalReminder.clear(); signalVoiceAttempt = undefined;
 }
 const searching = ref(false), searchMessage = ref('');
 const query = ref(''), tips = ref<Place[]>([]), picking = ref<'origin' | 'destination'>('destination');
@@ -543,7 +552,9 @@ const announcedServiceAreas = new Set<string>();
 const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string, maxDelayMs = 15000, isRelevant?: () => boolean): Promise<boolean> {
   if (muted.value) return Promise.resolve(false);
-  return speakLocal(text, maxDelayMs, isRelevant).catch(() => false);
+  navigationVoiceRequests++;
+  return speakLocal(text, maxDelayMs, isRelevant).catch(() => false)
+    .finally(() => { navigationVoiceRequests--; });
 }
 function prepareVoice() { if (!muted.value) void prepareLocalSpeech().catch(e => { localSpeechState.error=String(e); }); }
 
@@ -553,7 +564,7 @@ watch([current, () => next.value?.key, mode, muted], () => {
   const turn = next.value;
   void preloadLocalSpeech([
     ...(turn ? [navigationVoicePhrase(turn, false), navigationVoicePhrase(turn, true)] : []),
-    '已到达目的地附近', '红灯即将变绿',
+    '已到达目的地附近', '红灯即将变绿', '绿灯亮了',
   ]).catch(() => { /* Playback reports engine errors; navigation remains usable. */ });
 });
 

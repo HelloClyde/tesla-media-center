@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { greenWaveSpeedWindow, mergeTrafficSignalLights, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
+import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, nearGreenReminder, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import type { AppRoute } from './amapNavigation';
 
 const route: AppRoute = {
@@ -94,11 +94,88 @@ describe('near-green voice cue', () => {
 
   it('announces the APK red-three-seconds cue only with a following green phase', () => {
     expect(nearGreenReminder(signal(), now)).toMatchObject({ text: '红灯即将变绿', phaseEnd: now / 1000 + 3 });
-    expect(nearGreenReminder({ ...signal()!, observedAt: now - 21_000 }, now)).toBeNull();
+    expect(nearGreenReminder({ ...signal()!, observedAt: now - 21_000 }, now)).not.toBeNull();
+    expect(nearGreenReminder({ ...signal()!, observedAt: now - 91_000 }, now)).toBeNull();
     expect(nearGreenReminder({ ...signal()!, seconds: 4 }, now)).toBeNull();
     expect(nearGreenReminder({ ...signal()!, distance: 201 }, now)).toBeNull();
     expect(nearGreenReminder({ ...signal()!, phases: phases.slice(0, 1) }, now)).toBeNull();
     expect(nearGreenReminder({ ...signal()!, phases: [phases[0], { ...phases[1], start: phases[1].start + 2 }] }, now)).toBeNull();
+  });
+
+  const at = (time: number, plan = phases, observedAt = now) => upcomingTrafficSignal(route, 50,
+    [{ point: [120, 30.001], phases: plan }], observedAt, time);
+
+  it('announces a long red countdown even if its still-valid plan has not refreshed', () => {
+    const reminder = createTrafficSignalReminder();
+    const plan: LiveTrafficLight['phases'] = [
+      { start: now / 1000 - 20, end: now / 1000 + 76, color: 'red' },
+      { start: now / 1000 + 76, end: now / 1000 + 106, color: 'green' },
+    ];
+    expect(reminder.update(at(now + 40_000, plan), now + 40_000)).toBeNull();
+    expect(reminder.update(at(now + 73_000, plan), now + 73_000)?.text).toBe('红灯即将变绿');
+  });
+
+  it('retries interrupted synthesis and consumes a cue only after playback starts', () => {
+    const reminder = createTrafficSignalReminder();
+    const first = reminder.update(at(now), now)!;
+    expect(reminder.update(at(now + 1_000), now + 1_000)).toEqual(first);
+    reminder.markSpoken(first);
+    expect(reminder.update(at(now + 2_000), now + 2_000)).toBeNull();
+    expect(reminder.update(at(now + 3_000), now + 3_000)).toBeNull();
+  });
+
+  it('catches a red-to-green transition when turn speech occupies the pre-green window', () => {
+    const reminder = createTrafficSignalReminder();
+    reminder.update(at(now), now); // Observed while another instruction is speaking.
+    const green = reminder.update(at(now + 3_500), now + 3_500)!;
+    expect(green).toMatchObject({ text: '绿灯亮了', expiresAt: now + 6_000 });
+    reminder.markSpoken(green);
+    expect(reminder.update(at(now + 4_000), now + 4_000)).toBeNull();
+  });
+
+  it('uses the actual green refresh when the red-only frame had no forecast', () => {
+    const reminder = createTrafficSignalReminder();
+    expect(reminder.update(at(now, phases.slice(0, 1)), now)).toBeNull();
+    expect(reminder.update(at(now + 3_000, phases.slice(1), now + 3_000), now + 3_000)?.text).toBe('绿灯亮了');
+  });
+
+  it('accepts an observed early green even if the previous red-end forecast was corrected', () => {
+    const reminder = createTrafficSignalReminder();
+    const redOnly = [{ ...phases[0], end: now / 1000 + 10 }];
+    reminder.update(at(now, redOnly), now);
+    expect(reminder.update(at(now + 3_000, phases.slice(1), now + 3_000), now + 3_000)?.text).toBe('绿灯亮了');
+  });
+
+  it('does not announce a first-seen green, a yellow, a distant light or a late transition', () => {
+    const reminder = createTrafficSignalReminder();
+    expect(reminder.update(at(now + 3_000), now + 3_000)).toBeNull();
+    reminder.update(at(now), now);
+    expect(reminder.update({ ...at(now + 3_000)!, color: 'yellow' }, now + 3_000)).toBeNull();
+    expect(reminder.update({ ...at(now + 3_000)!, distance: 201 }, now + 3_000)).toBeNull();
+    expect(reminder.update(at(now + 6_000), now + 6_000)).toBeNull();
+    reminder.clear();
+    expect(reminder.update(at(now + 3_000), now + 3_000)).toBeNull();
+  });
+
+  it('allows the next red cycle under 90 seconds but ignores a delayed result from the old cycle', () => {
+    const reminder = createTrafficSignalReminder();
+    const first = reminder.update(at(now), now)!;
+    reminder.markSpoken(first);
+    const nextPlan: LiveTrafficLight['phases'] = [
+      { start: now / 1000 + 33, end: now / 1000 + 60, color: 'red' },
+      { start: now / 1000 + 60, end: now / 1000 + 90, color: 'green' },
+    ];
+    const second = reminder.update(at(now + 57_000, nextPlan, now + 57_000), now + 57_000)!;
+    reminder.markSpoken(first);
+    expect(second.cycle).not.toBe(first.cycle);
+    expect(reminder.update(at(now + 58_000, nextPlan, now + 57_000), now + 58_000)).toEqual(second);
+  });
+
+  it('does not repeat a played cue when a refresh slightly corrects the phase end', () => {
+    const reminder = createTrafficSignalReminder();
+    reminder.markSpoken(reminder.update(at(now), now)!);
+    const corrected = phases.map(phase => ({ ...phase, start: phase.start + .5, end: phase.end + .5 }));
+    expect(reminder.update(at(now + 1_000, corrected, now + 1_000), now + 1_000)).toBeNull();
   });
 });
 

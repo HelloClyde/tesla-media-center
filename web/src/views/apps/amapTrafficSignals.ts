@@ -21,13 +21,60 @@ export interface UpcomingTrafficSignal {
 export function nearGreenReminder(signal: UpcomingTrafficSignal | null, nowMs: number) {
   if (!signal || signal.color !== 'red' || signal.distance > 200
       || signal.seconds < 1 || signal.seconds > 3
-      || nowMs - signal.observedAt > 20_000 || signal.observedAt - nowMs > 1_000) return null;
+      || nowMs - signal.observedAt > 90_000 || signal.observedAt - nowMs > 1_000) return null;
   const now = nowMs / 1000;
   const red = signal.phases.find(phase => phase.color === 'red' && phase.start <= now && now < phase.end);
   const green = signal.phases.find(phase => phase.color === 'green' && red
     && phase.start >= red.end && phase.start - red.end <= 1 && phase.end > phase.start);
   if (!red || !green || red.end - now > 3 || red.end <= now) return null;
   return { point: signal.point, phaseEnd: red.end, text: '红灯即将变绿' };
+}
+
+export interface TrafficSignalVoiceCue {
+  key: string;
+  cycle: number;
+  text: string;
+  expiresAt: number;
+}
+
+/** Remember a red cycle, not a 90-second cooldown. Failed/cancelled synthesis
+ * can retry, and a missed pre-green cue can become a just-turned-green cue. */
+export function createTrafficSignalReminder() {
+  const cycles = new Map<string, { id: number; end: number; lastRedAt: number; spoken: boolean }>();
+  let sequence = 0;
+  function update(signal: UpcomingTrafficSignal | null, nowMs: number): TrafficSignalVoiceCue | null {
+    for (const [key, cycle] of cycles) if (nowMs - cycle.lastRedAt > 90_000) cycles.delete(key);
+    if (!signal || nowMs - signal.observedAt > 90_000 || signal.observedAt - nowMs > 1_000) return null;
+    const key = signal.point.map(value => value.toFixed(6)).join(',');
+    const now = nowMs / 1000;
+    let cycle = cycles.get(key);
+    if (signal.color === 'red') {
+      const red = signal.phases.find(phase => phase.color === 'red' && phase.start <= now && now < phase.end);
+      if (!red) return null;
+      if (!cycle || red.start >= cycle.end) {
+        cycle = { id: ++sequence, end: red.end, lastRedAt: nowMs, spoken: false };
+        cycles.set(key, cycle);
+      }
+      cycle.end = red.end; cycle.lastRedAt = nowMs;
+      const cue = nearGreenReminder(signal, nowMs);
+      return cue && !cycle.spoken ? { key, cycle: cycle.id, text: cue.text, expiresAt: cue.phaseEnd * 1000 } : null;
+    }
+    if (signal.color !== 'green' || signal.distance > 200 || !cycle || cycle.spoken) return null;
+    const green = signal.phases.find(phase => phase.color === 'green' && phase.start <= now && now < phase.end);
+    // Require a red actually observed immediately before this green. Never
+    // announce a green on first arrival or replay a stale transition later.
+    if (!green || nowMs - cycle.lastRedAt > 5_000 || green.start * 1000 < cycle.lastRedAt - 1_000
+        || nowMs >= green.start * 1000 + 3_000) return null;
+    return { key, cycle: cycle.id, text: '绿灯亮了', expiresAt: green.start * 1000 + 3_000 };
+  }
+  return {
+    update,
+    markSpoken(cue: TrafficSignalVoiceCue) {
+      const cycle = cycles.get(cue.key);
+      if (cycle?.id === cue.cycle) cycle.spoken = true;
+    },
+    clear() { cycles.clear(); },
+  };
 }
 
 /** Route link flags identify signalized crossings even when no live phase is available. */
