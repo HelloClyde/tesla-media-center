@@ -3,6 +3,7 @@ import { onActivated, onDeactivated, onMounted, onBeforeUnmount, ref, watch } fr
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
+import { loadVehicleModel, prepareOfficialVehicle } from './teslaOfficialModel';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createTeslaMapGround } from './teslaMapGround';
 import { createAmapLandmarks, disposeGltfScenes } from './amapLandmarks';
@@ -36,8 +37,9 @@ let vehicleModel: THREE.Group | undefined, vehicleRequested = false, destroyed =
 function loadVehicle() {
   if (vehicleRequested) return;
   vehicleRequested = true;
-  new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load('/models/2022_tesla_model_y.glb', ({scene: model}) => {
+  loadVehicleModel(new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)).then(({scene: model}) => {
     if (destroyed) { disposeGltfScenes([model]); return; }
+    const official = prepareOfficialVehicle(model);
     const bounds = new THREE.Box3().setFromObject(model);
     const size = bounds.getSize(new THREE.Vector3());
     const center = bounds.getCenter(new THREE.Vector3());
@@ -45,10 +47,10 @@ function loadVehicle() {
       disposeGltfScenes([model]); return;
     }
     const scale = 4.8 / Math.max(size.x,size.y,size.z);
-    // This GLB faces +Z; the map's north-facing vehicle points toward -Z.
+    // The Tesla export faces -Z already; the bundled fallback faces +Z.
     model.scale.setScalar(scale);
     model.position.set(-center.x*scale, -bounds.min.y*scale, -center.z*scale);
-    model.rotation.y = Math.PI;
+    model.rotation.y = official ? 0 : Math.PI;
     model.traverse(child => {
       if (!(child as THREE.Mesh).isMesh) return;
       (child as THREE.Mesh).castShadow = false;
@@ -57,7 +59,7 @@ function loadVehicle() {
       child.renderOrder = 15;
     });
     vehicle.add(model); vehicleModel = model; arrow.visible = false;
-  }, undefined, () => { vehicleRequested = false; });
+  }).catch(() => { vehicleRequested = false; });
 }
 let observer: ResizeObserver | undefined, frame = 0;
 let routeAnchor: MapPoint | undefined, renderedRoute: AppRoute | undefined, renderedNavigating = false;

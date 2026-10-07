@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { addRoadSnow } from './teslaRoadSnow';
 
 export const ROAD_TEXTURE_LENGTH = 96;
-const ROAD_WIDTH = 16, ROAD_LENGTH = 384;
+const ROAD_WIDTH = 16, ROAD_LENGTH = 640;
 
 function surface(park: boolean) {
   const canvas = document.createElement('canvas');
@@ -116,8 +116,27 @@ export function createVehicleRoadMesh(manager?: THREE.LoadingManager) {
   };
   road.receiveShadow = true;
   road.rotation.x = -Math.PI/2; road.position.set(0,-.82,.45);
+  // The directional shadow map covers sunlight, but the sky also needs to be
+  // occluded by the chassis. Keep this soft contact shade fixed beneath the
+  // vehicle while the road texture scrolls, especially on reflective wet roads.
+  const shadeCanvas = document.createElement('canvas');
+  shadeCanvas.width = shadeCanvas.height = 256;
+  const shadeContext = shadeCanvas.getContext('2d')!;
+  const shade = shadeContext.createRadialGradient(128,128,12,128,128,126);
+  shade.addColorStop(0,'rgba(6,12,18,.64)');
+  shade.addColorStop(.48,'rgba(6,12,18,.6)');
+  shade.addColorStop(.76,'rgba(6,12,18,.27)');
+  shade.addColorStop(1,'rgba(6,12,18,0)');
+  shadeContext.fillStyle=shade;shadeContext.fillRect(0,0,256,256);
+  const shadeTexture = new THREE.CanvasTexture(shadeCanvas);
+  const contactShadow = new THREE.Mesh(new THREE.PlaneGeometry(2.6,4.5),
+    new THREE.MeshBasicMaterial({ map:shadeTexture,transparent:true,depthWrite:false,opacity:.82,toneMapped:false }));
+  contactShadow.name='Vehicle_contact_shadow';
+  contactShadow.position.set(0,.45,.008);
+  contactShadow.renderOrder=1;
+  road.add(contactShadow);
   road.userData.updateTravel = (distance: number) => { normal.offset.y = roughness.offset.y = distance / 4; };
-  road.userData.disposeDetails = () => { disposed = true; normal.dispose(); roughness.dispose(); };
+  road.userData.disposeDetails = () => { disposed = true; normal.dispose(); roughness.dispose(); shadeTexture.dispose(); };
   road.userData.textureLength = ROAD_TEXTURE_LENGTH;
   road.userData.driveTexture = driveTexture; road.userData.parkTexture = parkTexture;
   return road;

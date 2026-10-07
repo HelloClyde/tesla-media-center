@@ -21,6 +21,7 @@ export function applyStreetLighting(scene: THREE.Scene, sun: THREE.DirectionalLi
   sun.castShadow = true;
   sun.color.set(night ? '#a3baff' : '#fff0db');
   sun.intensity = night ? .16 : 2.8;
+  sun.shadow.intensity = night ? .08 : 1;
   fill.color.set('#c6ddf4');
   fill.groundColor.set('#534a40');
   fill.intensity = night ? .12 : .24;

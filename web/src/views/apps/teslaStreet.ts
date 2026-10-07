@@ -169,6 +169,10 @@ export function createVehicleStreet(manager?: T.LoadingManager) {
     bulb.emissiveIntensity=night ? 5 : 0;
     lampHalos.forEach(halo=>halo.visible=night);
     lamps.forEach(light=>light.intensity=night ? 70 : 0);
+  }, setWeather(mode: 'clear' | 'cloudy' | 'rain' | 'fog' | 'snow', night: boolean) {
+    skyline.setWeather(mode, night);
+  }, setViewAlignment(alignment: number) {
+    skyline.setViewAlignment(alignment);
   }, dispose() {
     treeAssets.dispose();
     city.dispose();

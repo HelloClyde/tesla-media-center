@@ -82,8 +82,20 @@ export function createVehicleWeather() {
 export function applyWeatherLighting(scene:T.Scene,sun:T.DirectionalLight,sky:T.Object3D,road:T.Mesh,mode:SceneWeather,night:boolean){
   const wet=mode==='rain',snow=mode==='snow',fog=mode==='fog',overcast=mode!=='clear';
   sky.visible=!night&&!overcast;
-  const horizon=scene.getObjectByName('Distant_city_horizon');if(horizon)horizon.visible=mode==='clear'||mode==='cloudy';
-  if(overcast){const color=night?'#0b1420':fog?'#b8c1c7':'#9daab5';scene.background=new T.Color(color);scene.fog=new T.Fog(color,fog?8:25,fog?85: snow?130:180);sun.intensity*=.35;}
+  const horizon=scene.getObjectByName('Distant_city_horizon');if(horizon)horizon.visible=!fog;
+  if(overcast){
+    const color=night?'#0b1420':fog?'#b8c1c7':'#9daab5';
+    scene.background=new T.Color(color);
+    scene.fog=new T.Fog(color,fog?8:25,fog?85: wet?280: snow?220:240);
+    // An overcast sky is a broad light source, not a low-angle sun. Keep the
+    // shadow map allocated, but fade its contribution instead of casting a
+    // sharp, contradictory sunny-day shadow across the wet road.
+    const diffuse=mode==='cloudy'? .45 : wet? .18 : snow? .25 : .08;
+    sun.intensity*=diffuse;
+    sun.shadow.intensity=night? .04 : mode==='cloudy'? .38 : wet? .1 : snow? .18 : .06;
+    const fill=scene.children.find(child=>child instanceof T.HemisphereLight) as T.HemisphereLight|undefined;
+    if(fill&&!night)fill.intensity=mode==='cloudy'? .38 : wet? .65 : snow? .72 : .78;
+  }
   const material=road.material as T.MeshStandardMaterial;
   road.userData.setSnow?.(snow);
   material.roughness=wet?.24:.94;

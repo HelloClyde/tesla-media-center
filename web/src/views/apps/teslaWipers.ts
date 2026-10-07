@@ -1,7 +1,42 @@
 import * as T from 'three';
+import { isOfficialVehicle } from './teslaOfficialModel';
+
+function createOfficialVehicleWipers(model: T.Object3D) {
+  const bounds = model.userData.windshieldBounds as T.Box3 | undefined;
+  const halfWidth = Math.min(.62, (bounds?.max.x ?? .68) - .08);
+  const y = (bounds?.min.y ?? 1.1) + .025;
+  const z = (bounds?.min.z ?? -1.18) + .035;
+  const bladeMaterial = new T.MeshStandardMaterial({ color: '#101316', roughness: .9, metalness: .1 });
+  const pivots = [-1, 1].map((side, index) => {
+    const pivot = new T.Group(); pivot.name = `Wiper_pivot_${index}`;
+    pivot.position.set(side * halfWidth, y, z);
+    const length = halfWidth * .93;
+    const blade = new T.Mesh(new T.CylinderGeometry(.008, .008, length, 6), bladeMaterial);
+    blade.rotation.z = Math.PI / 2;
+    blade.position.x = -side * length / 2;
+    blade.name = `Wiper_blade_${index}`;
+    pivot.add(blade); model.add(pivot);
+    return pivot;
+  });
+  const axis = new T.Vector3(0, .9, -.44).normalize();
+  let phase = 0;
+  return {
+    update(dt: number, raining: boolean) {
+      const wasMoving = phase > 0;
+      if (raining || wasMoving) {
+        phase += Math.max(0, dt) / 1.15;
+        if (phase >= 1) phase = raining ? phase % 1 : 0;
+      }
+      const sweep = (1 - Math.cos(phase * Math.PI * 2)) / 2;
+      pivots.forEach((pivot, i) => pivot.quaternion.setFromAxisAngle(axis, (i === 0 ? -1 : 1) * sweep * 1.18));
+      return raining || wasMoving;
+    },
+  };
+}
 
 /** Extract the two connected wiper assemblies once; animate only their pivots. */
 export function createVehicleWipers(model: T.Object3D) {
+  if (isOfficialVehicle(model)) return createOfficialVehicleWipers(model);
   model.updateMatrixWorld(true);
   const inverse = model.matrixWorld.clone().invert();
   const sources: T.Mesh[] = [];

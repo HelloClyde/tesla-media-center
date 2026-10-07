@@ -93,21 +93,58 @@ export function createVehicleSkyline() {
     const height = 25 + random() * 60;
     pose.position.set(Math.cos(angle) * 280, height / 2 - 15, Math.sin(angle) * 280);
     pose.rotation.y = -angle;
-    pose.scale.set(12 + random() * 12, height, 24 + random() * 10);
+    // Leave a corridor for the road in both travel directions.
+    const onRoadAxis = Math.abs(Math.cos(angle) * 280) < 85;
+    if (onRoadAxis) pose.scale.setScalar(0);
+    else pose.scale.set(12 + random() * 12, height, 24 + random() * 10);
     pose.updateMatrix(); horizon.setMatrixAt(i, pose.matrix);
   }
   horizon.computeBoundingSphere();
-  group.add(towers, spires, horizon);
+  // Mid-distance frontage bridges the gap between the moving near blocks and
+  // the skyline. It reuses the window texture, so rain still reveals a street
+  // with buildings rather than a blank wall of fog.
+  const farMaterial = material.clone();
+  farMaterial.transparent = true;
+  farMaterial.depthWrite = false;
+  const farBlocks = new T.InstancedMesh(geometry, farMaterial, 64);
+  farBlocks.name = 'Distant_street_frontage';
+  farBlocks.castShadow = farBlocks.receiveShadow = false;
+  let farIndex = 0;
+  pose.rotation.set(0, 0, 0);
+  for (const direction of [-1, 1]) for (const side of [-1, 1]) for (let i = 0; i < 8; i++) {
+    const height = 11 + random() * 19;
+    const z = direction * (94 + i * 19 + random() * 6);
+    pose.position.set(side * (17 + random() * 3), height / 2, z);
+    pose.scale.set(12 + random() * 3, height, 14 + random() * 6);
+    pose.updateMatrix(); farBlocks.setMatrixAt(farIndex, pose.matrix);
+    farBlocks.setColorAt(farIndex, new T.Color(['#abb9c2', '#b6bdbe', '#a3b2bd'][farIndex % 3]));
+    farIndex++;
+  }
+  farBlocks.computeBoundingSphere();
+  group.add(towers, spires, horizon, farBlocks);
   return { group, advance(distance: number) {
     if (!Number.isFinite(distance) || !distance) return;
     offset = (offset + distance) % 720; update();
   }, setNight(night: boolean) {
     material.emissiveIntensity = night ? 1.4 : 0;
+    farMaterial.emissiveIntensity = night ? 1.4 : 0;
     hazeColor.value.set(night ? '#070e20' : '#c6d9e5'); hazeAmount.value = night ? .55 : .48;
     horizonMaterial.color.set(night ? '#152334' : '#8da5b7');
     horizonMaterial.emissiveIntensity = night ? .28 : 0;
+  }, setWeather(mode: 'clear' | 'cloudy' | 'rain' | 'fog' | 'snow', night: boolean) {
+    hazeColor.value.set(night ? '#070e20' : mode === 'fog' ? '#b8c1c7' : mode === 'clear' ? '#c6d9e5' : '#9daab5');
+    hazeAmount.value = night ? .55 : mode === 'rain' ? .26 : mode === 'snow' ? .38 : .48;
+    horizonMaterial.color.set(night ? '#152334' : mode === 'rain' ? '#687b87' : '#8da5b7');
+  }, setViewAlignment(alignment: number) {
+    // The distant street extension is useful down the road, but side-on its
+    // facades can show through the gap beneath the car. Fade only that layer.
+    // Keep it out of oblique views too: its ground-floor window atlas can be
+    // seen through the real clearance beneath the car at three-quarter angles.
+    const t = T.MathUtils.clamp((alignment - .78) / .17, 0, 1);
+    farMaterial.opacity = t * t * (3 - 2 * t);
+    farBlocks.visible = farMaterial.opacity > .01;
   }, dispose() {
-    horizon.dispose(); horizonMaterial.dispose(); towers.dispose(); spires.dispose(); geometry.dispose(); spireGeometry.dispose();
-    material.dispose(); roofMaterial.dispose(); map.dispose(); emissiveMap.dispose(); group.removeFromParent();
+    horizon.dispose(); horizonMaterial.dispose(); towers.dispose(); spires.dispose(); farBlocks.dispose(); geometry.dispose(); spireGeometry.dispose();
+    material.dispose(); farMaterial.dispose(); roofMaterial.dispose(); map.dispose(); emissiveMap.dispose(); group.removeFromParent();
   }};
 }

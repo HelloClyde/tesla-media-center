@@ -7,6 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { configureStreetSun, applyStreetLighting, VEHICLE_SUN_DIRECTION } from './teslaSceneLighting';
 import { captureStreetReflections } from './teslaReflections';
 import { createVehicleWipers } from './teslaWipers';
+import { createOfficialDoorController, isOfficialVehicle, loadVehicleModel, prepareOfficialVehicle } from './teslaOfficialModel';
 import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
 import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
 import TeslaWeatherIcon from './TeslaWeatherIcon.vue';
@@ -112,6 +113,7 @@ function updateSceneLighting() {
   vehicleScene.fog = new THREE.Fog(night ? '#070e20' : '#c6d9e5', 65, 220);
   applyStreetLighting(vehicleScene, sunLight, skyLight, night);
   vehicleStreet?.setNight(night);
+  vehicleStreet?.setWeather(activeWeather.value, night);
   vehicleWeather?.set(activeWeather.value,night);
   if(vehicleRoadMesh)applyWeatherLighting(vehicleScene,sunLight,vehicleSky,vehicleRoadMesh,activeWeather.value,night);
   // Reuse the captured streetscape; a six-face recapture stalls the UI on each toggle.
@@ -153,6 +155,7 @@ let vehicleMotionState = {
 let vehicleWheelMeshes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; direction: 1 | -1 }> = [];
 let vehicleSplitWheelGroups: THREE.Group[] = [];
 let vehicleDoorNodes: THREE.Object3D[] = [];
+let officialDoorController: ReturnType<typeof createOfficialDoorController> | undefined;
 const modelDoorsOpen = ref(false);
 const DEFAULT_VEHICLE_CAMERA_POSITION = new THREE.Vector3(0, 3.4, 8.2);
 const DEFAULT_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.35, 0);
@@ -578,15 +581,16 @@ function splitMeshIntoConnectedParts(sourceMesh: THREE.Mesh) {
 }
 
 function detectVehicleWheelMeshes(model: THREE.Object3D, modelBounds: THREE.Box3) {
+  const official = isOfficialVehicle(model);
   const namedWheelNodes: Array<{ mesh: THREE.Object3D; axis: 'x' | 'y' | 'z'; direction: 1 | -1 }> = [];
   model.traverse((child: THREE.Object3D) => {
-    if (!/^Wheel_/i.test(child.name || '')) {
+    if (!(official ? /^Wheel_(?:LF|RF|LR|RR)$/i : /^Wheel_(?:FL|FR|RL|RR)$/i).test(child.name || '')) {
       return;
     }
     namedWheelNodes.push({
       mesh: child,
-      axis: 'x',
-      direction: child.userData.spinDirection === 1 ? 1 : child.userData.spinDirection === -1 ? -1 : child.position.x >= 0 ? -1 : 1,
+      axis: official ? 'z' : 'x',
+      direction: child.userData.spinDirection === 1 ? 1 : child.userData.spinDirection === -1 ? -1 : official ? (/_(?:LF|LR)$/i.test(child.name) ? 1 : -1) : (child.position.x >= 0 ? -1 : 1),
     });
   });
 
@@ -1247,6 +1251,8 @@ function initVehicleViewer() {
   vehicleScene.add(vehicleModelPivot);
 
   const activeRenderer = vehicleRenderer;
+  let resolveModelReady: (ready: boolean) => void = () => {};
+  const modelReady = new Promise<boolean>(resolve => { resolveModelReady = resolve; });
   manager.onError = () => {
     resourceFailed = true;
     if (vehicleRenderer !== activeRenderer) return;
@@ -1264,9 +1270,9 @@ function initVehicleViewer() {
   updateSceneLighting();
 
   manager.onLoad = async () => {
-    await loadedStreet.ready;
+    const [carLoaded] = await Promise.all([modelReady, loadedStreet.ready]);
     if (vehicleRenderer !== activeRenderer) return;
-    if (resourceFailed || !vehicleModelRoot) {
+    if (resourceFailed || !carLoaded || !vehicleModelRoot) {
       state.visualError = '场景资源加载失败，请刷新重试';
       state.visualLoading = false;
       return;
@@ -1300,10 +1306,12 @@ function initVehicleViewer() {
   const loader = new GLTFLoader(manager);
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
-  loader.load('/models/2022_tesla_model_y.glb?v=surface-2-wipers-2', (gltf: { scene: THREE.Group }) => {
+  loadVehicleModel(loader).then((gltf) => {
     if (vehicleRenderer !== activeRenderer) return;
     const model = gltf.scene;
-    repairVehicleInterior(model);
+    const official = prepareOfficialVehicle(model);
+    if (official) model.rotation.y = Math.PI; // Tesla's export faces -Z; this viewer expects +Z.
+    else repairVehicleInterior(model);
     vehicleWipers = createVehicleWipers(model);
     const box = new THREE.Box3().setFromObject(model);
     const size = box.getSize(new THREE.Vector3());
@@ -1331,7 +1339,8 @@ function initVehicleViewer() {
     vehicleAppearance = createVehicleAppearance(model);
     vehicleAppearance.update(appearance);
     vehicleDoorNodes = [];
-    model.traverse(child => {
+    officialDoorController = official ? createOfficialDoorController(model, gltf.animations) : undefined;
+    if (!official) model.traverse(child => {
       if (child.userData.partType === 'door' && /^Door_(FL|FR|RL|RR)$/.test(child.name)) vehicleDoorNodes.push(child);
     });
     vehicleModelBasePositionY = model.position.y;
@@ -1341,11 +1350,13 @@ function initVehicleViewer() {
     updateVehicleVisualState(true);
     vehicleWeather?.setImpactSurface(model);
     resizeVehicleViewer();
-  }, undefined, (error: unknown) => {
+    resolveModelReady(true);
+  }).catch((error: unknown) => {
     if (vehicleRenderer !== activeRenderer) return;
     console.error(error);
     state.visualError = '车辆模型加载失败';
     state.visualLoading = false;
+    resolveModelReady(false);
   });
 
   resizeHandler = () => {
@@ -1375,6 +1386,14 @@ function renderVehicleViewer(refreshShadows = true) {
   if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
     return;
   }
+  const target = vehicleControls?.target ?? DEFAULT_VEHICLE_CAMERA_TARGET;
+  const dx = vehicleCamera.position.x - target.x;
+  const dz = vehicleCamera.position.z - target.z;
+  // In P gear the entire car and street pivot by 90°, so judge the camera
+  // against the street's local forward axis rather than world Z.
+  const streetYaw = vehicleModelPivot?.rotation.y ?? 0;
+  const localForward = Math.sin(streetYaw) * dx + Math.cos(streetYaw) * dz;
+  vehicleStreet?.setViewAlignment(Math.abs(localForward) / (Math.hypot(dx, dz) || 1));
   if (refreshShadows) vehicleRenderer.shadowMap.needsUpdate = true;
   if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
     streetReflectionsDirty=false;
@@ -1398,6 +1417,7 @@ function updateVehicleMotion(now: number) {
     const angle = modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0;
     door.rotation.y = THREE.MathUtils.damp(door.rotation.y, angle, 9, deltaSec);
   }
+  officialDoorController?.update(deltaSec, modelDoorsOpen.value);
 
   if (!profile.active) {
     vehicleMotionState.roadOffset = 0;
@@ -1466,7 +1486,7 @@ function startVehicleRenderLoop() {
     const cameraUpdated = vehicleControls?.update();
     const cameraChanged = cameraUpdated || vehicleCameraDirty;
     vehicleCameraDirty = false;
-    const doorsMoving = vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
+    const doorsMoving = officialDoorController?.moving(modelDoorsOpen.value) || vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
     const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween;
     const weatherMoving = activeWeather.value === 'rain' || activeWeather.value === 'snow' || wipersMoving;
     if (!moving && !weatherMoving && !cameraChanged && !vehicleViewTween && !streetReflectionsDirty) return;
@@ -1678,6 +1698,7 @@ function disposeVehicleViewer() {
   vehicleRoadMesh = null;
   vehicleWheelMeshes = [];
   vehicleDoorNodes = [];
+  officialDoorController = undefined;
   modelDoorsOpen.value = false;
   vehicleModelBasePositionY = 0;
   vehicleMotionState = {

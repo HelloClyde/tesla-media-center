@@ -1,7 +1,57 @@
 import * as T from 'three';
+import { isOfficialVehicle } from './teslaOfficialModel';
+
+function createOfficialVehicleLights(model: T.Object3D) {
+  const group = new T.Group(); group.name = 'Vehicle_display_lights'; model.add(group);
+  const lamps: { material: T.MeshStandardMaterial; strength: number }[] = [];
+  model.traverse(object => {
+    if (!(object as T.Mesh).isMesh) return;
+    const mesh = object as T.Mesh;
+    const front = /^(?:Headlights|DRL|Fog_Lights_Front)(?:_GLOBAL)?$/.test(mesh.name);
+    const rear = /^(?:Brake_Lights(?:_Left|_Right|_Center)?|Lights_Trunk|Headlights_Trunk)(?:_GLOBAL)?$/.test(mesh.name);
+    if (!front && !rear) return;
+    const color = front ? '#e5f2ff' : '#e51c28';
+    const materials = (Array.isArray(mesh.material) ? mesh.material : [mesh.material]).map(source => {
+      const material = (source as T.MeshStandardMaterial).clone();
+      material.emissive.set(color);
+      material.emissiveIntensity = 0;
+      lamps.push({ material, strength: front ? 2.5 : 1.7 });
+      return material;
+    });
+    mesh.material = Array.isArray(mesh.material) ? materials : materials[0];
+  });
+  // The export's combined light meshes span front and rear; use the car body
+  // bounds for lamp positions instead of their misleading mesh centers.
+  const front = new T.Vector3(0, .8, -2.18);
+  const rear = new T.Vector3(0, 1.05, 2.2);
+  const frontSign = -1;
+  const beams: T.SpotLight[] = [], markers: T.PointLight[] = [];
+  for (const side of [-1, 1]) {
+    const beam = new T.SpotLight('#e5efff', 0, 42, .3, .65, 2);
+    beam.position.set(side * .68, front.y, front.z);
+    beam.target.position.set(side * 1.4, front.y - 1, front.z + frontSign * 20);
+    beam.castShadow = side === -1;
+    beam.shadow.mapSize.set(1024, 1024); beam.shadow.bias = -.00015; beam.shadow.normalBias = .025;
+    group.add(beam, beam.target); beams.push(beam);
+    const marker = new T.PointLight('#ff1525', 0, 1.5, 2);
+    marker.position.set(side * .7, rear.y, rear.z); group.add(marker); markers.push(marker);
+  }
+  return {
+    setEnabled(enabled: boolean) {
+      lamps.forEach(({ material, strength }) => { material.emissiveIntensity = enabled ? strength : 0; });
+      beams.forEach(light => { light.intensity = enabled ? 420 : 0; });
+      markers.forEach(light => { light.intensity = enabled ? .08 : 0; });
+    },
+    dispose() {
+      beams.forEach(light => light.shadow.dispose());
+      group.removeFromParent();
+    },
+  };
+}
 
 /** Lamp anchors use the authored 2022 Model Y coordinates (+Z is forward). */
 export function createVehicleLights(model: T.Object3D) {
+  if (isOfficialVehicle(model)) return createOfficialVehicleLights(model);
   model.updateWorldMatrix(true, true);
   const body: T.Object3D[] = []; model.traverse(o => { if (o instanceof T.Mesh) body.push(o); });
   const group = new T.Group(); group.name = 'Vehicle_display_lights'; model.add(group);
