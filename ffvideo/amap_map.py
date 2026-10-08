@@ -266,6 +266,13 @@ def add_amap_map_route(app):
                 detail = 'exit=' + str(error.returncode)
                 if missing:
                     detail += ' missing_module=' + missing.group(1)
+                # Log only the Python exception class, never stderr text: it
+                # may contain a signed upstream URL or request parameters.
+                failures = re.findall(r'(?m)^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception)):', stderr)
+                if failures:
+                    detail += ' worker_error=' + failures[-1]
+                elif not stderr:
+                    detail += ' stderr_empty=true'
             elif isinstance(error, subprocess.TimeoutExpired):
                 detail = 'timeout=' + ('10s' if prefetch else '65s')
             elif isinstance(error, OSError):

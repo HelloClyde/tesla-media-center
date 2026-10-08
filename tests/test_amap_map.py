@@ -246,6 +246,14 @@ class MapTest(unittest.TestCase):
         self.assertIn('missing_module=unicorn', ' '.join(logs.output))
         self.assertNotIn('signed-url', ' '.join(logs.output) + response.text)
 
+    def test_worker_exception_class_logged_without_details(self):
+        error = amap_map.subprocess.CalledProcessError(1, ['helper'], stderr=b'RuntimeError: private signed-url')
+        with patch.object(amap_map.subprocess, 'run', side_effect=error), self.assertLogs(self.app.logger, level='ERROR') as logs:
+            response = self.client.post('/api/amap-app/map', json={'tiles': [[1, 2]]})
+        self.assertEqual(response.status_code, 502)
+        self.assertIn('worker_error=RuntimeError', ' '.join(logs.output))
+        self.assertNotIn('signed-url', ' '.join(logs.output) + response.text)
+
     def test_helper_reason_in_server_logs_only(self):
         result = {'error': 'map-unavailable', 'diagnostic': {'reason': 'missing-runtime'}}
         with patch.object(amap_map.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())), self.assertLogs(self.app.logger, level='ERROR') as logs:

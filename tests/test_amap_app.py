@@ -251,6 +251,17 @@ class AmapAppTest(unittest.TestCase):
                 self.assertEqual(self.client.post('/api/amap-app/traffic-signals', json={
                     'routeToken': '../other', 'routeIndex': 0, 'position': [120, 30]}).status_code, 400)
 
+    def test_traffic_failure_logs_class_without_private_details(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(amap_app, 'SESSION_DIR', Path(directory)):
+            token = amap_app.save_route_session(base64.b64encode(b'route response').decode())
+            with patch.object(amap_app, 'invoke_helper', side_effect=ValueError('private signed-url')):
+                with self.assertLogs(self.app.logger, level='WARNING') as logs:
+                    response = self.client.post('/api/amap-app/traffic-signals', json={
+                        'routeToken': token, 'routeIndex': 0, 'position': [120, 30]})
+            self.assertEqual(response.status_code, 502)
+            self.assertIn('failure=ValueError', ' '.join(logs.output))
+            self.assertNotIn('signed-url', ' '.join(logs.output) + response.text)
+
     def test_junction_image_uses_route_session_and_exposes_only_picture(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(amap_app, 'SESSION_DIR', Path(directory)):

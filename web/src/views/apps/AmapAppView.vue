@@ -182,7 +182,7 @@ const signalFixTrusted = ref(false), signalFixAt = ref(0);
 const signalHoldPosition = ref<Point | null>(null), signalHoldProgress = ref(0), signalHoldHeading = ref(0);
 const signalLastTrustedSpeed = ref<number | null>(null);
 let signalTimer: ReturnType<typeof setInterval> | undefined;
-let signalBusy = false, signalLastRequest = 0, signalGeneration = 0;
+let signalBusy = false, signalLastRequest = 0, signalGeneration = 0, signalFailureCount = 0;
 let signalAbort: AbortController | undefined;
 const signalReminder = createTrafficSignalReminder();
 let signalVoiceAttempt: object | undefined;
@@ -204,6 +204,7 @@ function setSignalFixTrust(trusted: boolean, discard = false) {
     liveLights.value = []; liveUpdatedAt.value = 0; signalFixAt.value = 0;
     signalHoldPosition.value = null; signalHoldProgress.value = 0; signalLastTrustedSpeed.value = null;
     signalLastRequest = 0;
+    signalFailureCount = 0;
   }
 }
 const signalStationary = computed(() => signalLastTrustedSpeed.value !== null
@@ -244,7 +245,7 @@ async function refreshSignals() {
     && recentTrafficSignalFix(signalFixAt.value, now, true);
   if (signalBusy || mode.value === 'idle' || !routeToken.value || !signalHoldPosition.value
       || (!heldStationaryFix && (!signalFixTrusted.value || now - signalFixAt.value > 10_000))
-      || Date.now() - signalLastRequest < 12000) return;
+      || Date.now() - signalLastRequest < Math.min(120000, 12000 * 2 ** signalFailureCount)) return;
   signalBusy = true; signalLastRequest = Date.now();
   const generation = signalGeneration;
   const controller = new AbortController();
@@ -258,17 +259,21 @@ async function refreshSignals() {
     if (generation !== signalGeneration || !navigationRunning()) return;
     const result = response.data?.data;
     if (response.data?.status === 'ok' && result?.state === 'ready' && Array.isArray(result.lights)) {
+      signalFailureCount = 0;
       liveLights.value = mergeTrafficSignalLights(liveLights.value, result.lights, result.updatedAt, Date.now());
       liveUpdatedAt.value = result.updatedAt;
       signalClock.value = Date.now(); announceNearGreen();
-    }
-  } catch { /* A missing live signal never blocks route guidance. */ }
+    } else signalFailureCount = Math.min(signalFailureCount + 1, 4);
+  } catch {
+    if (generation === signalGeneration && !controller.signal.aborted)
+      signalFailureCount = Math.min(signalFailureCount + 1, 4);
+  }
   finally { if (signalAbort === controller) signalAbort = undefined; signalBusy = false; }
 }
 function stopSignals() {
   setSignalFixTrust(false, true);
   signalGeneration++; clearInterval(signalTimer); signalTimer = undefined;
-  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0;
+  liveLights.value = []; liveUpdatedAt.value = 0; signalLastRequest = 0; signalFailureCount = 0;
   signalAbort?.abort(); signalAbort = undefined;
   signalReminder.clear(); signalVoiceAttempt = undefined;
 }

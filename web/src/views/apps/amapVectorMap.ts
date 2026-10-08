@@ -203,6 +203,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
   }
   let loading = false;
   const failures = new Map<string, { count: number; retryAt: number }>();
+  let serviceFailureCount = 0, serviceRetryAt = 0;
   function needsTile(tile: number[]) {
     const key = tile.join('/'), cached = cache.get(key), failure = failures.get(key);
     return (!cached || Date.now() - cached.time > browserMapTileTtlMs())
@@ -240,6 +241,11 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
     }
     draw(tiles);
     if (!tiles.length) { report('路线总览 · 放大后显示道路详情'); return; }
+    if (serviceRetryAt > Date.now()) {
+      queueLoad(Math.max(100, serviceRetryAt - Date.now()));
+      report('地图服务暂时不可用，稍后自动重试');
+      return;
+    }
     // Show the broad overview first, then the current street detail before
     // filling in intermediate source levels. Drawing still uses source order.
     const missing = tiles.filter(needsTile).sort((a, b) =>
@@ -313,6 +319,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       }
       if (disposed || id !== generation) return;
       if (response.data.status !== 'ok') throw new Error('地图请求失败');
+      serviceFailureCount = 0; serviceRetryAt = 0;
       let receivedTiles = response.data.data.tiles;
       if (!rawUnavailable) {
         try {
@@ -349,8 +356,15 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
         if (!protectedKeys.has(key)) cache.delete(key);
       }
       draw(visible(), true);
-    } catch {
-      if (!disposed && id === generation && !authRequired) batch.forEach(markFailed);
+    } catch (error) {
+      if (!disposed && id === generation && !authRequired) {
+        const status = (error as { response?: { status?: number } } | null)?.response?.status;
+        if (typeof status === 'number' && status >= 500) {
+          serviceFailureCount = Math.min(serviceFailureCount + 1, 4);
+          serviceRetryAt = Date.now() + Math.min(60000, 5000 * 2 ** serviceFailureCount);
+          report('地图服务暂时不可用，稍后自动重试');
+        } else batch.forEach(markFailed);
+      }
     } finally {
       loading = false;
       if (request === controller) request = undefined;
@@ -429,7 +443,7 @@ export function attachAppMap(map: L.Map, report: (message: string) => void) {
       routeTiles = nextRoute ? routeCorridorTiles(nextRoute, progress) : [];
       if (active) schedule();
     },
-    retry: () => { authRequired = false; failures.clear(); drawnView = ''; void load(); },
+    retry: () => { authRequired = false; failures.clear(); serviceFailureCount = 0; serviceRetryAt = 0; drawnView = ''; void load(); },
     releaseMemory() {
       renderQueue.cancel();
       cache.clear(); rendered.clear();

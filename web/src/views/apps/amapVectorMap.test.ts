@@ -98,6 +98,8 @@ it('does not switch to large JSON tiles after a temporary BMD gateway failure', 
   const app = attachAppMap(map(), vi.fn());
   await vi.waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1));
   await flushPromises();
+  await new Promise(resolve => setTimeout(resolve, 250));
+  expect(mocks.post).toHaveBeenCalledTimes(1);
   await app.retry();
   await vi.waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(2));
   expect(mocks.post.mock.calls.map(call => call[0])).toEqual([

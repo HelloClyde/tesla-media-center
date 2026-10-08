@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 
-from flask import request
+from flask import request, current_app
 from ffvideo.utils import login_check, json_ok, json_fail
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -521,5 +521,7 @@ def add_amap_app_route(app):
                                           "adiu": TRAFFIC_ADIU}))
         except subprocess.TimeoutExpired:
             return json_fail(message="红绿灯数据请求超时"), 504
-        except (OSError, ValueError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            detail = ' exit=' + str(error.returncode) if isinstance(error, subprocess.CalledProcessError) else ''
+            current_app.logger.warning('amap traffic signals failure=%s%s', type(error).__name__, detail)
             return json_fail(message="暂时无法获取实时红绿灯"), 502
