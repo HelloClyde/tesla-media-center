@@ -73,18 +73,37 @@ class DouyinAuthTests(unittest.TestCase):
         cookie = types.SimpleNamespace(name='sessionid', value='secret', domain='.douyin.com',
                                        path='/', secure=True, has_nonstandard_attr=lambda _: True)
         http_client = MagicMock()
-        http_client.cookies.jar = [cookie]
+        http_client.cookies.jar = []
         http_module = types.ModuleType('tools.douyin.visitor_probe')
         http_module.create_visitor_session = MagicMock(return_value=http_client)
         http_module.get_qrcode = MagicMock(return_value={'qrcode': 'aGVsbG8=', 'token': 'qr-token'})
-        http_module.check_qrcode = MagicMock(return_value={'status': 'confirmed'})
+        http_module.check_qrcode = MagicMock(return_value={
+            'status': 'confirmed', 'redirect_url': 'https://login.douyin.com/finish?ticket=secret'})
+        def finish(_client, _url):
+            http_client.cookies.jar = [cookie]
+        http_module.finish_qrcode_login = MagicMock(side_effect=finish)
         self.accounts.slots.acquire()
         with patch.dict('sys.modules', {'tools.douyin.visitor_probe': http_module}):
             self.accounts.run_http(entry)
         self.assertEqual(entry['state'], 'confirmed')
         self.assertTrue(entry['qrcode'] == '')
         self.assertEqual(entry['cookies'][0]['name'], 'sessionid')
+        http_module.finish_qrcode_login.assert_called_once_with(
+            http_client, 'https://login.douyin.com/finish?ticket=secret')
         http_client.close.assert_called_once()
+
+    def test_qr_redirect_only_follows_official_hosts(self):
+        from tools.douyin.visitor_probe import finish_qrcode_login
+        client = MagicMock()
+        client.get.side_effect = [
+            types.SimpleNamespace(status_code=302, headers={'Location': 'https://www.douyin.com/'}),
+            types.SimpleNamespace(status_code=200, headers={}),
+        ]
+        finish_qrcode_login(client, 'https://login.douyin.com/finish?ticket=secret')
+        self.assertEqual(client.get.call_count, 2)
+        with self.assertRaisesRegex(ValueError, 'official domains'):
+            finish_qrcode_login(client, 'https://example.com/finish')
+        self.assertEqual(client.get.call_count, 2)
 
     def test_http_auth_is_selected_by_default(self):
         entry = self.seed()

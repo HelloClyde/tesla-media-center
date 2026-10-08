@@ -1,11 +1,15 @@
 """Temporary, session-isolated login through the official Douyin QR panel."""
 import copy
+import logging
+import re
 import secrets
 import threading
 import time
 
 from flask import request, session
 from ffvideo.utils import login_check, json_ok, json_fail
+
+logger = logging.getLogger(__name__)
 
 
 class Accounts:
@@ -44,9 +48,12 @@ class Accounts:
 
     def run_http(self, entry):
         client = None
+        stage = 'visitor'
         try:
-            from tools.douyin.visitor_probe import create_visitor_session, get_qrcode, check_qrcode
+            from tools.douyin.visitor_probe import (create_visitor_session, get_qrcode,
+                                                     check_qrcode, finish_qrcode_login)
             client = create_visitor_session()
+            stage = 'qrcode'
             qr = get_qrcode(client)
             image = qr['qrcode']
             if not image.startswith('data:image/'):
@@ -56,19 +63,29 @@ class Accounts:
             while not entry['cancel'].is_set() and time.time() < entry['expires']:
                 if time.time() - entry['touched'] > 45:
                     break
+                stage = 'poll'
                 data = check_qrcode(client, qr['token'], qr.get('is_frontier', False))
                 state = data.get('status')
-                if state in ('2', 'scanned'):
-                    self.update(entry, message='已扫码，请在手机上确认登录')
-                elif state in ('3', 'confirmed'):
+                if isinstance(state, int):
+                    state = str(state)
+                if data.get('redirect_url') or state in ('3', 'confirmed'):
+                    redirect = data.get('redirect_url')
+                    if redirect:
+                        stage = 'redirect'
+                        finish_qrcode_login(client, redirect)
                     cookies = self.http_cookies(client)
-                    if any(c['name'] == 'sessionid' and c['value'] for c in cookies):
+                    if any(c['name'] == 'sessionid' and c['value'] and
+                           c['domain'].lstrip('.') in ('douyin.com', 'www.douyin.com')
+                           for c in cookies):
                         self.update(entry, cookies=cookies, state='confirmed', qrcode='',
                                     message='已登录', expires=time.time() + 86400)
                     else:
+                        logger.warning('Douyin QR confirmation lacked shared session cookie; redirect=%s', bool(redirect))
                         self.update(entry, state='error', qrcode='',
                                     message='扫码已确认，但登录凭据未返回；请刷新二维码重试')
                     return
+                elif state in ('2', 'scanned'):
+                    self.update(entry, message='已扫码，请在手机上确认登录')
                 elif state in ('4', '5', 'refused', 'expired'):
                     break
                 elif state not in ('1', 'new', None):
@@ -76,7 +93,11 @@ class Accounts:
                     return
                 time.sleep(2)
             self.update(entry, state='expired', qrcode='', message='二维码已过期，请刷新')
-        except Exception:
+        except Exception as error:
+            # Never log QR tokens, redirect URLs or cookie values.
+            code = re.search(r'code=([0-9]{1,8})', str(error)) if isinstance(error, ValueError) else None
+            logger.warning('Douyin QR login failed stage=%s error=%s code=%s',
+                           stage, type(error).__name__, code.group(1) if code else 'unknown')
             self.update(entry, state='error', qrcode='',
                         message='抖音登录验证失败，请刷新二维码重试')
         finally:

@@ -209,19 +209,34 @@ def _read_page(url, source, cookies):
                             {'keyword': keyword, 'offset': str(cursor * 20), 'count': '20',
                              'search_source': 'normal_search'})
             elif parsed.path == '/jingxuan':
-                data = _api(client, '/aweme/v1/web/tab/feed/',
-                            {'count': '20', 'publish_video_strategy_type': '2',
-                             'max_cursor': str(cursor * 20), 'refresh_index': str(cursor)})
+                # The public feed often returns only a few cards per request. Fetch
+                # successive feed pages instead of padding one card with its related
+                # videos, which makes the entire queue repeat the same topic.
+                cards = {}
+                next_cursor = cursor
+                has_more = True
+                for feed_cursor in range(cursor, min(cursor + 4, 51)):
+                    try:
+                        data = _api(client, '/aweme/v1/web/tab/feed/',
+                                    {'count': '20', 'publish_video_strategy_type': '2',
+                                     'max_cursor': str(feed_cursor * 20),
+                                     'refresh_index': str(feed_cursor)})
+                    except DouyinUnavailable:
+                        if not cards:
+                            raise
+                        break
+                    cards.update({item['vid']: item for item in catalog_items(data)})
+                    next_cursor = feed_cursor + 1
+                    has_more = bool(data.get('has_more'))
+                    if not has_more:
+                        break
+                if not cards:
+                    raise DouyinUnavailable('抖音暂未返回公开视频列表，请稍后重试')
+                return {'items': list(cards.values()), 'hasMore': has_more and next_cursor <= 50,
+                        'nextCursor': next_cursor}
             else:
                 raise DouyinUnavailable('无效的抖音列表地址')
             cards = {item['vid']: item for item in catalog_items(data)}
-            if parsed.path == '/jingxuan' and cards:
-                try:
-                    related = _api(client, '/aweme/v1/web/aweme/related/',
-                                   {'aweme_id': next(reversed(cards)), 'count': '20'})
-                    cards.update({item['vid']: item for item in catalog_items(related)})
-                except DouyinUnavailable:
-                    pass
             if not cards:
                 raise DouyinUnavailable('抖音暂未返回公开视频列表，请稍后重试')
             return {'items': list(cards.values())[:24], 'hasMore': bool(data.get('has_more')) and cursor < 50,

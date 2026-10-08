@@ -11,7 +11,7 @@ import binascii
 import hashlib
 import json
 import re
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import quickjs
 from curl_cffi import requests
@@ -159,6 +159,31 @@ def check_qrcode(session, token: str, is_frontier: bool = True):
     if response.status_code != 200 or data.get("error_code") != 0:
         raise ValueError(f"QR polling rejected (code={data.get('error_code')})")
     return data
+
+
+def finish_qrcode_login(session, redirect_url: str):
+    """Complete Douyin's confirmed QR redirect to receive the login cookies."""
+    url = redirect_url
+    for _ in range(8):
+        parsed = urlsplit(url)
+        host = parsed.hostname or ""
+        if (parsed.scheme != "https" or parsed.port not in (None, 443)
+                or parsed.username or parsed.password
+                or not any(host == domain or host.endswith("." + domain)
+                           for domain in ("douyin.com", "snssdk.com", "iesdouyin.com"))):
+            raise ValueError("QR redirect left official domains")
+        response = session.get(url, headers={"Referer": HOME},
+                               allow_redirects=False, timeout=20)
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location")
+            if not location:
+                raise ValueError("QR redirect was incomplete")
+            url = urljoin(url, location)
+        elif response.status_code == 200:
+            return
+        else:
+            raise ValueError("QR redirect was rejected")
+    raise ValueError("QR redirect chain was too long")
 
 
 def main():

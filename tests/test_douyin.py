@@ -162,14 +162,18 @@ class DouyinTests(unittest.TestCase):
         last = {'aweme_id': last_vid, 'desc': 'newer seed', 'video': {'cover': {}}}
         client = Mock()
         with patch.object(browser, '_visitor', return_value=client), patch.object(browser, '_api', side_effect=[
-                {'aweme_list': [item, last], 'has_more': 1}, {'aweme_list': []}]) as api:
+                {'aweme_list': [item], 'has_more': 1},
+                {'aweme_list': [item, last], 'has_more': 1},
+                {'aweme_list': [], 'has_more': 1},
+                {'aweme_list': [], 'has_more': 1}]) as api:
             result = browser._read_page('https://www.douyin.com/jingxuan?cursor=2', False, [])
         self.assertEqual([card['vid'] for card in result['items']], [VID, last_vid])
-        self.assertEqual(result['nextCursor'], 3)
+        self.assertEqual(result['nextCursor'], 6)
         self.assertTrue(result['hasMore'])
         self.assertEqual(api.call_args_list[0].args[2]['max_cursor'], '40')
         self.assertEqual(api.call_args_list[0].args[2]['refresh_index'], '2')
-        self.assertEqual(api.call_args_list[1].args[2]['aweme_id'], last_vid)
+        self.assertEqual(api.call_args_list[-1].args[2]['refresh_index'], '5')
+        self.assertTrue(all(call.args[1] == '/aweme/v1/web/tab/feed/' for call in api.call_args_list))
 
     def test_simultaneous_devices_share_one_page_load(self):
         from ffvideo import douyin_browser as browser
