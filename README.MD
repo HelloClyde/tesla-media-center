@@ -36,9 +36,9 @@ docker run -d --name tmc --restart unless-stopped \
 
 `/data` 保存配置、账号凭据、游戏与存档、Tesla 历史记录、车辆皮肤和地图缓存，应持续挂载并备份。旧版本升级先阅读[持久化与数据迁移](docs/persistence.md)。本地视频可以放在 `/data/video` 并在设置中将 `video_path` 指向该目录，或自行挂载其他媒体目录。
 
-本地开发环境已有从 Tesla App 提取并压缩的 Model 3/Y/S/X、Cybertruck 和 Semi 多款车模。车辆状态页按 Tesla 返回的 `car_type` 或 VIN 车型、年款选择模型，高德 3D 导航使用同一规则。本机运行或从当前目录构建 Docker 镜像会带上这些资源；它们被 Git 忽略，因此从公开仓库检出的 CI 构建不会包含，公开镜像会回退到仓库自带的展示模型。各车型文件名、匹配范围和来源见[模型资源说明](assets/tesla-official-model/README.md)。
+仓库包含从 Tesla App 提取并压缩的 Model 3/Y/S/X、Cybertruck 和 Semi 多款车模。车辆状态页按 Tesla 返回的 `car_type` 或 VIN 车型、年款选择模型；无法识别时可手动选择，默认 2020–2024 款 Model Y。高德 3D 导航使用同一选择。CI 构建的镜像包含这些资源。各车型文件名、匹配范围和来源见[模型资源说明](assets/tesla-official-model/README.md)。
 
-车辆状态的「车辆外观」支持给当前官方车模上传对应 UV 排布的正方形 PNG/JPEG/WebP 皮肤；20–24 款 Model Y 也可试用仓库附带的示例图。贴图按车型上传至服务器的持久化数据目录 `tesla/skins/`，车辆状态和高德 3D 导航共用。之前存在浏览器 IndexedDB 中的皮肤会在服务器没有对应车型皮肤时自动迁移。切换车型不会误用其他车的贴图，清除皮肤后恢复车漆颜色设置。公开构建缺少官方模型时，此项不可用。
+车辆状态的「车辆外观」支持给当前车模上传对应 UV 排布的正方形 PNG/JPEG/WebP 皮肤；20–24 款 Model Y 也可试用仓库附带的示例图。贴图按车型上传至服务器的持久化数据目录 `tesla/skins/`，车辆状态和高德 3D 导航共用。之前存在浏览器 IndexedDB 中的皮肤会在服务器没有对应车型皮肤时自动迁移。切换车型不会误用其他车的贴图，清除皮肤后恢复车漆颜色设置。
 
 ## 本地运行
 

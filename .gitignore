@@ -39,7 +39,6 @@ docker_build/requirement.txt
 
 .qqmusic/
 .local-data/
-/web/public/models/tesla-*.glb
 roms/gam4980/
 
 # Downloaded, checksum-verified Release assets for Docker builds
