@@ -3,7 +3,8 @@ import { onActivated, onDeactivated, onMounted, onBeforeUnmount, ref, watch } fr
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
-import { loadVehicleModel, prepareOfficialVehicle } from './teslaOfficialModel';
+import { loadVehicleModel, prepareOfficialVehicle, resolvedVehicleModelVariant, MANUAL_MODEL_STORAGE_KEY } from './teslaOfficialModel';
+import { createVehicleSkin, readVehicleSkin } from './teslaVehicleSkin';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createTeslaMapGround } from './teslaMapGround';
 import { createAmapLandmarks, disposeGltfScenes } from './amapLandmarks';
@@ -34,10 +35,32 @@ arrow.rotation.x = Math.PI / 2; arrow.position.y = 2; arrow.renderOrder = 20; ve
 const halo = new THREE.Mesh(new THREE.RingGeometry(4, 8, 32), new THREE.MeshBasicMaterial({ color: '#3ba5f2', transparent: true, opacity: .42, side: THREE.DoubleSide, depthWrite: false }));
 halo.rotation.x = -Math.PI / 2; halo.position.y = .12; vehicle.add(halo);
 let vehicleModel: THREE.Group | undefined, vehicleRequested = false, destroyed = false;
+let vehicleSkin: ReturnType<typeof createVehicleSkin> | undefined;
+async function navigationVehicleVariant() {
+  let vin = '';
+  let carType = '';
+  try { vin = localStorage.getItem('tmc.tesla.selected-vin') || ''; } catch { /* Browser storage is optional. */ }
+  try {
+    const response = await fetch('/api/tesla/vehicles', { credentials: 'same-origin' });
+    if (response.ok) {
+      const result = await response.json();
+      const vehicles = Array.isArray(result?.data) ? result.data : [];
+      const selected = vehicles.find((item: { vin?: string }) => item.vin === vin) || vehicles[0];
+      vin = selected?.vin || vin;
+      carType = selected?.carType || '';
+    }
+  } catch { /* Navigation also works without a connected Tesla account. */ }
+  let manual: unknown;
+  try {
+    const saved = JSON.parse(localStorage.getItem(MANUAL_MODEL_STORAGE_KEY) || '{}');
+    manual = saved?.[vin.trim().toUpperCase() || 'unidentified'];
+  } catch { /* Browser storage is optional. */ }
+  return resolvedVehicleModelVariant(vin, carType, manual);
+}
 function loadVehicle() {
   if (vehicleRequested) return;
   vehicleRequested = true;
-  loadVehicleModel(new GLTFLoader().setMeshoptDecoder(MeshoptDecoder)).then(({scene: model}) => {
+  navigationVehicleVariant().then(variant => loadVehicleModel(new GLTFLoader().setMeshoptDecoder(MeshoptDecoder), variant)).then(({scene: model}) => {
     if (destroyed) { disposeGltfScenes([model]); return; }
     const official = prepareOfficialVehicle(model);
     const bounds = new THREE.Box3().setFromObject(model);
@@ -59,6 +82,10 @@ function loadVehicle() {
       child.renderOrder = 15;
     });
     vehicle.add(model); vehicleModel = model; arrow.visible = false;
+    vehicleSkin = createVehicleSkin(model);
+    if (vehicleSkin.supported && vehicleSkin.variant !== 'unknown') void readVehicleSkin(vehicleSkin.variant).then(blob => {
+      if (!destroyed && vehicleModel === model) return vehicleSkin?.set(blob);
+    }).catch(error => console.warn('Unable to load vehicle skin', error));
   }).catch(() => { vehicleRequested = false; });
 }
 let observer: ResizeObserver | undefined, frame = 0;
@@ -474,7 +501,7 @@ watch(()=>props.following, following => {
 });
 watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.cameras,props.signal,props.navigating,props.following,props.headingUp,props.theme],update);
 defineExpose({retry:()=>ground?.retry(), zoomBy});
-onBeforeUnmount(()=>{destroyed=true;dispose();if(vehicleModel)disposeGltfScenes([vehicleModel]);arrow.geometry.dispose();arrow.material.dispose();halo.geometry.dispose();halo.material.dispose();});
+onBeforeUnmount(()=>{destroyed=true;dispose();vehicleSkin?.dispose();if(vehicleModel)disposeGltfScenes([vehicleModel]);arrow.geometry.dispose();arrow.material.dispose();halo.geometry.dispose();halo.material.dispose();});
 </script>
 <template><div ref="host" class="map-3d" :class="`sky-${theme}`" aria-label="3D 导航地图" @click="pick"><small>© 高德地图 · App 立体地图</small></div></template>
 <style scoped>.map-3d{position:absolute;inset:0;z-index:1;overflow:hidden;background-color:#dce5e5;background-size:100% 100%;background-repeat:no-repeat}.map-3d.sky-day{background-image:url('/amap/sky/day.png')}.map-3d.sky-night{background-color:#1b2634;background-image:url('/amap/sky/night.png')}.map-3d small{position:absolute;right:5px;bottom:2px;font-size:10px;color:#536c68;pointer-events:none}.map-3d :deep(canvas){display:block;width:100%;height:100%;touch-action:none;cursor:grab}.map-3d :deep(canvas):active{cursor:grabbing}</style>

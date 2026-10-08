@@ -1,377 +1,92 @@
-# Tesla Media Center
-
-面向车机浏览器的开源多媒体中心，提供本地视频、B 站、Tesla 状态与轨迹、GBA 模拟器、高德地图路线规划等能力。
-
-## 目录
-
-- [项目简介](#项目简介)
-- [功能概览](#功能概览)
-- [快速开始](#快速开始)
-- [Docker 部署](#docker-部署)
-- [配置说明](#配置说明)
-- [开发环境](#开发环境)
-- [镜像构建](#镜像构建)
-- [已知限制](#已知限制)
-- [免责声明](#免责声明)
-
-## 项目简介
-
-Tesla Media Center 主要面向横屏车机和车载浏览器场景，重点解决以下几类需求：
-
-1. 本地媒体播放
-2. B 站视频在线播放和缓存管理
-3. Tesla 车辆状态、轨迹、行程记录
-4. 车机适配的 GBA 模拟器
-5. 地图搜索与路线规划
-
-当前版本已经支持：
-
-1. B 站首页、热门、排行榜、搜索、番剧 / 分 P 播放
-2. B 站自动续播、弹幕控制、缓存容量限制和一键清理
-3. 本地 `mp4 / flv` 视频播放与目录浏览
-4. Tesla `Owner API` token 模式接入、状态 / 轨迹 / 行程 / 原始数据查看
-5. 后台轮询写入 SQLite，并支持记录保留策略与存储清理
-6. GBA 本地游戏库与 `gba.js.org` 在线 ROM 补充库
-7. 高德地图目的地搜索、路线规划和 GPS 展示
-8. 跟随系统的白天 / 夜间主题
-9. GitHub Actions 自动构建并推送 Docker 镜像到 GHCR / 阿里云 ACR
-
-## 功能概览
-
-### 抖音（实验）
-
-进入应用会自动加载首条视频；如果浏览器禁止自动启动音频，点击画面上的“点击播放”即可继续，等待点击时不会反复下载同一视频分段。左侧播放器固定，右侧详情、评论和操作独立滚动，支持在整个视频画面上滑、下滑或滚轮切换。右侧可开启“播完自动播放下一条”，该选项保存在本机浏览器，默认关闭。视频列表、最近观看和搜索结果在右侧展开。评论读取官方接口返回的首批内容，暂不支持站内发表评论、点赞或翻页；平台验证或解码失败会明确提示。
-
-应用入口为 `#/apps/douyin`，支持公开精选列表、分享链接/短链接、最近观看，以及上一条/下一条和触摸滑动切换。视频使用现有 FFmpeg WASM、Canvas 和 Web Audio 播放；退出或切换视频会销毁播放器并取消前端请求。
-
-服务端通过 Python HTTP 会话获取访客身份，读取官方精选页的视频详情数据，以及公开列表、搜索和评论接口。播放器优先选取适合车机画面的 H.264/MP4 档位，按需分段下载；服务端仅解析元数据，不播放、解码或合流。视频请求优先尝试 HTTPS 直连，失败后使用经过登录鉴权、签名和 CDN 白名单校验的 Range 字节转接。相同账号的相同请求会共享结果，公开元数据缓存两分钟。
-
-Docker 镜像和本地运行均不需要 Playwright 或 Chromium；安装 `requirement.txt` 即可。
-
-支持抖音 App 扫码登录：官方网页生成二维码，手机确认后，首页、搜索及视频解析会携带当前账号的 Cookie。凭据按媒体中心浏览器会话隔离，仅保存在服务端内存中，刷新可继续使用；退出连接、24 小时到期或服务重启后清除。关闭扫码窗口会取消等待，二维码最多等待三分钟。真实账号授权完成后的端到端流程仍需用户扫码验证。多进程部署需要会话粘性（或共享凭据存储），当前实现沿用单进程服务方式。尚未实现关注流、直播、图文或付费内容。搜索入口已接入，但实测可能触发官方验证码，此时会明确提示不可用，不自动处理验证。精选及公开视频播放已在本地使用真实内容验证；不同服务器出口仍可能受到平台访问限制。
-
-扫码登录通过轻量 HTTP 会话获取访客身份并生成二维码。搜索接口可能要求账号登录；若官方继续要求验证，应用会明确提示。
-
-### 首页 3D 车模
-
-首页支持通过 `config.json` 中的 `home_page_iframe` 自定义展示内容，默认示例使用 Sketchfab 3D 模型。
-
-- 适合放置 3D 车模、品牌页、信息看板
-- 支持直接替换为你自己的 iframe 页面
-
-![home](shot/img_001.png)
-
-### B 站在线播放
-
-默认由服务端带 B 站 Referer 转接 DASH 音视频分段，前端解封装、合流并用 FFmpeg WASM 解码，以 Canvas/Web Audio 播放。服务端不启动 FFmpeg、不解码、不合流、不缓存媒体文件；仅按 Range 流式转发原始字节，客户端断开后释放上游连接。
-
-转接接口要求登录及有效签名，仅允许 B 站 CDN，单次分段最多 32 MiB。支持主备 CDN 失败切换、进度跳转和取消请求。可手动切换浏览器直连；直连受 CDN 跨域和防盗链限制，失败时可切回服务端转接。
-
-支持带 SegmentBase/SIDX 的 H264/AAC DASH（普通视频及返回该格式的番剧）；地区、会员权限仍由 B 站判断。旧版服务端 FFmpeg 接口保留供旧客户端使用，新播放器不再调用。
-
-
-- 首页、热门、排行榜、搜索
-- 搜索与热门自动翻页加载
-- 分 P / 番剧 EP 切换
-- 自动续播下一集
-- 弹幕位置、透明度、同屏数量控制
-- B 站登录、关注、收藏、缓存管理
-
-![bilibili-1](shot/img_005.png)
-![bilibili-2](shot/img_006.png)
-
-### 腾讯视频
-
-账号入口使用腾讯视频 App 扫码授权，App 内可先登录微信或 QQ 绑定的账号。媒体中心只在服务端内存中保留当前会话的临时凭据（最长六小时，退出连接、过期或重启即清除），获取播放信息时携带凭据，不把凭据发送给 CDN。尚需真实账号完成授权交换及会员权益的端到端验证；扫码成功不等于会员 DRM 视频可用，现有 WASM 播放仍只支持未加密的完整 MP4。此入口不是微信或 QQ App 直接扫码入口。
-
-应用列表中的“腾讯视频”默认展示腾讯官网首页推荐，支持站内关键词搜索、推荐和搜索分页、卡片点击播放、搜索结果选集，以及失败重试。预告和片段会明确标注；搜索返回的选集可展开后点击播放。列表来自腾讯视频公开接口，不代表全部内容均可播放。
-
-“通过链接或 VID 打开”作为辅助入口，支持 `v.qq.com/x/page/<VID>.html`、具体单集链接、带 `vid` 参数的链接及 11 位 VID。播放器支持暂停、进度拖动、全屏、恢复声音和本机最近打开记录。快速切换搜索会取消旧请求；关闭播放器或离开页面会取消请求并销毁音频、解码 Worker 和定时器。
-
-服务端获取公开播放信息，浏览器优先直连腾讯 CDN；分段请求遇到跨域、403、超时或无效响应时，自动尝试备用地址及带 Referer 的服务端原始字节转接，后续分段沿用可用地址。进度跳转也使用相同的回退机制。浏览器使用现有 FFmpeg WASM 解码并以 Canvas/Web Audio 播放。服务端不执行 FFmpeg、不转码、不合流，也不保存视频文件。转接要求媒体中心登录和有效签名，只访问腾讯视频 CDN；历史记录不保存临时签名源地址。
-
-第一版支持公开、未加密的完整 MP4 源，不支持专辑、短链接、会员授权、DRM 或多文件分片源。公开接口与源地址可能变化，失败时可重新打开；已验证样本 VID 为 `q326831cny0`，车机软解性能仍需实机验证。
-
-### 本地视频播放
-
-- 本地目录浏览
-- `h264 / h265` 的 `mp4 / flv` 播放
-- 基于 wasm 的软解播放
-
-![video](shot/img_002.png)
-
-如果视频是流式点播，建议将 `moov box` 前置：
-
-```bash
-ffmpeg -i test.mp4 -codec:v hevc -codec:a aac -b:v 512k -b:a 128k -s 1100x624 -r 25 -movflags faststart output.mp4
-```
-
-原始播放器项目：
-https://github.com/sonysuqin/WasmVideoPlayer
-
-### Tesla 状态与轨迹
-
-当前实现兼容个人用户常见的 `Owner API` token 使用方式，并参考 `TeslaMate` 的轮询、轨迹和行程处理思路。
-
-- `Access Token / Refresh Token` 保存与回填
-- 车辆状态、轨迹、行程、设置、原始数据分 Tab 展示
-- 后台自动轮询与 SQLite 落盘
-- 轨迹点查看、行程切分、行程删除
-- SQLite 记录保留时长、容量控制与清理
-
-说明：
-
-1. 当前以 `Owner API` 链路为主，不是 Tesla 官方 Fleet Telemetry 全栈接入
-2. 中国区 token 需要按中国区链路生成
-3. 如果能读到账户但读不到车辆，通常是 token 类型或权限范围不匹配
-
-### GBA 模拟器
-
-GBA 模拟器内核基于 `gbajs2`，界面按车机横屏操作重新设计。
-
-- 本地 GBA ROM 游戏库浏览
-- 在线 ROM 补充库，当前内置 `gba.js.org` catalog
-- 点击 ROM 后进入专注游玩界面
-- 触控方向键、A / B、L / R、Start / Select
-- 暂停、继续、重启、返回游戏库
-
-![gba](shot/gba.png)
-
-GBA ROM 目录统一为数据根目录下的 `gba/`，支持网页上传。
-
-原始模拟器项目：
-https://github.com/andychase/gbajs2.git
-
-### 高德地图
-
-高德地图 API Key 需要自行申请：
-https://console.amap.com/dev/key/app
-
-如需在 Tesla 浏览器中获取 GPS，需要使用 HTTPS 访问站点。
-
-- 目的地搜索和路线规划
-- 实时路况
-- GPS 信号低提醒
-- 地图移动、拖拽、视角调整、车头朝上
-![map-1](shot/img_003.png)
-![map-2](shot/img_004.png)
-
-## 快速开始
-
-### 方式一：直接运行
-
-1. 克隆仓库
-
-```bash
-git clone https://github.com/HelloClyde/tesla-media-center.git
-cd tesla-media-center
-```
-
-2. 安装 Python 依赖
-
-```bash
-pip install -r requirement.txt
-```
-
-3. 安装前端依赖并构建
-
-```bash
-cd web
-npm install
-npm run build
-cd ..
-```
-
-4. 可选：创建 `data/config.json`（旧根目录配置首次启动会自动迁移）
-
-```json
-{
-  "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
-  "video_path": "./video",
-  "amap_key": "xxx",
-  "password": "abc",
-  "bilibili_cache_size_mb": 2048,
-  "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
-  "tesla_auth_base_url": "https://auth.tesla.com",
-  "tesla_token_path": "/oauth2/v3"
-}
-```
-
-5. 启动服务
-
-```bash
-python flask_app.py
-```
-
-默认访问地址：
-
-```text
-http://127.0.0.1:8080
-```
+# Tesla Media Center（TMC）
+
+面向车机横屏浏览器的多媒体与导航应用。前端使用 Vue 3，后端使用 Flask；播放页尽量使用浏览器端软解码，以适配车机浏览器的媒体能力。应用从首页启动器或左侧栏进入。
+
+## 应用
+
+| 应用 | 当前能力 |
+| --- | --- |
+| 高德导航（实验） | 地点搜索、路线规划、2D/3D 地图、实时与模拟导航、路线拥堵显示、转向和车道提示、导航语音。浏览器实时定位需要 HTTPS 和定位权限。 |
+| 特斯拉 | 车辆状态与 3D 场景、轨迹、行程、原始数据；使用 Tesla Owner API token，并将历史记录保存到 SQLite。 |
+| QQ 音乐 | QQ/微信扫码登录、搜索、推荐、歌单、播放队列、歌词和音质选择；可播放内容由账号权益及上游接口决定。 |
+| 哔哩哔哩 | 首页、热门、排行榜、搜索、分 P/番剧播放、弹幕与续播。视频由浏览器软解；默认通过服务端转接原始分段。 |
+| 腾讯视频 | 推荐、搜索、选集、链接或 VID 打开；目前主要支持公开、未加密的 MP4 内容，会员/DRM 内容不保证可播。 |
+| 抖音（实验） | 公开短视频浏览、搜索、分享链接、扫码登录、上滑/下滑切换、下一条预加载和播完自动切换选项。登录、搜索与播放可能受到上游验证或 CDN 限制。 |
+| 玩球直播 | 按频道浏览直播间并播放直播流，使用浏览器端 FFmpeg 软解码。可用性取决于上游直播源。 |
+| 本地播放器 | 浏览服务器上的本地视频目录，播放 MP4/FLV 等媒体。 |
+| GBA / GAM4980 | 浏览、上传并运行游戏，使用触控/按键操作；游戏和存档位于数据目录。 |
+| 设置与调试 | 配置地图 Key、本地媒体目录及部分播放设置，检查设备能力。 |
+
+QQ 音乐、地图和游戏的细节分别见 [QQ 音乐说明](docs/qqmusic.md)、[高德导航说明](docs/amap-tmc-integration.md) 和 [GAM4980 说明](docs/gam4980-player.md)。
 
 ## Docker 部署
 
-运行示例（新版镜像）：
+当前 CI 构建 **linux/amd64** 镜像，主分支发布 `latest`、`master` 和 `sha-<commit>` 标签。示例：
 
 ```bash
 mkdir -p /opt/tmc/data
 docker run -d --name tmc --restart unless-stopped \
   -p 8080:8080 \
-  -e TMC_PASSWORD='替换为你的首次登录密码' \
+  -e TMC_PASSWORD='请改成自己的登录密码' \
   -v /opt/tmc/data:/data \
   ghcr.io/helloclyde/tesla-media-center:latest
 ```
 
-配置、QQ 音乐凭证、GBA 游戏及存档、GAM4980 游戏及存档、Tesla 历史数据库、地图缓存和 B 站缓存统一保存在 `/data`。`TMC_PASSWORD` 仅在没有配置文件时初始化密码；已有配置的密码和密钥保持不变。未设置初始密码时随机生成并输出到首次启动日志。
+打开 `http://<服务器地址>:8080` 登录。`TMC_PASSWORD` **只在首次生成配置文件时生效**；已有 `/data/config.json` 时不会覆盖旧密码。不设置时会生成随机密码，并写入首次启动日志。公开访问时应通过 HTTPS 提供服务；车机浏览器的 GPS 定位尤其依赖安全上下文。
 
-高德地点收藏保存在 `/data/amap/favorites.json`，登录 TMC 的浏览器共享。旧版浏览器本地收藏会在首次打开地图时合并到服务器；只有服务器确认写入后才清除本地旧数据。
+`/data` 保存配置、账号凭据、游戏与存档、Tesla 历史记录、车辆皮肤和地图缓存，应持续挂载并备份。旧版本升级先阅读[持久化与数据迁移](docs/persistence.md)。本地视频可以放在 `/data/video` 并在设置中将 `video_path` 指向该目录，或自行挂载其他媒体目录。
 
-升级前请按 [持久化与旧数据迁移](docs/persistence.md) 迁移旧数据，尤其同时保留 QQ 音乐凭证和配置密钥。本地运行默认使用项目下 `data/`，可以通过 `TMC_DATA_DIR` 指定其他根目录。
+本地开发环境已有从 Tesla App 提取并压缩的 Model 3/Y/S/X、Cybertruck 和 Semi 多款车模。车辆状态页按 Tesla 返回的 `car_type` 或 VIN 车型、年款选择模型，高德 3D 导航使用同一规则。本机运行或从当前目录构建 Docker 镜像会带上这些资源；它们被 Git 忽略，因此从公开仓库检出的 CI 构建不会包含，公开镜像会回退到仓库自带的展示模型。各车型文件名、匹配范围和来源见[模型资源说明](assets/tesla-official-model/README.md)。
 
-本地视频属于自选媒体库，仍可按 `video_path` 另行挂载；也可将视频放入 `/data/video` 并设置该路径。
+车辆状态的「车辆外观」支持给当前官方车模上传对应 UV 排布的正方形 PNG/JPEG/WebP 皮肤；20–24 款 Model Y 也可试用仓库附带的示例图。贴图按车型上传至服务器的持久化数据目录 `tesla/skins/`，车辆状态和高德 3D 导航共用。之前存在浏览器 IndexedDB 中的皮肤会在服务器没有对应车型皮肤时自动迁移。切换车型不会误用其他车的贴图，清除皮肤后恢复车漆颜色设置。公开构建缺少官方模型时，此项不可用。
 
-B 站缓存目录仅供旧版播放器合流使用，新播放器的原始分段转接不使用媒体缓存。
+## 本地运行
 
-镜像地址：
-
-```text
-ghcr.io/helloclyde/tesla-media-center:latest
-ghcr.io/helloclyde/tesla-media-center:master
-ghcr.io/helloclyde/tesla-media-center:sha-<commit>
-registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:latest
-registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:master
-registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:sha-<commit>
-```
-
-拉取示例：
+建议使用 Python 3.11 和 Node.js 20。先准备后端依赖和前端产物：
 
 ```bash
-docker pull ghcr.io/helloclyde/tesla-media-center:latest
-docker pull registry.cn-hangzhou.aliyuncs.com/<namespace>/tesla-media-center:latest
-```
-
-## 配置说明
-
-`data/config.json` 示例：
-
-```json
-{
-  "home_page_iframe": "https://sketchfab.com/models/de2fc0824eb140ccb63c5b215797b996/embed?autostart=1&internal=1&tracking=0&ui_infos=0&ui_snapshots=1&ui_stop=0&ui_watermark=0",
-  "video_path": "./video",
-  "amap_key": "xxx",
-  "password": "abc",
-  "bilibili_cache_size_mb": 2048,
-  "tesla_api_base_url": "https://owner-api.vn.cloud.tesla.cn",
-  "tesla_auth_base_url": "https://auth.tesla.com",
-  "tesla_token_path": "/oauth2/v3"
-}
-```
-
-字段说明：
-
-1. `home_page_iframe`：首页 iframe 内容
-2. `video_path`：本地视频目录
-3. `gba_path`：旧迁移字段；新版本统一使用数据根目录下 `gba/`
-4. `amap_key`：高德地图 Key
-5. `password`：Web 登录密码
-6. `bilibili_cache_dir`：旧迁移字段；新版本统一使用 `bilibili-cache/`
-7. `bilibili_cache_size_mb`：B 站缓存上限，单位 MB
-8. `tesla_api_base_url`：Tesla Owner API 地址，中国区默认 `https://owner-api.vn.cloud.tesla.cn`
-9. `tesla_auth_base_url`：Tesla 认证地址，默认 `https://auth.tesla.com`
-10. `tesla_token_path`：Tesla token 路径，默认 `/oauth2/v3`
-11. `tesla_db_path`：旧迁移字段；新版本统一使用 `tesla/tesla_history.sqlite3`
-
-补充说明：
-
-1. B 站缓存会在生成新缓存后自动回收旧文件
-2. 前端 B 站“我的”页支持直接查看缓存占用、修改缓存上限和一键清理
-3. GBA 在线 ROM 目录来自仓库内置 JSON catalog，可按需自行扩展
-
-## 开发环境
-
-下面以 CentOS 为例，其他系统请自行安装对应依赖。
-
-1. 下载代码
-
-```bash
-yum install git -y
 git clone https://github.com/HelloClyde/tesla-media-center.git
 cd tesla-media-center
-```
-
-2. 创建 Python 环境，可选
-
-```bash
-wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-sh Miniconda3-latest-Linux-x86_64.sh
-conda create -n tmc python=3.10
-conda activate tmc
-```
-
-3. 安装 Python 依赖
-
-```bash
-pip install -r requirement.txt
-```
-
-4. 安装 Node.js 并构建前端
-
-```bash
-yum install nodejs npm -y
-npm config set registry https://registry.npmmirror.com
-
+python -m pip install -r requirement.txt -r tools/amap-app/requirements.txt
+python tools/amap-app/release_assets.py
+python web/scripts/amap-tts/extract_assets.py
 cd web
-npm install
+npm ci
 npm run build
 cd ..
-```
-
-5. 启动服务
-
-```bash
 python flask_app.py
 ```
 
-## 镜像构建
+服务地址为 `http://127.0.0.1:8080`。高德运行资源和离线导航语音资源由上述脚本校验、提取；首次下载需要外网连接。开发时可另开终端在 `web/` 运行 `npm run dev`，访问 `http://localhost:3000`，Vite 默认将 `/api` 转发到本地 8080 端口。也可用 `TMC_API_PROXY` 指定后端地址。
 
-仓库已配置 GitHub Actions，会在以下场景自动构建并推送 Docker 镜像：
+本地默认数据目录是仓库下的 `data/`；通过 `TMC_DATA_DIR` 可改到其他路径。不要将 `data/config.json`、账号凭据、游戏 ROM 或本地提取的第三方资源提交到仓库。
 
-1. push 到 `master`
-2. 推送 `v*` tag
-3. 手动触发 `workflow_dispatch`
+## 配置
 
-默认推送到 GHCR。配置好阿里云 ACR secrets 后，也会同步推送到阿里云。
+首次运行会创建 `data/config.json`，Docker 中为 `/data/config.json`。常用配置可在“设置与调试”页面修改：
 
-需要在 GitHub 仓库 Secrets 中配置：
+| 配置项 | 用途 |
+| --- | --- |
+| `password` | TMC 网页登录密码；初次部署可由 `TMC_PASSWORD` 初始化。 |
+| `video_path` | 服务器上的本地视频目录。 |
+| `amap_key`、`amap_security_js_code` | 高德 JS/Web 地点搜索所需的 Key 和安全密钥；导航底图与路线规划不以此作为唯一数据源。 |
+| `bilibili_cache_size_mb` | 旧版 B 站合流缓存的容量上限；新版原始分段转接不保存媒体文件。 |
+| `tesla_api_base_url`、`tesla_auth_base_url`、`tesla_token_path` | Tesla API 地址；一般无需手动修改。 |
 
-1. `ALIYUN_REGISTRY`
-2. `ALIYUN_REGISTRY_NAMESPACE`
-3. `ALIYUN_REGISTRY_USERNAME`
-4. `ALIYUN_REGISTRY_PASSWORD`
+地图的地点搜索需要自行配置相应高德凭据；路线、实时路况、位置与语音等功能还依赖上游服务、车机定位与本地资源。请勿把 Key、token、密码、域名或服务器私有配置写入 README 或提交到 Git。
 
-示例：
+## 构建与发布
 
-```text
-ALIYUN_REGISTRY=registry.cn-hangzhou.aliyuncs.com
-ALIYUN_REGISTRY_NAMESPACE=helloclyde
+本地构建镜像前，先运行上面的高德资源提取脚本，再执行：
+
+```bash
+docker build -f docker_build/Dockerfile -t tmc:local .
 ```
 
-## 已知限制
+Dockerfile 将地图资源、TTS、模型、贴图和应用代码分层，以复用较大的资源层缓存。GitHub Actions 在推送 `master`、`v*` 标签或手动触发时构建 AMD64 镜像并发布到 GHCR；配置阿里云 ACR 的四个仓库 Secret 后也会同步发布。构建流程见 [.github/workflows/docker-image.yml](.github/workflows/docker-image.yml)。
 
-1. 当前不是完整复刻 bilibili 客户端，优先覆盖车机场景的核心播放能力
-2. B 站直连依赖 CDN 的跨域、Range 和防盗链策略；车机上的 WASM 软解性能仍需实机验证，默认使用服务端原始分段转接
-3. 车载弱网环境下仍可能出现短时缓冲或音画不同步
-4. B 站首页推荐接口当前仍是单页，不支持像热门一样持续翻页
-5. Tesla 部分当前以 `Owner API` token 模式为主，不等同于官方 Fleet Telemetry 全量方案
+## 使用边界
 
-## 免责声明
+本项目依赖第三方平台接口、账号权限和浏览器能力，接口变动或官方验证可能导致部分内容不可用。浏览器端软解码也会受设备性能和网络条件影响。Tesla 接入以 Owner API token 为主，并非 Fleet Telemetry 全量实现。
 
-本项目及相关代码和文档仅用于帮助用户搭建和管理面向乘客的多媒体服务，不应在任何会影响驾驶安全的场景中使用。
-
-用户在驾驶或操作车辆时，应始终遵守交通法规并保持注意力集中。任何因使用或误用本项目而导致的直接或间接后果、损害、事故或责任，均由用户自行承担，项目开发者和分发者不承担责任。
-
-使用本项目即表示你已经理解并同意：
-
-1. 不会在任何可能干扰驾驶或车辆操作安全的场景中使用本项目
-2. 已理解并接受使用本项目带来的全部风险
-3. 对自身和他人的安全承担最终责任
+请仅在不会影响驾驶安全的情况下操作或观看内容；驾驶时遵守当地交通法规。

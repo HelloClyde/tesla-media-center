@@ -20,21 +20,25 @@ function createOfficialVehicleLights(model: T.Object3D) {
     });
     mesh.material = Array.isArray(mesh.material) ? materials : materials[0];
   });
-  // The export's combined light meshes span front and rear; use the car body
-  // bounds for lamp positions instead of their misleading mesh centers.
-  const front = new T.Vector3(0, .8, -2.18);
-  const rear = new T.Vector3(0, 1.05, 2.2);
+  // Combined light meshes span both ends. Derive anchors from the selected
+  // model's body bounds so a Cybertruck or Semi does not keep Model Y anchors.
+  const bounds = new T.Box3().setFromObject(model);
+  const width = bounds.max.x - bounds.min.x;
+  const height = bounds.max.y - bounds.min.y;
+  const length = bounds.max.z - bounds.min.z;
+  const front = new T.Vector3(0, bounds.min.y + height * .35, bounds.min.z + length * .04);
+  const rear = new T.Vector3(0, bounds.min.y + height * .46, bounds.max.z - length * .04);
   const frontSign = -1;
   const beams: T.SpotLight[] = [], markers: T.PointLight[] = [];
   for (const side of [-1, 1]) {
     const beam = new T.SpotLight('#e5efff', 0, 42, .3, .65, 2);
-    beam.position.set(side * .68, front.y, front.z);
-    beam.target.position.set(side * 1.4, front.y - 1, front.z + frontSign * 20);
+    beam.position.set(side * width * .34, front.y, front.z);
+    beam.target.position.set(side * width * .7, front.y - 1, front.z + frontSign * 20);
     beam.castShadow = side === -1;
     beam.shadow.mapSize.set(1024, 1024); beam.shadow.bias = -.00015; beam.shadow.normalBias = .025;
     group.add(beam, beam.target); beams.push(beam);
     const marker = new T.PointLight('#ff1525', 0, 1.5, 2);
-    marker.position.set(side * .7, rear.y, rear.z); group.add(marker); markers.push(marker);
+    marker.position.set(side * width * .35, rear.y, rear.z); group.add(marker); markers.push(marker);
   }
   return {
     setEnabled(enabled: boolean) {

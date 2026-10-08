@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { repairSurfaceGeometry, repairHoodEdgeNormals, repairRearQuarterNormals, repairRoofGlassNormals } from './teslaSurfaceRepair';
 import { isOfficialVehicle } from './teslaOfficialModel';
+import { createVehicleSkin } from './teslaVehicleSkin';
 function smoothPaintNormals(geometry: THREE.BufferGeometry) {
   const result = geometry.clone();
   const positions = result.getAttribute('position'), original = result.getAttribute('normal'), indices = result.index;
@@ -47,6 +48,7 @@ export function normalizeAppearance(value: Partial<VehicleAppearance> | null): V
 
 /** Own the dynamic plate texture and the plate faces attached to this model. */
 export function createVehicleAppearance(model: THREE.Object3D) {
+  const skin = createVehicleSkin(model);
   model.updateWorldMatrix(true, true);
   const official = isOfficialVehicle(model);
   const inverseModel = model.matrixWorld.clone().invert();
@@ -110,8 +112,8 @@ export function createVehicleAppearance(model: THREE.Object3D) {
   for (const m of plates) { m.color.set('#ffffff'); m.map = texture; m.needsUpdate = true; }
   const addedPlates: THREE.Mesh[] = [];
   if (official) {
-    const rear = model.getObjectByName('Plate_US');
-    const trunk = model.getObjectByName('Trunk_Spatial');
+    const rear = model.getObjectByName('Plate_US') || model.getObjectByName('Plate_EU') || model.getObjectByName('Plate_EU2');
+    const trunk = rear?.parent;
     const faceMaterial = new THREE.MeshStandardMaterial({ name: 'TMC_RearPlate_Face', map: texture, color: '#ffffff', roughness: .65, metalness: .04, side: THREE.DoubleSide });
     const frameMaterial = new THREE.MeshStandardMaterial({ name: 'TMC_RearPlate_Frame', color: '#171d22', roughness: .43, metalness: .25, side: THREE.DoubleSide });
     const addPlate = (parent: THREE.Object3D, width: number, height: number, x: number, y: number, z: number, material: THREE.Material, name: string) => {
@@ -152,7 +154,7 @@ export function createVehicleAppearance(model: THREE.Object3D) {
       const a = normalizeAppearance(input);
       const finish = paintFinishes.find(item => item.value === a.finish)!;
       paint.forEach(m => {
-        m.color.set(a.color);
+        m.color.set(skin.active ? '#ffffff' : a.color);
         m.metalness = finish.metalness;
         m.roughness = finish.roughness;
         if ((m as THREE.MeshPhysicalMaterial).isMeshPhysicalMaterial) {
@@ -182,7 +184,11 @@ export function createVehicleAppearance(model: THREE.Object3D) {
       }
       ctx.restore();texture.needsUpdate=true;
     },
+    setSkin(blob: Blob | null) { return skin.set(blob); },
+    get skinSupported() { return skin.supported; },
+    get skinVariant() { return skin.variant; },
     dispose() {
+      skin.dispose();
       plates.forEach(m => { m.map=null; });
       addedPlates.forEach(mesh => { mesh.removeFromParent(); mesh.geometry.dispose(); });
       new Set(addedPlates.map(mesh => mesh.material as THREE.Material)).forEach(material => material.dispose());

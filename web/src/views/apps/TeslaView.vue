@@ -7,7 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { configureStreetSun, applyStreetLighting, VEHICLE_SUN_DIRECTION } from './teslaSceneLighting';
 import { captureStreetReflections } from './teslaReflections';
 import { createVehicleWipers } from './teslaWipers';
-import { createOfficialDoorController, isOfficialVehicle, loadVehicleModel, prepareOfficialVehicle } from './teslaOfficialModel';
+import { createOfficialDoorController, isOfficialVehicle, loadVehicleModel, prepareOfficialVehicle, vehicleModelVariant, resolvedVehicleModelVariant, MANUAL_MODEL_STORAGE_KEY, type VehicleModelVariant } from './teslaOfficialModel';
 import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
 import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
 import TeslaWeatherIcon from './TeslaWeatherIcon.vue';
@@ -23,6 +23,7 @@ import { GPS_SPEED_MAX_AGE_MS, visualTravelSpeedMps, wheelAngularSpeed } from '.
 import { createGpsSpeedTracker, speedFromLiveGpsFix } from './teslaGpsSpeed';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
+import { MODEL_Y_2022_SKIN, readVehicleSkin, removeVehicleSkin, saveVehicleSkin, validateVehicleSkin, type VehicleSkinVariant } from './teslaVehicleSkin';
 
 function savedAppearance() {
   try { return normalizeAppearance(JSON.parse(localStorage.getItem(APPEARANCE_KEY) || 'null')); }
@@ -32,11 +33,133 @@ const appearance = reactive(savedAppearance());
 const appearanceOpen = ref(false);
 const appearanceSaveError = ref(false);
 let vehicleAppearance: ReturnType<typeof createVehicleAppearance> | undefined;
+let skinBlob: Blob | null = null;
+let skinRevision = 0;
+const skinPreview = ref('');
+const skinBusy = ref(false);
+const skinSupported = ref(false);
+const manualModelChoices: { value: VehicleSkinVariant; label: string }[] = [
+  { value: 'modely-high', label: 'Model Y · 2020–2024' },
+  { value: 'modely-juniper', label: 'Model Y · 2025+' },
+  { value: 'modely-standard', label: 'Model Y · 标准版' },
+  { value: 'modely-long', label: 'Model Y · 加长版' },
+  { value: 'model3-high', label: 'Model 3 · 2017–2023' },
+  { value: 'model3-highland', label: 'Model 3 · 2024+' },
+  { value: 'models-legacy', label: 'Model S · 2012–2020' },
+  { value: 'models-palladium', label: 'Model S · 2021+' },
+  { value: 'modelx-legacy', label: 'Model X · 2015–2020' },
+  { value: 'modelx-palladium', label: 'Model X · 2021+' },
+  { value: 'cybertruck', label: 'Cybertruck' },
+  { value: 'semi', label: 'Semi' },
+];
+function readManualModels(): Record<string, VehicleSkinVariant> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MANUAL_MODEL_STORAGE_KEY) || '{}');
+    if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+    return Object.fromEntries(Object.entries(saved).filter(([key, value]) =>
+      key.length <= 32 && manualModelChoices.some(choice => choice.value === value))) as Record<string, VehicleSkinVariant>;
+  } catch { return {}; }
+}
+const manualModels = ref(readManualModels());
+const manualModelKey = computed(() => state.selectedVin.trim().toUpperCase() || 'unidentified');
+const detectedModelVariant = computed(() => vehicleModelVariant(
+  state.selectedVin, selectedVehicle.value?.carType || state.latestSample?.vehicle_config?.car_type));
+const manualModelVariant = computed<VehicleSkinVariant>({
+  get: () => manualModels.value[manualModelKey.value] || 'modely-high',
+  set: variant => {
+    manualModels.value = { ...manualModels.value, [manualModelKey.value]: variant };
+    try { localStorage.setItem(MANUAL_MODEL_STORAGE_KEY, JSON.stringify(manualModels.value)); }
+    catch { /* Browser storage is optional. */ }
+  },
+});
+const activeModelVariant = computed<VehicleSkinVariant>(() => resolvedVehicleModelVariant(
+  state.selectedVin, selectedVehicle.value?.carType || state.latestSample?.vehicle_config?.car_type, manualModelVariant.value));
+const activeSkinVariant = computed<VehicleSkinVariant>(() => activeModelVariant.value);
+function showSkinPreview(blob: Blob | null) {
+  if (skinPreview.value) URL.revokeObjectURL(skinPreview.value);
+  skinPreview.value = blob ? URL.createObjectURL(blob) : '';
+}
+async function applyCurrentSkin() {
+  const controller = vehicleAppearance;
+  if (!controller || controller.skinVariant !== activeSkinVariant.value) return;
+  await controller.setSkin(skinBlob);
+  if (controller === vehicleAppearance) {
+    controller.update(appearance);
+    renderVehicleViewer(false);
+  }
+}
+async function uploadVehicleSkin(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  skinBusy.value = true;
+  try {
+    await validateVehicleSkin(file);
+    await selectVehicleSkin(file);
+    ElMessage.success('车辆皮肤已保存');
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '车辆皮肤保存失败'); }
+  finally { skinBusy.value = false; }
+}
+async function selectVehicleSkin(blob: Blob) {
+  const variant = activeSkinVariant.value;
+  if (!variant || !skinSupported.value) throw new Error('当前车模不支持 UV 皮肤');
+  skinRevision++;
+  await saveVehicleSkin(variant, blob);
+  if (variant !== activeSkinVariant.value) return;
+  skinBlob = blob;
+  showSkinPreview(blob);
+  await applyCurrentSkin();
+}
+async function useExampleSkin() {
+  skinBusy.value = true;
+  try {
+    if (activeSkinVariant.value !== MODEL_Y_2022_SKIN) throw new Error('示例皮肤仅适用于 20–24 款 Model Y');
+    const response = await fetch('/skins/modely-2022-example.png');
+    if (!response.ok) throw new Error('示例皮肤加载失败');
+    await selectVehicleSkin(await response.blob());
+    ElMessage.success('已应用示例皮肤');
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '示例皮肤加载失败'); }
+  finally { skinBusy.value = false; }
+}
+async function clearVehicleSkin() {
+  const variant = activeSkinVariant.value;
+  if (!variant) return;
+  skinBusy.value = true;
+  try {
+    skinRevision++;
+    await removeVehicleSkin(variant);
+    if (variant !== activeSkinVariant.value) return;
+    skinBlob = null;
+    showSkinPreview(null);
+    await applyCurrentSkin();
+  } catch { ElMessage.error('移除车辆皮肤失败'); }
+  finally { skinBusy.value = false; }
+}
+function resetVehicleAppearance() {
+  Object.assign(appearance, defaultAppearance);
+  if (skinBlob) void clearVehicleSkin();
+}
+function restoreVariantSkin() {
+  const variant = activeSkinVariant.value;
+  const revision = ++skinRevision;
+  skinBlob = null;
+  showSkinPreview(null);
+  if (!variant) return;
+  void readVehicleSkin(variant).then(blob => {
+    if (teslaPageDisposed || skinRevision !== revision || activeSkinVariant.value !== variant) return;
+    skinBlob = blob;
+    showSkinPreview(blob);
+    return applyCurrentSkin();
+  }).catch(error => console.warn('Unable to load vehicle skin', error));
+}
 watch(appearance, () => {
   vehicleAppearance?.update(appearance);
+  renderVehicleViewer(false);
   try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(normalizeAppearance(appearance))); appearanceSaveError.value=false; }
   catch { appearanceSaveError.value=true; }
 });
+watch(appearanceOpen, () => { nextTick(resizeVehicleViewer); });
 
 const pageRef = ref<HTMLElement | null>(null);
 const vehicleVisualRef = ref<HTMLElement | null>(null);
@@ -1310,7 +1433,7 @@ function initVehicleViewer() {
   const loader = new GLTFLoader(manager);
   loader.setMeshoptDecoder(MeshoptDecoder);
   state.visualLoading = true;
-  loadVehicleModel(loader).then((gltf) => {
+  loadVehicleModel(loader, activeModelVariant.value).then((gltf) => {
     if (vehicleRenderer !== activeRenderer) return;
     const model = gltf.scene;
     const official = prepareOfficialVehicle(model);
@@ -1341,7 +1464,9 @@ function initVehicleViewer() {
     vehicleLights.setEnabled(headlights.value);
     vehicleAppearance?.dispose();
     vehicleAppearance = createVehicleAppearance(model);
+    skinSupported.value = vehicleAppearance.skinSupported;
     vehicleAppearance.update(appearance);
+    void applyCurrentSkin().catch(error => console.warn('Unable to apply vehicle skin', error));
     vehicleDoorNodes = [];
     officialDoorController = official ? createOfficialDoorController(model, gltf.animations) : undefined;
     if (!official) model.traverse(child => {
@@ -1381,6 +1506,7 @@ function resizeVehicleViewer() {
   if (Math.abs(vehicleRenderer.getPixelRatio() - ratio) > .01) vehicleRenderer.setPixelRatio(ratio);
   vehicleRenderer.setSize(width, height);
   vehicleCamera.aspect = width / height;
+  vehicleCamera.zoom = appearanceOpen.value ? Math.min(1, width / height / 1.1) : 1;
   vehicleCamera.updateProjectionMatrix();
   renderVehicleViewer();
 }
@@ -1855,6 +1981,7 @@ function renderTrackOnMap() {
 }
 
 onMounted(() => {
+  restoreVariantSkin();
   geoLocation.addListener('tesla-status-speed', receiveGpsSpeed);
   geoLocation.addErrorListener('tesla-status-speed', handleGpsSpeedError);
   if (navigator.geolocation) {
@@ -1889,6 +2016,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  showSkinPreview(null);
   teslaPageDisposed = true;
   destroyTrackMap();
   geoLocation.removeListener('tesla-status-speed');
@@ -1936,6 +2064,18 @@ watch(() => state.activeTab, (tabName) => {
 watch(currentShiftState, () => {
   updateVehicleVisualState();
 });
+watch(() => state.selectedVin, vin => {
+  try { if (vin) localStorage.setItem('tmc.tesla.selected-vin', vin); }
+  catch { /* Browser storage is optional. */ }
+});
+watch(activeModelVariant, (variant, previous) => {
+  if (variant === previous) return;
+  skinSupported.value = false;
+  restoreVariantSkin();
+  if (!vehicleViewerInitialized || state.activeTab !== 'status') return;
+  disposeVehicleViewer();
+  nextTick(() => initVehicleViewer());
+});
 </script>
 
 <template>
@@ -1946,7 +2086,7 @@ watch(currentShiftState, () => {
           <section class="tesla-grid tesla-grid--content">
             <article class="tesla-card tesla-card--visual" v-loading="state.visualLoading" element-loading-text="正在加载车辆、场景与贴图…" element-loading-background="#111c26">
               <div v-if="state.visualError" class="map-empty">{{ state.visualError }}</div>
-              <div v-else class="vehicle-visual-shell" :class="{ 'vehicle-visual-shell--loading': state.visualLoading }" :aria-busy="state.visualLoading">
+              <div v-else class="vehicle-visual-shell" :class="{ 'vehicle-visual-shell--loading': state.visualLoading, 'vehicle-visual-shell--editing': appearanceOpen }" :aria-busy="state.visualLoading">
                 <div class="vehicle-speed-hud" aria-label="当前 GPS 车速" :title="gpsSpeedMessage || '车机 GPS 速度'">
                   <span class="vehicle-speed-hud__label">GPS 车速</span>
                   <div class="vehicle-speed-hud__reading">
@@ -2008,23 +2148,42 @@ watch(currentShiftState, () => {
                       </button>
                     </div>
                   </el-popover>
-                  <el-popover v-model:visible="appearanceOpen" trigger="click" placement="top-end" :width="300">
-                    <template #reference><button aria-label="自定义车辆外观">车辆外观</button></template>
-                    <div class="vehicle-appearance-editor">
-                      <strong>车辆外观</strong>
-                      <label>车衣颜色 <input v-model="appearance.color" type="color" aria-label="车衣颜色" /></label>
-                      <div class="vehicle-paint-swatches">
-                        <button v-for="item in [['珍珠白','#eaf0f3'],['曜石黑','#202328'],['冷光银','#9ea7af'],['深海蓝','#163b70'],['烈焰红','#a51c30'],['松石绿','#467f78']]" :key="item[1]" :title="item[0]" :aria-label="item[0]" :aria-pressed="appearance.color===item[1]" :style="{background:item[1]}" @click="appearance.color=item[1]"></button>
-                      </div>
-                      <label>车衣材质 <el-select v-model="appearance.finish" aria-label="车衣材质"><el-option v-for="finish in paintFinishes" :key="finish.value" :label="finish.label" :value="finish.value" /></el-select></label>
-                      <label>牌照文字 <el-input v-model="appearance.plate" aria-label="牌照文字" maxlength="10" placeholder="例如：沪AD12345" @change="appearance.plate=normalizeAppearance(appearance).plate" /></label>
-                      <label>牌照样式 <el-select v-model="appearance.plateStyle" aria-label="牌照样式"><el-option label="新能源绿牌" value="green"/><el-option label="蓝牌" value="blue"/><el-option label="黑牌" value="black"/><el-option label="白牌" value="white"/></el-select></label>
-                      <small>{{ appearanceSaveError ? '浏览器未能保存设置，刷新后可能丢失' : '实时预览，自动保存在当前浏览器' }}</small>
-                      <el-button @click="Object.assign(appearance, defaultAppearance)">恢复默认</el-button>
-                    </div>
-                  </el-popover>
+                  <button type="button" aria-label="自定义车辆外观" :aria-pressed="appearanceOpen" @click="appearanceOpen = !appearanceOpen">{{ appearanceOpen ? '完成编辑' : '车辆外观' }}</button>
 
                 </div>
+                <aside v-if="appearanceOpen" class="vehicle-appearance-panel" aria-label="车辆外观编辑">
+                    <div class="vehicle-appearance-heading"><div><small>实时预览</small><strong>车辆外观</strong></div><button type="button" aria-label="关闭车辆外观编辑" @click="appearanceOpen = false">×</button></div>
+                    <div class="vehicle-appearance-editor">
+                      <label>车衣颜色 <input v-model="appearance.color" type="color" aria-label="车衣颜色" :disabled="!!skinPreview" /></label>
+                      <div class="vehicle-paint-swatches">
+                        <button v-for="item in [['珍珠白','#eaf0f3'],['曜石黑','#202328'],['冷光银','#9ea7af'],['深海蓝','#163b70'],['烈焰红','#a51c30'],['松石绿','#467f78']]" :key="item[1]" :title="item[0]" :aria-label="item[0]" :aria-pressed="appearance.color===item[1]" :disabled="!!skinPreview" :style="{background:item[1]}" @click="appearance.color=item[1]"></button>
+                      </div>
+                      <label>车衣材质 <el-select v-model="appearance.finish" aria-label="车衣材质"><el-option v-for="finish in paintFinishes" :key="finish.value" :label="finish.label" :value="finish.value" /></el-select></label>
+                       <label v-if="detectedModelVariant === 'unknown'">车型（未能自动识别）
+                         <el-select v-model="manualModelVariant" aria-label="手动选择车型">
+                           <el-option v-for="choice in manualModelChoices" :key="choice.value" :label="choice.label" :value="choice.value" />
+                         </el-select>
+                       </label>
+                      <div class="vehicle-skin-editor">
+                        <strong>自定义车辆皮肤</strong>
+                        <small>上传与当前车型 UV 排布对应的正方形贴图；各车型单独保存在服务器，仅作用于车身漆面。</small>
+                        <small v-if="skinPreview">清除皮肤后可继续调节车衣颜色。</small>
+                        <img v-if="skinPreview" :src="skinPreview" alt="当前车辆皮肤预览" />
+                        <div class="vehicle-skin-actions">
+                          <el-button v-if="activeSkinVariant === MODEL_Y_2022_SKIN" :disabled="!skinSupported || skinBusy" @click="useExampleSkin">试用示例</el-button>
+                          <label class="vehicle-skin-upload" :class="{ disabled: !activeSkinVariant || !skinSupported || skinBusy }">
+                            上传 UV 贴图<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="!activeSkinVariant || !skinSupported || skinBusy" @change="uploadVehicleSkin" />
+                          </label>
+                          <el-button :disabled="!skinPreview || skinBusy" @click="clearVehicleSkin">清除皮肤</el-button>
+                        </div>
+                         <small v-if="!skinSupported">当前模型不支持这张 UV 贴图</small>
+                      </div>
+                      <label>牌照文字 <el-input v-model="appearance.plate" aria-label="牌照文字" maxlength="10" placeholder="例如：沪AD12345" @change="appearance.plate=normalizeAppearance(appearance).plate" /></label>
+                      <label>牌照样式 <el-select v-model="appearance.plateStyle" aria-label="牌照样式"><el-option label="新能源绿牌" value="green"/><el-option label="蓝牌" value="blue"/><el-option label="黑牌" value="black"/><el-option label="白牌" value="white"/></el-select></label>
+                      <small>{{ appearanceSaveError ? '浏览器未能保存车色和车牌设置' : '车色和车牌保存在当前浏览器；皮肤保存在服务器' }}</small>
+                      <el-button @click="resetVehicleAppearance">恢复默认</el-button>
+                    </div>
+                </aside>
               </div>
             </article>
           </section>
@@ -2868,6 +3027,12 @@ watch(currentShiftState, () => {
 .vehicle-appearance-editor label{display:flex;align-items:center;justify-content:space-between;gap:14px;white-space:nowrap}
 .vehicle-appearance-editor input[type=color]{width:58px;height:32px;border:0;background:none;cursor:pointer}
 .vehicle-appearance-editor small{color:var(--color-text-soft);font-size:12px}
+.vehicle-skin-editor{display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--color-border);padding-top:12px}
+.vehicle-skin-editor>img{width:72px;height:72px;object-fit:contain;background:#111;border-radius:6px}
+.vehicle-skin-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.vehicle-skin-upload{min-height:36px;padding:0 10px;border:1px solid var(--color-border);border-radius:6px;cursor:pointer}
+.vehicle-skin-upload.disabled{opacity:.5;cursor:not-allowed}
+.vehicle-skin-upload input{display:none}
 .vehicle-paint-swatches{display:flex;gap:10px}
 .vehicle-paint-swatches button{width:30px;height:30px;border-radius:50%;border:2px solid #ffffff;box-shadow:0 0 0 1px #cbd4da;cursor:pointer}
 .vehicle-paint-swatches button[aria-pressed=true]{box-shadow:0 0 0 2px #329cff}
@@ -2966,6 +3131,81 @@ watch(currentShiftState, () => {
 
 <style scoped>
 .vehicle-visual-shell--loading { visibility: hidden; pointer-events: none; }
+</style>
+
+<style scoped>
+.vehicle-visual-shell--editing { --appearance-panel-width: clamp(260px, 36%, 320px); }
+.tesla-page--visual .vehicle-visual-shell--editing .vehicle-visual-stage {
+  right: var(--appearance-panel-width);
+  width: calc(100% - var(--appearance-panel-width));
+}
+.vehicle-visual-shell--editing .vehicle-visual-overlay { display: none; }
+.vehicle-visual-shell--editing .vehicle-map-controls { right: calc(var(--appearance-panel-width) + 12px); }
+.vehicle-appearance-panel {
+  position: absolute; inset: 0 0 0 auto; z-index: 5;
+  box-sizing: border-box; width: var(--appearance-panel-width);
+  padding: 18px 18px 24px;
+  overflow-y: auto; overscroll-behavior: contain;
+  color: #e9f1f6; background: #17232d;
+  border-left: 1px solid #ffffff24;
+  box-shadow: -12px 0 28px #06111a55;
+  scrollbar-width: thin; scrollbar-color: #ffffff50 transparent;
+  --el-text-color-regular: #e9f1f6;
+  --el-text-color-primary: #ffffff;
+  --el-fill-color-blank: #233340;
+  --el-border-color: #ffffff38;
+  --el-color-primary: #61b9df;
+}
+.vehicle-appearance-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 20px; }
+.vehicle-appearance-heading > div { display: grid; gap: 4px; }
+.vehicle-appearance-heading small { color: #91b6ca; font-size: 11px; letter-spacing: .12em; }
+.vehicle-appearance-heading strong { font-size: 20px; font-weight: 650; }
+.vehicle-appearance-heading button {
+  width: 34px; height: 34px; flex: 0 0 auto; border-radius: 10px;
+  border: 1px solid #ffffff32; background: #ffffff14; color: #fff;
+  font: inherit; font-size: 24px; line-height: 1; cursor: pointer;
+}
+.vehicle-appearance-panel .vehicle-appearance-editor { gap: 18px; }
+.vehicle-appearance-panel .vehicle-appearance-editor > label {
+  display: grid; gap: 8px; justify-content: stretch; white-space: normal;
+  color: #c7d7e1; font-size: 13px;
+}
+.vehicle-appearance-panel .vehicle-appearance-editor input[type=color] {
+  box-sizing: border-box; width: 100%; height: 42px; padding: 3px;
+  border: 1px solid #ffffff38; border-radius: 9px; background: #233340;
+}
+.vehicle-appearance-panel .vehicle-appearance-editor small { color: #9eb5c4; line-height: 1.45; }
+.vehicle-appearance-panel .vehicle-paint-swatches { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+.vehicle-appearance-panel .vehicle-paint-swatches button { width: 30px; height: 30px; }
+.vehicle-appearance-panel .vehicle-skin-editor { border-top-color: #ffffff26; }
+.vehicle-appearance-panel .vehicle-skin-editor > strong { font-size: 14px; }
+.vehicle-appearance-panel .vehicle-skin-upload {
+  display: inline-flex; align-items: center; min-height: 36px;
+  padding: 0 12px; border-color: #ffffff38; border-radius: 8px;
+}
+.vehicle-appearance-panel :deep(.el-select),
+.vehicle-appearance-panel :deep(.el-input) { width: 100%; }
+.vehicle-appearance-panel :deep(.el-select__wrapper),
+.vehicle-appearance-panel :deep(.el-input__wrapper) {
+  min-height: 40px; background: #233340;
+  box-shadow: 0 0 0 1px #ffffff38 inset;
+}
+.vehicle-appearance-panel :deep(.el-button) {
+  min-height: 36px; border-radius: 8px;
+  background: #233340; color: #e9f1f6; border-color: #ffffff38;
+}
+.vehicle-appearance-panel :deep(.el-button:hover) { background: #304859; color: #fff; }
+@media (max-width: 560px) {
+  .vehicle-visual-shell--editing { --appearance-panel-width: 100%; }
+  .tesla-page--visual .vehicle-visual-shell--editing .vehicle-visual-stage {
+    inset: 0 0 auto; width: 100%; height: 53%;
+  }
+  .vehicle-appearance-panel {
+    inset: 53% 0 0; width: 100%; padding: 16px 18px;
+    border-left: 0; border-top: 1px solid #ffffff24;
+  }
+  .vehicle-visual-shell--editing .vehicle-map-controls { right: 8px; bottom: calc(47% + 8px); }
+}
 </style>
 
 <style>

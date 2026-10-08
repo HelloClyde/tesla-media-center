@@ -117,6 +117,7 @@ def ensure_tesla_storage():
                 in_service INTEGER,
                 calendar_enabled INTEGER,
                 api_version TEXT,
+                car_type TEXT,
                 updated_at INTEGER NOT NULL
             )
             '''
@@ -126,6 +127,8 @@ def ensure_tesla_storage():
         }
         if 'vid' not in vehicle_columns:
             conn.execute('ALTER TABLE tesla_vehicles ADD COLUMN vid TEXT')
+        if 'car_type' not in vehicle_columns:
+            conn.execute('ALTER TABLE tesla_vehicles ADD COLUMN car_type TEXT')
         conn.commit()
 
 
@@ -496,6 +499,7 @@ def normalize_vehicle_record(vehicle: dict[str, Any]):
         'inService': vehicle.get('in_service'),
         'calendarEnabled': vehicle.get('calendar_enabled'),
         'apiVersion': vehicle.get('api_version'),
+        'carType': (vehicle.get('vehicle_config') or {}).get('car_type') or vehicle.get('car_type'),
     }
 
 
@@ -505,8 +509,8 @@ def upsert_vehicle_cache(vehicle: dict[str, Any]):
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             '''
-            INSERT INTO tesla_vehicles(vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO tesla_vehicles(vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, car_type, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(vin) DO UPDATE SET
               vehicle_id=excluded.vehicle_id,
               vid=excluded.vid,
@@ -515,6 +519,7 @@ def upsert_vehicle_cache(vehicle: dict[str, Any]):
               in_service=excluded.in_service,
               calendar_enabled=excluded.calendar_enabled,
               api_version=excluded.api_version,
+              car_type=COALESCE(excluded.car_type, tesla_vehicles.car_type),
               updated_at=excluded.updated_at
             ''',
             (
@@ -526,6 +531,7 @@ def upsert_vehicle_cache(vehicle: dict[str, Any]):
                 1 if vehicle.get('inService') else 0 if vehicle.get('inService') is not None else None,
                 1 if vehicle.get('calendarEnabled') else 0 if vehicle.get('calendarEnabled') is not None else None,
                 vehicle.get('apiVersion'),
+                vehicle.get('carType'),
                 int(time.time()),
             ),
         )
@@ -539,7 +545,7 @@ def cached_vehicles():
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             '''
-            SELECT vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, updated_at
+            SELECT vin, vehicle_id, vid, display_name, state, in_service, calendar_enabled, api_version, car_type, updated_at
             FROM tesla_vehicles
             ORDER BY updated_at DESC
             '''
@@ -554,6 +560,7 @@ def cached_vehicles():
         'inService': None if row['in_service'] is None else bool(row['in_service']),
         'calendarEnabled': None if row['calendar_enabled'] is None else bool(row['calendar_enabled']),
         'apiVersion': row['api_version'],
+        'carType': row['car_type'],
     } for row in rows]
 
 
@@ -1251,6 +1258,11 @@ def sync_vehicle(vin: str, display_name: str, state: str):
     payload = data.get('response') or data
     resolved_state = (payload.get('state') or state or 'unknown').lower()
     sample = extract_sample_from_vehicle_data(vin, display_name, resolved_state, payload)
+    car_type = (payload.get('vehicle_config') or {}).get('car_type')
+    if isinstance(car_type, str) and car_type:
+        ensure_tesla_storage()
+        with sqlite3.connect(get_tesla_db_path()) as conn:
+            conn.execute('UPDATE tesla_vehicles SET car_type = ? WHERE vin = ?', (car_type, vin))
     if sample.get('latitude') is None or sample.get('longitude') is None:
         logger.warning(
             f'tesla vehicle_data missing coordinates, vin={vin}, '
