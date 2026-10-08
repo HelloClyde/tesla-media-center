@@ -36,10 +36,41 @@ it('resumes a live stream with a short frame cushion', () => {
   p.frameBuffer = [{ t: 5, s: 10, d: [] }];
   p.bufferFrame({ t: 5, s: 10.3, d: [] });
   expect(p.stopBuffering).toHaveBeenCalledOnce();
+  expect(p.pauseDecoding).not.toHaveBeenCalled();
   p.frameBuffer = [{ t: 5, s: 10, d: [] }];
   p.browserSource = {}; p.stopBuffering.mockClear();
   p.bufferFrame({ t: 5, s: 10.3, d: [] });
   expect(p.stopBuffering).not.toHaveBeenCalled();
+});
+it('keeps decoding live video until a full second is buffered', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = true; p.decoderState = 2;
+  p.pauseDecoding = vi.fn();
+  p.frameBuffer = [{ t: 5, s: 10, d: [] }];
+  p.bufferFrame({ t: 5, s: 10.4, d: [] });
+  expect(p.pauseDecoding).not.toHaveBeenCalled();
+  p.bufferFrame({ t: 5, s: 11.1, d: [] });
+  expect(p.pauseDecoding).toHaveBeenCalledOnce();
+});
+it('schedules live audio ahead of video refresh without overrunning Web Audio', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = true;
+  let now = 0;
+  p.pcmPlayer = { startTime: 0, getTimestamp: () => now };
+  p.displayAudioFrame = vi.fn((frame: any) => {
+    p.pcmPlayer.startTime += 0.4;
+    return true;
+  });
+  p.onAudioFrame({ t: 4, s: 10, d: [1] });
+  p.onAudioFrame({ t: 4, s: 10.4, d: [2] });
+  p.onAudioFrame({ t: 4, s: 10.8, d: [3] });
+  expect(p.displayAudioFrame).toHaveBeenCalledTimes(2);
+  expect(p.liveAudioBuffer.length).toBe(1);
+  now = 0.2;
+  p.drainLiveAudio();
+  expect(p.displayAudioFrame).toHaveBeenCalledTimes(3);
+  expect(p.liveAudioBuffer.length).toBe(0);
+  expect(p.frameBuffer.length).toBe(0);
 });
 it('drains due AAC and video packets at low refresh rates but renders only the latest video', () => {
   const { player: p } = setup();

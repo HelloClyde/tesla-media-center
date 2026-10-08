@@ -29,13 +29,17 @@ it('opens and closes a live room inside the content area without a Vue update er
   const view = mount({ components: { WqzbView }, template: '<div class="main-view"><WqzbView /></div>' }, { attachTo: document.body });
   try {
     await flushPromises();
+    const app = view.get('.wqzb-app').element as HTMLElement;
+    app.scrollTop = 350;
     await view.get('button[aria-label="观看 测试直播"]').trigger('click');
     await flushPromises();
+    expect(app.scrollTop).toBe(0);
     expect(view.get('.wqzb-player-backdrop').element.parentElement?.classList.contains('wqzb-app')).toBe(true);
     expect(view.text()).toContain('测试直播');
     await view.get('.wqzb-player-head button').trigger('click');
     await flushPromises();
     expect(view.find('.wqzb-player-backdrop').exists()).toBe(false);
+    expect(app.scrollTop).toBe(350);
   } finally {
     view.unmount();
     vi.restoreAllMocks();

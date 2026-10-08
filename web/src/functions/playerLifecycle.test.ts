@@ -18,7 +18,7 @@ it('destroys idle resources without recreating workers and ignores queued worker
   const { player, workers, context } = setup();
   const pcm = { destroy: vi.fn() }, controller = { abort: vi.fn() }, source = { cancel: vi.fn() };
   player.pcmPlayer = pcm; player.fetchController = controller; player.browserSource = source;
-  player.frameBuffer = [{}]; player.displayAnimationFrame = 42;
+  player.frameBuffer = [{}]; player.displayAnimationFrame = 42; player.liveAudioTimer = 77;
   player.finishCallback = vi.fn(); player.timeCallback = vi.fn();
   const lateMessage = workers[1].onmessage;
   player.destroy(); player.destroy();
@@ -28,6 +28,7 @@ it('destroys idle resources without recreating workers and ignores queued worker
   expect(controller.abort).toHaveBeenCalledOnce();
   expect(source.cancel).toHaveBeenCalledOnce();
   expect(context.cancelAnimationFrame).toHaveBeenCalledWith(42);
+  expect(context.clearInterval).toHaveBeenCalledWith(77);
   expect(player.frameBuffer).toEqual([]);
   expect(player.finishCallback).toBeNull();
   expect(player.timeCallback).toBeNull();

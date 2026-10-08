@@ -31,6 +31,7 @@ const selectedRoom = ref<Room | null>(null);
 const playbackError = ref('');
 const playbackBusy = ref(false);
 const playing = ref(false);
+const appRoot = ref<HTMLElement | null>(null);
 const canvas = ref<HTMLCanvasElement | null>(null);
 const loadingLayer = ref<HTMLDivElement | null>(null);
 const audioBlocked = ref(false);
@@ -40,6 +41,7 @@ let generation = 0;
 let playbackGeneration = 0;
 let playbackController: AbortController | undefined;
 let player: any = undefined;
+let savedListScrollTop = 0;
 
 const roomCount = computed(() => plates.value.reduce((count, plate) => count + plate.rooms.length, 0));
 
@@ -108,11 +110,26 @@ function stopPlayback() {
   playing.value = false;
 }
 
-function closeRoom() { stopPlayback(); selectedRoom.value = null; playbackError.value = ''; playbackBusy.value = false; }
+function closeRoom() {
+  stopPlayback();
+  selectedRoom.value = null;
+  playbackError.value = '';
+  playbackBusy.value = false;
+  void nextTick(() => {
+    if (!selectedRoom.value && appRoot.value) appRoot.value.scrollTop = savedListScrollTop;
+  });
+}
 
 async function openRoom(room: Room) {
+  if (!selectedRoom.value) savedListScrollTop = appRoot.value?.scrollTop ?? 0;
   stopPlayback();
   selectedRoom.value = room;
+  // The player is positioned at the top of this scroll container. A room
+  // selected farther down the grid must first bring that layer into view.
+  if (appRoot.value) appRoot.value.scrollTop = 0;
+  void nextTick(() => {
+    if (selectedRoom.value === room && appRoot.value) appRoot.value.scrollTop = 0;
+  });
   playbackError.value = '';
   playbackBusy.value = true;
   playbackController = new AbortController();
@@ -181,7 +198,7 @@ onBeforeUnmount(() => { ++generation; controller?.abort(); stopPlayback(); });
 </script>
 
 <template>
-  <main class="wqzb-app" :class="{ 'player-open': selectedRoom }">
+  <main ref="appRoot" class="wqzb-app" :class="{ 'player-open': selectedRoom }">
     <header class="wqzb-header">
       <div>
         <div class="wqzb-eyebrow">LIVE SPORTS</div>

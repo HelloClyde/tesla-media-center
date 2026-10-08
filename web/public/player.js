@@ -77,6 +77,8 @@ function Player() {
     this.buffering          = false;
     this.bufferingWatchdog   = null;
     this.frameBuffer        = [];
+    this.liveAudioBuffer    = [];
+    this.liveAudioTimer     = null;
     this.isStream           = false;
     this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
@@ -471,6 +473,8 @@ Player.prototype.stop = function () {
     this.sourceWatchdog = null;
     clearTimeout(this.bufferingWatchdog);
     this.bufferingWatchdog = null;
+    clearInterval(this.liveAudioTimer);
+    this.liveAudioTimer = null;
     if (this.displayAnimationFrame !== null) {
         cancelAnimationFrame(this.displayAnimationFrame);
         this.displayAnimationFrame = null;
@@ -501,6 +505,7 @@ Player.prototype.stop = function () {
     this.playerState        = playerStateIdle;
     this.decoding           = false;
     this.frameBuffer        = [];
+    this.liveAudioBuffer    = [];
     this.buffering          = false;
     this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
@@ -1085,6 +1090,10 @@ Player.prototype.onAudioParam = function (a) {
     this.audioChannels      = channels;
     this.audioSampleRate    = sampleRate;
     if (this.browserSource && this.buffering) this.pcmPlayer.pause();
+    if (this.isStream && !this.browserSource) {
+        clearInterval(this.liveAudioTimer);
+        this.liveAudioTimer = setInterval(this.drainLiveAudio.bind(this), 20);
+    }
 };
 
 Player.prototype.restartAudio = function () {
@@ -1112,8 +1121,11 @@ Player.prototype.bufferFrame = function (frame) {
     // Live sources may never build a full second of queued frames on slower
     // decoders. Resume after a short cushion instead of repeatedly stalling.
     var resumeBufferTime = this.isStream && !this.browserSource ? 0.25 : maxBufferTimeLength;
-    if (this.getBufferTimerLength() >= resumeBufferTime || this.decoderState == decoderStateFinished) {
-        if (this.decoding) {
+    var bufferedTime = this.getBufferTimerLength();
+    if (bufferedTime >= resumeBufferTime || this.decoderState == decoderStateFinished) {
+        // Startup needs only a short cushion, but decoding must continue until
+        // the full high-water mark so Web Audio can schedule ahead of playback.
+        if (this.decoding && (bufferedTime >= maxBufferTimeLength || this.decoderState == decoderStateFinished)) {
             //this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
             this.pauseDecoding();
         }
@@ -1147,12 +1159,29 @@ Player.prototype.displayAudioFrame = function (frame) {
         );
     }
 
-    this.pcmPlayer.play(new Uint8Array(frame.d));
+    this.pcmPlayer.play(new Uint8Array(frame.d), this.isStream && !this.browserSource);
     return true;
 };
 
 Player.prototype.onAudioFrame = function (frame) {
-    this.bufferFrame(frame);
+    if (this.isStream && !this.browserSource) {
+        if (this.playerState !== playerStatePlaying) return;
+        this.liveAudioBuffer.push(frame);
+        this.drainLiveAudio();
+    } else {
+        this.bufferFrame(frame);
+    }
+};
+
+// Schedule live PCM independently of video refresh. A slow WebGL frame should
+// not delay audio packets until the next requestAnimationFrame callback.
+Player.prototype.drainLiveAudio = function () {
+    if (this.buffering || this.playerState !== playerStatePlaying || !this.pcmPlayer) return;
+    while (this.liveAudioBuffer.length &&
+           this.pcmPlayer.startTime - this.pcmPlayer.getTimestamp() < 0.7) {
+        if (!this.displayAudioFrame(this.liveAudioBuffer[0])) break;
+        this.liveAudioBuffer.shift();
+    }
 };
 
 Player.prototype.onDecodeFinished = function (objData) {
@@ -1263,6 +1292,8 @@ Player.prototype.displayLoop = function() {
         return;
     }
 
+    if (this.isStream && !this.browserSource) this.drainLiveAudio();
+
     if (this.frameBuffer.length == 0) {
         return;
     }
@@ -1354,6 +1385,7 @@ Player.prototype.stopBuffering = function () {
     this.hideLoading();
     if (this.isStream) {
         if (this.browserSource && this.pcmPlayer) this.pcmPlayer.resume();
+        else this.drainLiveAudio();
         return;
     }
     if (this.pcmPlayer) this.pcmPlayer.resume();

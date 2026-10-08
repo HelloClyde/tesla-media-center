@@ -134,7 +134,7 @@ PCMPlayer.prototype.getTimestamp = function () {
     }
 };
 
-PCMPlayer.prototype.play = function (data) {
+PCMPlayer.prototype.play = function (data, continuous) {
     if (!this.isTypedArray(data)) {
         return;
     }
@@ -160,11 +160,11 @@ PCMPlayer.prototype.play = function (data) {
         for (i = 0; i < length; i++) {
             audioData[i] = data[offset];
             /* fadein */
-            if (i < 50) {
+            if (!continuous && i < 50) {
                 audioData[i] = (audioData[i] * i) / 50;
             }
             /* fadeout*/
-            if (i >= (length - 51)) {
+            if (!continuous && i >= (length - 51)) {
                 audioData[i] = (audioData[i] * decrement--) / 50;
             }
             offset += this.option.channels;
