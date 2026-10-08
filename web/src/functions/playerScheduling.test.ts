@@ -20,6 +20,27 @@ function setup(timeout: typeof setTimeout = setTimeout, interval: typeof setInte
     renderVideoFrame: vi.fn(), startBuffering: vi.fn(), startDecoding: vi.fn() });
   return { player, workerUrls };
 }
+it('keeps a live HTTP stream running when FLV metadata reports a tiny duration', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = true; p.duration = 5;
+  p.pcmPlayer.getTimestamp = () => 12;
+  p.notifyFinish = vi.fn();
+  p.updateTrackTime();
+  expect(p.notifyFinish).not.toHaveBeenCalled();
+  expect(p.playerState).toBe(1);
+});
+it('resumes a live stream with a short frame cushion', () => {
+  const { player: p } = setup();
+  p.browserSource = null; p.isStream = true; p.buffering = true;
+  p.decoderState = 2; p.pauseDecoding = vi.fn(); p.stopBuffering = vi.fn();
+  p.frameBuffer = [{ t: 5, s: 10, d: [] }];
+  p.bufferFrame({ t: 5, s: 10.3, d: [] });
+  expect(p.stopBuffering).toHaveBeenCalledOnce();
+  p.frameBuffer = [{ t: 5, s: 10, d: [] }];
+  p.browserSource = {}; p.stopBuffering.mockClear();
+  p.bufferFrame({ t: 5, s: 10.3, d: [] });
+  expect(p.stopBuffering).not.toHaveBeenCalled();
+});
 it('drains due AAC and video packets at low refresh rates but renders only the latest video', () => {
   const { player: p } = setup();
   p.frameBuffer = [

@@ -1,6 +1,8 @@
 function Texture(gl) {
     this.gl = gl;
     this.texture = gl.createTexture();
+    this.width = 0;
+    this.height = 0;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
 
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -20,7 +22,15 @@ Texture.prototype.bind = function (n, program, name) {
 Texture.prototype.fill = function (width, height, data) {
     var gl = this.gl;
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, width, height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+    if (this.width !== width || this.height !== height) {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, width, height, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+        this.width = width;
+        this.height = height;
+    } else {
+        // Keep the texture allocation across frames; reallocating three planes
+        // on every frame is expensive on the car browser's WebGL implementation.
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+    }
 };
 
 function WebGLPlayer(canvas, options) {

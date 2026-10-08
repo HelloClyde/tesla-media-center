@@ -22,6 +22,7 @@ function Decoder() {
     this.requestCallback    = null;
     this.probeTime          = null;
     this.inputEnded         = false;
+    this.liveStream         = false;
 }
 
 Decoder.prototype.initDecoder = function (fileSize, chunkSize) {
@@ -127,7 +128,7 @@ Decoder.prototype.decode = function () {
     var ret = Module._decodeOnePacket();
     // This legacy core returns "needs data" (2) once its finite input is empty,
     // even at EOF. The downloader explicitly identifies the last byte range.
-    if (ret == 7 || (ret == 2 && self.decoder.inputEnded)) {
+    if ((ret == 7 && !self.decoder.liveStream) || (ret == 2 && self.decoder.inputEnded)) {
         self.decoder.logger.logInfo("Decoder finished.");
         self.decoder.pauseDecoding();
         var objData = {
@@ -163,6 +164,7 @@ Decoder.prototype.processReq = function (req) {
     switch (req.t) {
         case kInitDecoderReq:
             this.inputEnded = false;
+            this.liveStream = req.live === true;
             this.probeTime = typeof req.pt === 'number' ? req.pt : null;
             this.initDecoder(req.s, req.c);
             break;

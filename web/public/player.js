@@ -731,6 +731,7 @@ Player.prototype.onGetFileInfo = function (info) {
             t: kInitDecoderReq,
             s: this.fileInfo.size,
             c: this.fileInfo.chunkSize,
+            live: this.isStream && !this.browserSource,
             pt: this.browserSource ? this.browserSource.probeTime : null
         };
         this.decodeWorker.postMessage(req);
@@ -1108,7 +1109,10 @@ Player.prototype.bufferFrame = function (frame) {
     this.frameBuffer.push(frame);
     if (this.browserSource && this.sourceEnded && this.buffering) this.stopBuffering();
     //this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
-    if (this.getBufferTimerLength() >= maxBufferTimeLength || this.decoderState == decoderStateFinished) {
+    // Live sources may never build a full second of queued frames on slower
+    // decoders. Resume after a short cushion instead of repeatedly stalling.
+    var resumeBufferTime = this.isStream && !this.browserSource ? 0.25 : maxBufferTimeLength;
+    if (this.getBufferTimerLength() >= resumeBufferTime || this.decoderState == decoderStateFinished) {
         if (this.decoding) {
             //this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
             this.pauseDecoding();
@@ -1462,7 +1466,9 @@ Player.prototype.updateTrackTime = function () {
             currentPlayTime = this.pcmPlayer.getTimestamp() + this.streamBaseOffset;
             if (this.browserSource) currentPlayTime += this.beginTimeOffset;
         }
-        var maxPlayTime = this.duration > 0 ? this.duration / 1000 : 0;
+        // Live HTTP-FLV metadata may contain a tiny placeholder duration.
+        // Only browser-backed finite streams should stop at that timestamp.
+        var maxPlayTime = this.isStream && !this.browserSource ? 0 : this.duration > 0 ? this.duration / 1000 : 0;
         if (maxPlayTime > 0 && currentPlayTime > maxPlayTime) {
             currentPlayTime = maxPlayTime;
         }
@@ -1669,6 +1675,7 @@ Player.prototype.requestStream = function (url) {
         const signal = this.fetchController.signal;
     
         fetch(url, {signal}).then(async function respond(response) {
+            if (!response.ok || !response.body) throw new Error('直播流请求失败（HTTP ' + response.status + '）');
             const reader = response.body.getReader();
             if (signal.aborted || self.destroyed) return reader.cancel();
             return reader.read().then(function processData({done, value}) {
@@ -1683,11 +1690,12 @@ Player.prototype.requestStream = function (url) {
                 }
     
                 var dataLength = value.byteLength;
+                var receivedLength = dataLength;
                 var offset = 0;
                 if (dataLength > self.fileInfo.chunkSize) {
                     do {
                         let len = Math.min(self.fileInfo.chunkSize, dataLength);
-                        var data = value.buffer.slice(offset, offset + len);
+                        var data = value.buffer.slice(value.byteOffset + offset, value.byteOffset + offset + len);
                         dataLength -= len;
                         offset += len;
                         var objData = {
@@ -1700,19 +1708,20 @@ Player.prototype.requestStream = function (url) {
                 } else {
                     var objData = {
                         t: kFeedDataReq,
-                        d: value.buffer
+                        d: value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength)
                     };
                     // console.log('objData', objData);
                     self.decodeWorker.postMessage(objData, [objData.d]);
                 }
     
                 if (self.decoderState == decoderStateIdle) {
-                    self.onStreamDataUnderDecoderIdle(dataLength);
+                    self.onStreamDataUnderDecoderIdle(receivedLength);
                 }
     
                 return reader.read().then(processData);
             });
         }).catch(err => {
+            if (!signal.aborted && !self.destroyed) self.reportPlayError(-1, 0, err.message || '直播流读取失败');
         });
     }
     
