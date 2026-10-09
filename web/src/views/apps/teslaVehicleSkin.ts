@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { vehicleModelVariantForObject, type VehicleModelVariant } from './teslaOfficialModel';
 
-export const MODEL_Y_2022_SKIN = 'modely-high';
 export type VehicleSkinVariant = Exclude<VehicleModelVariant, 'unknown'>;
 const DATABASE = 'tmc-vehicle-skins';
 const STORE = 'skins';
@@ -47,7 +46,7 @@ async function checkedJson(response: Response): Promise<void> {
 
 export async function readVehicleSkin(variant: VehicleSkinVariant): Promise<Blob | null> {
   const response = await fetch(skinUrl(variant), { credentials: 'same-origin', cache: 'no-store' });
-  if (response.status === 404) {
+  if (response.status === 204) {
     // Migrate the previous browser-only skin once, without overwriting a server skin.
     const legacy = await readLegacySkin(variant).catch(() => null);
     if (!legacy) return null;

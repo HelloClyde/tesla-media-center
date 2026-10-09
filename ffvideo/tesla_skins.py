@@ -89,7 +89,7 @@ def add_tesla_skin_routes(app):
                     response.headers['Cache-Control'] = 'no-store'
                     response.headers['X-Content-Type-Options'] = 'nosniff'
                     return response
-            return json_fail('not_found', message='该车型尚未上传皮肤'), 404
+            return Response(status=204)
         if request.method == 'DELETE':
             try:
                 with _skin_write_lock:

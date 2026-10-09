@@ -11,6 +11,7 @@ from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
 from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, amap_recent_places, tencent_video
 from ffvideo.tesla_skins import add_tesla_skin_routes
+from ffvideo.tesla_appearance import add_routes as add_tesla_appearance_routes
 import time
 from cryptography import fernet
 import mimetypes
@@ -129,5 +130,6 @@ if __name__ == '__main__':
     add_amap_map_route(app)
     tesla.add_tesla_route(app)
     add_tesla_skin_routes(app)
+    add_tesla_appearance_routes(app)
     tesla.start_tesla_background_sync()
     app.run(host='0.0.0.0', threaded=True, port=8080)

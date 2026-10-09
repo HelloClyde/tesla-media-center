@@ -23,15 +23,22 @@ import { GPS_SPEED_MAX_AGE_MS, visualTravelSpeedMps, wheelAngularSpeed } from '.
 import { createGpsSpeedTracker, speedFromLiveGpsFix } from './teslaGpsSpeed';
 import { useGeoLocationStore, type GeoLocation } from '@/stores/geoLocation';
 import { APPEARANCE_KEY, paintFinishes, defaultAppearance, normalizeAppearance, createVehicleAppearance } from './teslaAppearance';
-import { MODEL_Y_2022_SKIN, readVehicleSkin, removeVehicleSkin, saveVehicleSkin, validateVehicleSkin, type VehicleSkinVariant } from './teslaVehicleSkin';
+import { readVehicleSkin, removeVehicleSkin, saveVehicleSkin, validateVehicleSkin, type VehicleSkinVariant } from './teslaVehicleSkin';
+import { readAppearance, readSceneSettings, readSelectedVehicle, saveAppearance, saveSceneSettings, saveSelectedVehicle, type TeslaSceneSettings, type VehicleAppearanceRecord } from './teslaAppearanceStore';
 
-function savedAppearance() {
-  try { return normalizeAppearance(JSON.parse(localStorage.getItem(APPEARANCE_KEY) || 'null')); }
-  catch { return { ...defaultAppearance }; }
-}
-const appearance = reactive(savedAppearance());
+const appearance = reactive({ ...defaultAppearance });
 const appearanceOpen = ref(false);
 const appearanceSaveError = ref(false);
+const appearanceReady = ref(false);
+let appearanceRevision = 0;
+let appearanceLoadedKey = '';
+let appearanceSaveQueue = Promise.resolve();
+const appearanceSaveTimers = new Map<string, number>();
+let selectionLoaded = false;
+let restoringSelection = false;
+let sceneReady = false;
+let sceneSaveTimer: number | undefined;
+let sceneSaveQueue = Promise.resolve();
 let vehicleAppearance: ReturnType<typeof createVehicleAppearance> | undefined;
 let skinBlob: Blob | null = null;
 let skinRevision = 0;
@@ -60,21 +67,90 @@ function readManualModels(): Record<string, VehicleSkinVariant> {
       key.length <= 32 && manualModelChoices.some(choice => choice.value === value))) as Record<string, VehicleSkinVariant>;
   } catch { return {}; }
 }
-const manualModels = ref(readManualModels());
-const manualModelKey = computed(() => state.selectedVin.trim().toUpperCase() || 'unidentified');
+const manualModels = ref<Record<string, VehicleSkinVariant>>({});
+const manualModelKey = computed(() => appearanceKey(state.selectedVin));
 const detectedModelVariant = computed(() => vehicleModelVariant(
   state.selectedVin, selectedVehicle.value?.carType || state.latestSample?.vehicle_config?.car_type));
 const manualModelVariant = computed<VehicleSkinVariant>({
   get: () => manualModels.value[manualModelKey.value] || 'modely-high',
   set: variant => {
     manualModels.value = { ...manualModels.value, [manualModelKey.value]: variant };
-    try { localStorage.setItem(MANUAL_MODEL_STORAGE_KEY, JSON.stringify(manualModels.value)); }
-    catch { /* Browser storage is optional. */ }
+    queueAppearanceSave();
   },
 });
 const activeModelVariant = computed<VehicleSkinVariant>(() => resolvedVehicleModelVariant(
   state.selectedVin, selectedVehicle.value?.carType || state.latestSample?.vehicle_config?.car_type, manualModelVariant.value));
 const activeSkinVariant = computed<VehicleSkinVariant>(() => activeModelVariant.value);
+function appearanceKey(vin: string) { return vin.trim().toUpperCase() || 'default'; }
+function legacyAppearance(): Partial<VehicleAppearanceRecord> {
+  try {
+    const value = localStorage.getItem(APPEARANCE_KEY);
+    return value ? { appearance: normalizeAppearance(JSON.parse(value)) } : {};
+  } catch { return {}; }
+}
+function removeLegacyAppearance(key: string) {
+  try {
+    localStorage.removeItem(APPEARANCE_KEY);
+    const manual = readManualModels();
+    delete manual[key];
+    if (Object.keys(manual).length) localStorage.setItem(MANUAL_MODEL_STORAGE_KEY, JSON.stringify(manual));
+    else localStorage.removeItem(MANUAL_MODEL_STORAGE_KEY);
+  } catch { /* Server record is already authoritative. */ }
+}
+async function restoreAppearance(vin: string) {
+  const revision = ++appearanceRevision;
+  const key = appearanceKey(vin);
+  appearanceReady.value = false;
+  appearanceLoadedKey = '';
+  appearanceSaveError.value = false;
+  try {
+    let record = await readAppearance(vin);
+    if (!record) {
+      const old = legacyAppearance();
+      const manual = readManualModels()[vin.trim().toUpperCase() || 'unidentified'] || null;
+      if (old.appearance || manual) {
+        const candidate: VehicleAppearanceRecord = { appearance: old.appearance || { ...defaultAppearance }, manualModel: manual };
+        record = await saveAppearance(vin, candidate, true) ? candidate : await readAppearance(vin);
+      }
+    }
+    if (revision !== appearanceRevision) return;
+    Object.assign(appearance, record?.appearance || defaultAppearance);
+    const nextManual = { ...manualModels.value };
+    if (record?.manualModel) nextManual[key] = record.manualModel;
+    else delete nextManual[key];
+    manualModels.value = nextManual;
+    await nextTick();
+    if (revision !== appearanceRevision) return;
+    appearanceLoadedKey = key;
+    appearanceReady.value = true;
+    if (record) removeLegacyAppearance(vin.trim().toUpperCase() || 'unidentified');
+  } catch (error) {
+    if (revision !== appearanceRevision) return;
+    appearanceSaveError.value = true;
+    console.warn('Unable to load server vehicle appearance', error);
+  }
+}
+function queueAppearanceSave() {
+  if (!appearanceReady.value || appearanceLoadedKey !== appearanceKey(state.selectedVin)) return;
+  const vin = state.selectedVin;
+  const key = appearanceKey(vin);
+  const record: VehicleAppearanceRecord = {
+    appearance: normalizeAppearance(appearance),
+    manualModel: manualModels.value[key] || null,
+  };
+  const previous = appearanceSaveTimers.get(key);
+  if (previous !== undefined) window.clearTimeout(previous);
+  appearanceSaveTimers.set(key, window.setTimeout(() => {
+    appearanceSaveTimers.delete(key);
+    appearanceSaveQueue = appearanceSaveQueue.catch(() => undefined).then(async () => {
+      await saveAppearance(vin, record);
+      if (appearanceKey(state.selectedVin) === key) appearanceSaveError.value = false;
+    }).catch(error => {
+      if (appearanceKey(state.selectedVin) === key) appearanceSaveError.value = true;
+      console.warn('Unable to save server vehicle appearance', error);
+    });
+  }, 350));
+}
 function showSkinPreview(blob: Blob | null) {
   if (skinPreview.value) URL.revokeObjectURL(skinPreview.value);
   skinPreview.value = blob ? URL.createObjectURL(blob) : '';
@@ -111,17 +187,6 @@ async function selectVehicleSkin(blob: Blob) {
   showSkinPreview(blob);
   await applyCurrentSkin();
 }
-async function useExampleSkin() {
-  skinBusy.value = true;
-  try {
-    if (activeSkinVariant.value !== MODEL_Y_2022_SKIN) throw new Error('示例皮肤仅适用于 20–24 款 Model Y');
-    const response = await fetch('/skins/modely-2022-example.png');
-    if (!response.ok) throw new Error('示例皮肤加载失败');
-    await selectVehicleSkin(await response.blob());
-    ElMessage.success('已应用示例皮肤');
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '示例皮肤加载失败'); }
-  finally { skinBusy.value = false; }
-}
 async function clearVehicleSkin() {
   const variant = activeSkinVariant.value;
   if (!variant) return;
@@ -130,9 +195,7 @@ async function clearVehicleSkin() {
     skinRevision++;
     await removeVehicleSkin(variant);
     if (variant !== activeSkinVariant.value) return;
-    skinBlob = null;
-    showSkinPreview(null);
-    await applyCurrentSkin();
+    restoreVariantSkin();
   } catch { ElMessage.error('移除车辆皮肤失败'); }
   finally { skinBusy.value = false; }
 }
@@ -142,24 +205,26 @@ function resetVehicleAppearance() {
 }
 function restoreVariantSkin() {
   const variant = activeSkinVariant.value;
+  const vin = state.selectedVin;
   const revision = ++skinRevision;
   skinBlob = null;
   showSkinPreview(null);
   if (!variant) return;
-  void readVehicleSkin(variant).then(blob => {
-    if (teslaPageDisposed || skinRevision !== revision || activeSkinVariant.value !== variant) return;
+  void readVehicleSkin(variant).then(async blob => {
+    if (teslaPageDisposed || skinRevision !== revision || activeSkinVariant.value !== variant || state.selectedVin !== vin) return;
     skinBlob = blob;
     showSkinPreview(blob);
-    return applyCurrentSkin();
+    await applyCurrentSkin();
   }).catch(error => console.warn('Unable to load vehicle skin', error));
 }
 watch(appearance, () => {
   vehicleAppearance?.update(appearance);
   renderVehicleViewer(false);
-  try { localStorage.setItem(APPEARANCE_KEY, JSON.stringify(normalizeAppearance(appearance))); appearanceSaveError.value=false; }
-  catch { appearanceSaveError.value=true; }
+  queueAppearanceSave();
+}, { flush: 'sync' });
+watch(appearanceOpen, () => {
+  nextTick(resizeVehicleViewer);
 });
-watch(appearanceOpen, () => { nextTick(resizeVehicleViewer); });
 
 const pageRef = ref<HTMLElement | null>(null);
 const vehicleVisualRef = ref<HTMLElement | null>(null);
@@ -187,7 +252,6 @@ let vehicleEnvironment: THREE.WebGLRenderTarget | null = null;
 let vehicleSky: Sky | null = null;
 let vehicleLights: ReturnType<typeof createVehicleLights> | undefined;
 const weatherMode=ref<SceneWeather|'auto'>('auto');
-try { const saved=localStorage.getItem('tmc.tesla.weather');if(saved==='auto'||saved&&saved in weatherLabels)weatherMode.value=saved as SceneWeather|'auto'; } catch {}
 const weatherMenuOpen = ref(false);
 const weatherChoices: { value: SceneWeather | 'auto'; label: string }[] = [
   { value: 'auto', label: '自动' },
@@ -212,12 +276,15 @@ async function refreshWeather(){
   const lat=state.latestSample?.latitude,lon=state.latestSample?.longitude;
   if(lat==null||lon==null){weatherStatus.value='等待车辆位置';return;}
   const request=new AbortController();weatherRequest=request;
-  const timeout=window.setTimeout(()=>request.abort(),10000);
+  const timeout=window.setTimeout(()=>request.abort(),25000);
   weatherStatus.value='正在获取天气';
-  try { const value=await fetchVehicleWeather(Number(lat),Number(lon),request.signal);
+  try { const value=await fetchVehicleWeather(Number(lat),Number(lon),request.signal,String(state.latestSample?.coord_type || ''));
     if(weatherRequest!==request||weatherMode.value!=='auto')return;
     automaticWeather.value=value;weatherStatus.value='当地天气 · '+weatherLabels[value];
-  } catch {if(weatherRequest===request)weatherStatus.value='天气获取失败，可手动选择';}
+  } catch (error) {
+    if (weatherRequest === request) weatherStatus.value = error instanceof Error && error.message.includes('高德 JS API Key')
+      ? '请先配置高德 JS API Key' : '高德天气获取失败，可手动选择';
+  }
   finally {window.clearTimeout(timeout);}
 }
 const headlights = ref(false);
@@ -225,7 +292,7 @@ watch(headlights, value => { vehicleLights?.setEnabled(value); renderVehicleView
 let vehicleStreet: ReturnType<typeof createVehicleStreet> | undefined;
 let sunLight: THREE.DirectionalLight | undefined;
 let skyLight: THREE.HemisphereLight | undefined;
-const sceneNight = ref((() => { try { return localStorage.getItem('tmc.tesla.scene-night') === 'true'; } catch { return false; } })());
+const sceneNight = ref(false);
 headlights.value = sceneNight.value;
 function updateSceneLighting() {
   if (!vehicleScene || !vehicleSky || !vehicleRenderer || !sunLight || !skyLight) return;
@@ -246,7 +313,53 @@ function updateSceneLighting() {
   // Reuse the captured streetscape; a six-face recapture stalls the UI on each toggle.
   renderVehicleViewer(false);
 }
-watch(sceneNight, () => { headlights.value = sceneNight.value; updateSceneLighting(); try { localStorage.setItem('tmc.tesla.scene-night', String(sceneNight.value)); } catch { /* Optional persistence. */ } });
+function queueSceneSave() {
+  if (!sceneReady) return;
+  if (sceneSaveTimer !== undefined) window.clearTimeout(sceneSaveTimer);
+  sceneSaveTimer = window.setTimeout(() => {
+    sceneSaveTimer = undefined;
+    const settings: TeslaSceneSettings = { weatherMode: weatherMode.value, sceneNight: sceneNight.value };
+    sceneSaveQueue = sceneSaveQueue.catch(() => undefined).then(() => saveSceneSettings(settings)).then(() => {
+      appearanceSaveError.value = false;
+    }).catch(error => {
+      appearanceSaveError.value = true;
+      ElMessage.error('场景设置未能保存到服务器');
+      console.warn('Unable to save Tesla scene settings', error);
+    });
+  }, 350);
+}
+async function restoreSceneSettings() {
+  try {
+    let settings = await readSceneSettings();
+    if (!settings) {
+      let legacyWeather: SceneWeather | 'auto' = 'auto';
+      let legacyNight = false;
+      let hasLegacy = false;
+      try {
+        const weather = localStorage.getItem('tmc.tesla.weather');
+        if (weather === 'auto' || (weather && weather in weatherLabels)) { legacyWeather = weather as SceneWeather | 'auto'; hasLegacy = true; }
+        const night = localStorage.getItem('tmc.tesla.scene-night');
+        if (night !== null) { legacyNight = night === 'true'; hasLegacy = true; }
+      } catch { /* No browser migration available. */ }
+      if (hasLegacy) {
+        const candidate = { weatherMode: legacyWeather, sceneNight: legacyNight };
+        settings = await saveSceneSettings(candidate, true) ? candidate : await readSceneSettings();
+      }
+    }
+    weatherMode.value = settings?.weatherMode || 'auto';
+    sceneNight.value = settings?.sceneNight || false;
+    await nextTick();
+    sceneReady = true;
+    if (settings) {
+      try { localStorage.removeItem('tmc.tesla.weather'); localStorage.removeItem('tmc.tesla.scene-night'); }
+      catch { /* Server is authoritative. */ }
+    }
+  } catch (error) {
+    appearanceSaveError.value = true;
+    console.warn('Unable to load Tesla scene settings', error);
+  }
+}
+watch(sceneNight, () => { headlights.value = sceneNight.value; updateSceneLighting(); queueSceneSave(); });
 let vehicleCamera: THREE.PerspectiveCamera | null = null;
 let vehicleRenderer: THREE.WebGLRenderer | null = null;
 let vehicleModelRoot: THREE.Group | null = null;
@@ -922,13 +1035,32 @@ function loadStatus() {
   });
 }
 
-function loadVehicles() {
-  return get('/api/tesla/vehicles', '读取车辆列表失败').then((data) => {
-    state.vehicles = data || [];
-    if (!state.vehicles.some((item: any) => item.vin === state.selectedVin)) {
-      state.selectedVin = state.vehicles[0]?.vin || '';
+async function loadVehicles() {
+  const data = await get('/api/tesla/vehicles', '读取车辆列表失败');
+  state.vehicles = data || [];
+  if (!selectionLoaded) {
+    let selected = '';
+    try { selected = await readSelectedVehicle(); }
+    catch (error) { console.warn('Unable to load selected vehicle from server', error); appearanceSaveError.value = true; }
+    let legacy = '';
+    try { legacy = localStorage.getItem('tmc.tesla.selected-vin') || ''; } catch { /* Legacy data is optional. */ }
+    const valid = (vin: string) => state.vehicles.some((item: any) => item.vin === vin);
+    const next = valid(selected) ? selected : valid(legacy) ? legacy : state.vehicles[0]?.vin || '';
+    restoringSelection = true;
+    selectionLoaded = true;
+    state.selectedVin = next;
+    await nextTick();
+    restoringSelection = false;
+    if (!next) void restoreAppearance('');
+    if (next && next !== selected) {
+      try { await saveSelectedVehicle(next, !selected); localStorage.removeItem('tmc.tesla.selected-vin'); }
+      catch (error) { appearanceSaveError.value = true; console.warn('Unable to save selected vehicle', error); }
+    } else if (selected) {
+      try { localStorage.removeItem('tmc.tesla.selected-vin'); } catch { /* Server is authoritative. */ }
     }
-  });
+  } else if (!state.vehicles.some((item: any) => item.vin === state.selectedVin)) {
+    state.selectedVin = state.vehicles[0]?.vin || '';
+  }
 }
 
 function syncLatestSampleFromSelectedVehicle() {
@@ -1138,6 +1270,7 @@ function maybeForceFreshSync(tabName: TeslaTabName = state.activeTab as TeslaTab
 function clearTabData(_tabName: TeslaTabName) {
   state.vehicles = [];
   state.selectedVin = '';
+  if (appearanceRevision === 0) void restoreAppearance('');
   state.trackPoints = [];
   state.latestSample = null;
   state.trips = [];
@@ -1981,6 +2114,7 @@ function renderTrackOnMap() {
 }
 
 onMounted(() => {
+  void restoreSceneSettings();
   restoreVariantSkin();
   geoLocation.addListener('tesla-status-speed', receiveGpsSpeed);
   geoLocation.addErrorListener('tesla-status-speed', handleGpsSpeedError);
@@ -2033,7 +2167,7 @@ onBeforeUnmount(() => {
 });
 
 watch(()=>[state.documentVisible,state.pageExposed,state.activeTab],()=>void refreshWeather());
-watch(weatherMode,()=>{try{localStorage.setItem('tmc.tesla.weather',weatherMode.value);}catch{}void refreshWeather();});
+watch(weatherMode,()=>{queueSceneSave();void refreshWeather();});
 watch(activeWeather,()=>updateSceneLighting());
 watch(()=>[state.latestSample?.latitude==null?'':Number(state.latestSample.latitude).toFixed(1),state.latestSample?.longitude==null?'':Number(state.latestSample.longitude).toFixed(1)].join(','),()=>void refreshWeather());
 
@@ -2065,8 +2199,11 @@ watch(currentShiftState, () => {
   updateVehicleVisualState();
 });
 watch(() => state.selectedVin, vin => {
-  try { if (vin) localStorage.setItem('tmc.tesla.selected-vin', vin); }
-  catch { /* Browser storage is optional. */ }
+  void restoreAppearance(vin);
+  if (!selectionLoaded || restoringSelection || !vin) return;
+  void saveSelectedVehicle(vin).then(() => {
+    try { localStorage.removeItem('tmc.tesla.selected-vin'); } catch { /* Server is authoritative. */ }
+  }).catch(error => { appearanceSaveError.value = true; console.warn('Unable to save selected vehicle', error); });
 });
 watch(activeModelVariant, (variant, previous) => {
   if (variant === previous) return;
@@ -2096,7 +2233,7 @@ watch(activeModelVariant, (variant, previous) => {
                   <small v-if="gpsSpeedKmh === null" class="vehicle-speed-hud__hint">{{ gpsSpeedMessage }}</small>
                 </div>
                 <div class="vehicle-visual-overlay">
-                  <div class="vehicle-overlay-card vehicle-overlay-card--weather" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '手动场景天气'">
+                  <div class="vehicle-overlay-card vehicle-overlay-card--weather" :title="weatherMode === 'auto' ? weatherStatus + ' · 高德天气' : '手动场景天气'">
                     <TeslaWeatherIcon :weather="weatherAvailable ? activeWeather : undefined" />
                     <div class="vehicle-weather-summary">
                       <span>{{ weatherMode === 'auto' ? '当地天气' : '场景天气' }}</span>
@@ -2138,7 +2275,7 @@ watch(activeModelVariant, (variant, previous) => {
                   <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间' : '白天' }}</button>
                   <el-popover v-model:visible="weatherMenuOpen" trigger="click" placement="top-end" :width="188" :offset="12" :show-arrow="false" popper-class="vehicle-weather-popper">
                     <template #reference>
-                      <button class="vehicle-weather-trigger" type="button" aria-label="选择场景天气" aria-haspopup="menu" :aria-expanded="weatherMenuOpen" :title="weatherMode === 'auto' ? weatherStatus + ' · Open-Meteo' : '场景天气'">
+                      <button class="vehicle-weather-trigger" type="button" aria-label="选择场景天气" aria-haspopup="menu" :aria-expanded="weatherMenuOpen" :title="weatherMode === 'auto' ? weatherStatus + ' · 高德天气' : '场景天气'">
                         天气 · {{ weatherMode === 'auto' ? '自动' : weatherLabels[weatherMode] }} <span class="vehicle-weather-caret" aria-hidden="true"></span>
                       </button>
                     </template>
@@ -2170,7 +2307,6 @@ watch(activeModelVariant, (variant, previous) => {
                         <small v-if="skinPreview">清除皮肤后可继续调节车衣颜色。</small>
                         <img v-if="skinPreview" :src="skinPreview" alt="当前车辆皮肤预览" />
                         <div class="vehicle-skin-actions">
-                          <el-button v-if="activeSkinVariant === MODEL_Y_2022_SKIN" :disabled="!skinSupported || skinBusy" @click="useExampleSkin">试用示例</el-button>
                           <label class="vehicle-skin-upload" :class="{ disabled: !activeSkinVariant || !skinSupported || skinBusy }">
                             上传 UV 贴图<input type="file" accept="image/png,image/jpeg,image/webp" :disabled="!activeSkinVariant || !skinSupported || skinBusy" @change="uploadVehicleSkin" />
                           </label>
@@ -2180,7 +2316,7 @@ watch(activeModelVariant, (variant, previous) => {
                       </div>
                       <label>牌照文字 <el-input v-model="appearance.plate" aria-label="牌照文字" maxlength="10" placeholder="例如：沪AD12345" @change="appearance.plate=normalizeAppearance(appearance).plate" /></label>
                       <label>牌照样式 <el-select v-model="appearance.plateStyle" aria-label="牌照样式"><el-option label="新能源绿牌" value="green"/><el-option label="蓝牌" value="blue"/><el-option label="黑牌" value="black"/><el-option label="白牌" value="white"/></el-select></label>
-                      <small>{{ appearanceSaveError ? '浏览器未能保存车色和车牌设置' : '车色和车牌保存在当前浏览器；皮肤保存在服务器' }}</small>
+                      <small>{{ appearanceSaveError ? '服务器未能读取或保存车辆外观设置' : '车色、材质、车牌和车型选择均保存在服务器；皮肤也保存在服务器' }}</small>
                       <el-button @click="resetVehicleAppearance">恢复默认</el-button>
                     </div>
                 </aside>

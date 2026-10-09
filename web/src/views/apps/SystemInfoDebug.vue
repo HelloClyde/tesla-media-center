@@ -11,9 +11,8 @@ import MotionSensorTest from '@/components/MotionSensorTest.vue';
 import NavigationSpeechTest from '@/components/NavigationSpeechTest.vue';
 import CameraTest from '@/components/CameraTest.vue';
 import WebGLComputeTest from '@/components/WebGLComputeTest.vue';
-import ViewportDiagnostics from '@/components/ViewportDiagnostics.vue';
 import H5LocationTest from '@/components/H5LocationTest.vue';
-import { reactive, ref, onMounted, onUnmounted, computed } from 'vue';
+import { reactive, ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue';
 import { useGeoLocationStore } from '@/stores/geoLocation';
 import { get, post } from '@/functions/requests';
 import { ElMessage } from 'element-plus';
@@ -22,6 +21,45 @@ import { vConsoleEnabled, setVConsoleEnabled } from '@/functions/debugConsole';
 
 const router = useRouter();
 const activeTab = ref('diagnostics');
+const tabStrip = ref<HTMLElement | null>(null);
+const debugTabs = [
+    { name: 'settings', label: '设置与账号' },
+    { name: 'map-cache', label: '地图缓存' },
+    { name: 'audio', label: '录音与语音' },
+    { name: 'media-keys', label: '媒体按键' },
+    { name: 'sound', label: '声音测试' },
+    { name: 'camera', label: '摄像头测试' },
+    { name: 'webgl', label: 'WebGL 算力' },
+    { name: 'motion', label: '惯性传感器' },
+    { name: 'diagnostics', label: '设备诊断' },
+];
+
+function scrollActiveTabIntoView() {
+    const strip = tabStrip.value;
+    const selected = strip?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!strip || !selected) return;
+    const stripBounds = strip.getBoundingClientRect();
+    const selectedBounds = selected.getBoundingClientRect();
+    if (selectedBounds.left < stripBounds.left) {
+        strip.scrollLeft += selectedBounds.left - stripBounds.left;
+    } else if (selectedBounds.right > stripBounds.right) {
+        strip.scrollLeft += selectedBounds.right - stripBounds.right;
+    }
+}
+
+function handleTabKeydown(event: KeyboardEvent, index: number) {
+    let nextIndex: number;
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + debugTabs.length) % debugTabs.length;
+    else if (event.key === 'ArrowRight') nextIndex = (index + 1) % debugTabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = debugTabs.length - 1;
+    else return;
+    event.preventDefault();
+    activeTab.value = debugTabs[nextIndex].name;
+    tabStrip.value?.querySelectorAll<HTMLButtonElement>('button')[nextIndex]?.focus();
+}
+
+watch(activeTab, () => nextTick(scrollActiveTabIntoView), { flush: 'post' });
 
 const state = reactive({
     screenInfo: {
@@ -124,6 +162,7 @@ function saveMapConfig() {
 }
 
 onMounted(() => {
+    nextTick(scrollActiveTabIntoView);
     window.addEventListener('resize', refreshViewport);
     window.visualViewport?.addEventListener('resize', refreshViewport);
     refresh();
@@ -139,6 +178,19 @@ onUnmounted(() => {
 <template>
     <SimpleView>
         <section class="settings-page">
+            <nav ref="tabStrip" class="debug-tab-strip" role="tablist" aria-label="调试项目">
+                <button
+                    v-for="(tab, index) in debugTabs"
+                    :key="tab.name"
+                    type="button"
+                    role="tab"
+                    :aria-selected="activeTab === tab.name"
+                    :tabindex="activeTab === tab.name ? 0 : -1"
+                    :class="['debug-tab', { 'is-active': activeTab === tab.name }]"
+                    @click="activeTab = tab.name"
+                    @keydown="handleTabKeydown($event, index)"
+                >{{ tab.label }}</button>
+            </nav>
             <el-tabs v-model="activeTab" class="debug-tabs">
             <el-tab-pane label="设置与账号" name="settings">
             <section class="settings-grid">
@@ -237,7 +289,6 @@ onUnmounted(() => {
             </el-tab-pane>
             <el-tab-pane label="WebGL 算力" name="webgl"><WebGLComputeTest v-if="activeTab === 'webgl'" /></el-tab-pane>
             <el-tab-pane label="惯性传感器" name="motion"><MotionSensorTest v-if="activeTab === 'motion'" /></el-tab-pane>
-            <el-tab-pane label="布局诊断" name="layout"><ViewportDiagnostics /></el-tab-pane>
             <el-tab-pane label="设备诊断" name="diagnostics">
             <section class="diagnostics-panel">
                 <div class="panel-head">
@@ -281,9 +332,38 @@ onUnmounted(() => {
 <style scoped>
 .console-hint { margin: 0; color: var(--color-text-soft); font-size: 13px; line-height: 1.6; }
 .debug-tabs { min-width: 0; }
-.debug-tabs :deep(.el-tabs__item) { font-size: clamp(14px, 1.8vw, 18px); height: 44px; padding: 0 14px; }
-.debug-tabs :deep(.el-tabs__nav) { height: 44px; }
+.debug-tabs :deep(.el-tabs__header) { display: none; }
 .debug-tabs :deep(.el-tabs__content) { overflow: visible; }
+.debug-tab-strip {
+    display: flex;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-bottom: 2px solid var(--color-border);
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-x;
+    overscroll-behavior-x: contain;
+}
+.debug-tab-strip::-webkit-scrollbar { display: none; }
+.debug-tab {
+    flex: 0 0 auto;
+    height: 44px;
+    padding: 0 14px;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    background: transparent;
+    color: var(--color-text);
+    font: inherit;
+    font-size: clamp(14px, 1.8vw, 18px);
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.debug-tab.is-active { border-bottom-color: var(--el-color-primary); color: var(--el-color-primary); }
+.debug-tab:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: -4px; }
 
 .settings-page {
     display: flex;

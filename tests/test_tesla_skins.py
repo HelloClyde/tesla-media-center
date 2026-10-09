@@ -38,7 +38,7 @@ class TeslaSkinsTest(unittest.TestCase):
 
     def test_upload_read_replace_and_delete_across_clients(self):
         url = '/api/tesla/skins/modely-high'
-        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.get(url).status_code, 204)
         first = png_image(color=b'\xaa\xbb\xcc\xff')
         self.assertEqual(self.client.put(url, data=first, content_type='image/png').status_code, 200)
         other = self.app.test_client()
@@ -59,7 +59,7 @@ class TeslaSkinsTest(unittest.TestCase):
         self.assertEqual(loaded.data, second)
         loaded.close()
         self.assertEqual(other.delete(url).status_code, 200)
-        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.get(url).status_code, 204)
 
     def test_rejects_unsupported_model_and_invalid_images(self):
         self.assertEqual(self.client.put('/api/tesla/skins/not-a-model', data=png_image()).status_code, 400)
@@ -75,7 +75,6 @@ class TeslaSkinsTest(unittest.TestCase):
                          guest.delete('/api/tesla/skins/modely-high')]:
             self.assertEqual(response.json['status'], 'need_login')
         self.assertFalse(list(self.root.iterdir()))
-
 
 if __name__ == '__main__':
     unittest.main()

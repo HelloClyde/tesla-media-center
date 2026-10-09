@@ -16,7 +16,6 @@ COPY web/public/*.* /assets/
 COPY web/public/catalogs/ /assets/catalogs/
 COPY web/public/gam4980/ /assets/gam4980/
 COPY web/public/icon/ /assets/icon/
-COPY web/public/skins/ /assets/skins/
 COPY web/public/vendor/ /assets/vendor/
 COPY web/public/basis/ /assets/basis/
 COPY web/public/amap/ /assets/amap/
