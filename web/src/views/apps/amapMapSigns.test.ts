@@ -1,9 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { cumulative, type AppRoute } from './amapNavigation';
-import { routeCameraSigns } from './amapMapSigns';
+import { mapSignsVisible, routeCameraSigns } from './amapMapSigns';
+import { navigationViewport } from './amapNavigationViewport';
 import { groundOffset } from './teslaMapCoordinates';
 
 describe('native camera map signs', () => {
+  it('hides road-level icons when zoomed out and always hides them in route overview', () => {
+    expect(mapSignsVisible(17)).toBe(true);
+    expect(mapSignsVisible(15.5)).toBe(true);
+    expect(mapSignsVisible(15.25)).toBe(false);
+    expect(mapSignsVisible(10)).toBe(false);
+    expect(mapSignsVisible(17, true)).toBe(false);
+    expect(mapSignsVisible(Number.NaN)).toBe(false);
+    expect(mapSignsVisible(Infinity)).toBe(false);
+  });
+  it('keeps icons available throughout automatic navigation speed zooms', () => {
+    for (const speed of [0, 50, 80, 100, 120, 160]) {
+      expect(mapSignsVisible(navigationViewport(speed).zoom)).toBe(true);
+    }
+  });
   it('places verified camera limits at their App route distance and skips invalid records', () => {
     const route: AppRoute = { id: 1, path: [[120, 30], [120.001, 30], [120.002, 30]],
       steps: [], breaks: [], distance: 200, labels: [] };

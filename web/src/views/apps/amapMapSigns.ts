@@ -6,6 +6,12 @@ export type TrafficLightColor = 'red' | 'yellow' | 'green';
 export type RouteCameraSign = { point: Point; displayPoint: Point; at: number; type: SpeedLimitCamera['type']; limit: number; direction: Point };
 export type MapSign = { key: string; canvas: HTMLCanvasElement; width: number; height: number; anchorX: number };
 
+/** Keep road-level detail out of zoomed-out views, including route overviews.
+ * 15.5 is also the widest automatic highway navigation zoom. */
+export function mapSignsVisible(zoom: number, overview = false): boolean {
+  return !overview && Number.isFinite(zoom) && zoom >= 15.5;
+}
+
 /** Place native routeguide camera distances on the same App route geometry. */
 export function routeCameraSigns(route: AppRoute | undefined, cameras = route?.speedCameras): RouteCameraSign[] {
   if (!route || route.path.length < 2 || !Array.isArray(cameras)) return [];

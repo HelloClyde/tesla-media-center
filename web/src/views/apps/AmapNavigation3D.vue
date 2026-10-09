@@ -11,11 +11,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { createTeslaMapGround } from './teslaMapGround';
 import { createAmapLandmarks, disposeGltfScenes } from './amapLandmarks';
 import { groundOffset, groundPoint, type MapPoint } from './teslaMapCoordinates';
-import { followCameraBearing, navigationSceneCenter, positionNavigationCamera, rebaseNavigationCamera } from './amapNavigationCamera';
+import { followCameraBearing, manualNavigationZoom, navigationSceneCenter, positionNavigationCamera, rebaseNavigationCamera } from './amapNavigationCamera';
 import { matchPosition, meters, type AppRoute } from './amapNavigation';
 import { congestionSegmentProgresses, type CongestionRun } from './amapRouteTraffic';
 import { ribbonJoinNormal, roundedRoutePoints, routeRibbonCutProgress, trimRouteRibbon, type RibbonSpan } from './amapRouteRibbon';
-import { cameraAssetReady, cameraSign, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign } from './amapMapSigns';
+import { cameraAssetReady, cameraSign, mapSignsVisible, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign } from './amapMapSigns';
 import type { SpeedLimitCamera } from './amapSpeedLimit';
 import type { UpcomingTrafficSignal } from './amapTrafficSignals';
 const props = defineProps<{ center: MapPoint; position?: MapPoint; heading: number; bearing: number; zoom: number; route?: AppRoute; progress: number; trafficRuns: CongestionRun[]; cameras?: SpeedLimitCamera[]; signal?: UpcomingTrafficSignal | null; navigating: boolean; following: boolean; headingUp: boolean; theme: 'day' | 'night' }>();
@@ -25,6 +25,7 @@ let renderer: THREE.WebGLRenderer | undefined, ground: ReturnType<typeof createT
 let landmarks: ReturnType<typeof createAmapLandmarks> | undefined;
 let controls: OrbitControls | undefined, manualCenter: MapPoint | undefined, manualView = false;
 let settingCamera = false, suppressPickUntil = 0, followedBearing: number | undefined;
+let cameraBaseZoom = 17, cameraBaseDistance = 0;
 const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(45, 1, 1, 1400);
 const ambient = new THREE.HemisphereLight(0xffffff,0x81979c,2.5);
 const routeGroup = new THREE.Group();
@@ -133,7 +134,18 @@ function signRoadHeight(point: MapPoint, route: AppRoute) {
   const direction: [number, number] = index >= 0 ? groundOffset(route.path[index + 1], route.path[index]) : [0, 0];
   return ground?.roadHeight(point, direction) ?? 0;
 }
+function syncMapSignVisibility() {
+  const zoom = manualView && controls
+    ? manualNavigationZoom(cameraBaseZoom, cameraBaseDistance, camera.position.distanceTo(controls.target))
+    : props.zoom;
+  const visible = mapSignsVisible(zoom);
+  const changed = signGroup.visible !== visible;
+  signGroup.visible = visible;
+  return changed;
+}
 function updateMapSigns(center: MapPoint) {
+  syncMapSignVisibility();
+  if (!signGroup.visible) return;
   const route = props.route;
   if (route !== renderedSignRoute || props.cameras !== renderedCameras || props.navigating !== renderedSignNavigating || !signAnchor
       || signGroundRevision !== ground?.revision() || Math.hypot(...groundOffset(center, signAnchor)) > 120) {
@@ -220,6 +232,7 @@ function onCameraChange() {
   if (settingCamera || !controls) return;
   beginManualView();
   suppressPickUntil = performance.now() + 250;
+  if (syncMapSignVisibility() && signGroup.visible) updateMapSigns(sceneCenter());
   const nextCenter = rebaseNavigationCamera(camera, controls.target, sceneCenter());
   if (!nextCenter) return;
   manualCenter = nextCenter;
@@ -298,15 +311,26 @@ function trimDrivenRoute(cutProgress: number) {
   for (const [mesh, original] of routeRibbons)
     trimRouteRibbon(mesh.geometry, routeSectionSpans, original, cutProgress);
 }
+let renderUpdatePending = false, lastDetailUpdate = -Infinity, lastDetailSignal = '';
+let renderedTheme: 'day' | 'night' | undefined;
+function requestUpdate() { renderUpdatePending = true; }
+function alignOverlays(center: MapPoint) {
+  for (const [group, anchor] of [[routeGroup, routeAnchor], [trafficGroup, trafficAnchor], [signGroup, signAnchor]] as const) {
+    if (!anchor) continue;
+    const [x, z] = groundOffset(anchor, center);
+    group.position.set(x, 0, z);
+  }
+}
 function update() {
   if (!renderer) return;
-  const background=props.theme==='night'?'#1b2634':'#dce5e5';
-  // The APK sky image sits behind the transparent WebGL canvas. Keep fog on
-  // the same base color so distant geometry still fades into the horizon.
-  scene.background=null;
-  scene.fog=new THREE.Fog(background,280,600);
-  ambient.intensity=props.theme==='night'?1.15:2.5;
-  ground?.setTheme(props.theme);
+  if (renderedTheme !== props.theme) {
+    renderedTheme = props.theme;
+    const background=props.theme==='night'?'#1b2634':'#dce5e5';
+    scene.background=null;
+    scene.fog=new THREE.Fog(background,280,600);
+    ambient.intensity=props.theme==='night'?1.15:2.5;
+    ground?.setTheme(props.theme);
+  }
   const center = sceneCenter();
   ground?.update(center, -180, 0);
   landmarks?.update(center, props.theme);
@@ -317,13 +341,18 @@ function update() {
     if (!guidedFollow) followedBearing = undefined;
     else followedBearing ??= props.bearing;
     const target = positionNavigationCamera(camera, followedBearing ?? props.bearing, props.zoom, [x, z], props.following && !!props.position, props.headingUp);
+    cameraBaseZoom = props.zoom;
+    cameraBaseDistance = camera.position.distanceTo(target);
     if (controls) {
       settingCamera = true;
+      // Allow at least two zoom-out steps from either camera orientation.
+      controls.maxDistance = Math.max(450, cameraBaseDistance * 2);
       controls.target.copy(target);
       controls.update();
       settingCamera = false;
     }
   }
+  const signVisibilityChanged = syncMapSignVisibility();
   const headingRadians = props.heading * Math.PI / 180;
   const roadDirection: [number, number] = [Math.sin(headingRadians), -Math.cos(headingRadians)];
   const vehicleRoadHeight = props.position ? ground?.roadHeight(props.position, roadDirection) ?? 0 : 0;
@@ -332,6 +361,18 @@ function update() {
   if (ground) ground.group.userData.vehicleFocus = vehicle.visible ? vehicle.position : undefined;
   vehicle.rotation.y = -headingRadians;
   const route = props.route;
+  const signalKey = props.signal ? `${props.signal.point.join(',')}:${props.signal.color}:${props.signal.seconds}` : '';
+  const detailChanged = signVisibilityChanged || route !== renderedRoute || props.navigating !== renderedNavigating
+    || routeGroundRevision !== (ground?.revision() ?? -1) || props.trafficRuns !== renderedTraffic
+    || props.cameras !== renderedCameras || signalKey !== lastDetailSignal;
+  const now = performance.now();
+  if (!detailChanged && now - lastDetailUpdate < 100) {
+    // Keep all geographic overlays aligned on every display frame; expensive
+    // ribbon clipping and sign matching need a lower update rate than motion.
+    alignOverlays(center);
+    return;
+  }
+  lastDetailUpdate = now; lastDetailSignal = signalKey;
   if (route !== renderedRoute || props.navigating !== renderedNavigating || !routeAnchor || routeGroundRevision !== ground?.revision() || Math.hypot(...groundOffset(center, routeAnchor)) > 120) {
     clearRoute();
     renderedRoute = route;
@@ -430,7 +471,7 @@ function initialize() {
     loadVehicle();
     ground=createTeslaMapGround((text,ready)=>{
       emit('status',ready?text:text.replace('已显示示意路面','请重试或切换 2D'));
-      if(ready && !text.startsWith('正在')) queueMicrotask(update);
+      if(ready && !text.startsWith('正在')) requestUpdate();
     },props.theme); scene.add(ground.group);
     try {
       landmarks=createAmapLandmarks(renderer, bounds => ground?.setLandmarkBounds(bounds));
@@ -440,8 +481,9 @@ function initialize() {
     update(); let last=0;
     const render=(time:number)=>{
       frame=requestAnimationFrame(render);
-      if(time-last<32||document.hidden)return;
+      if(document.hidden)return;
       const elapsed = last ? time-last : 0; last=time;
+      if (renderUpdatePending) { renderUpdatePending = false; update(); }
       if (!manualView && props.following && props.headingUp && props.position && followedBearing !== undefined) {
         const next = followCameraBearing(followedBearing, props.bearing, elapsed);
         const turn = Math.abs(((props.bearing - followedBearing + 540) % 360) - 180);
@@ -464,7 +506,9 @@ function dispose() {
   controls?.removeEventListener('end', onCameraEnd);
   controls?.dispose(); controls = undefined;
   manualCenter = undefined; manualView = false;
+  cameraBaseDistance = 0;
   followedBearing = undefined;
+  renderUpdatePending = false; lastDetailUpdate = -Infinity; lastDetailSignal = ''; renderedTheme = undefined;
   observer?.disconnect(); observer = undefined;
   ground?.dispose(); ground = undefined;
   landmarks?.dispose(); landmarks = undefined;
@@ -502,7 +546,7 @@ void cameraAssetReady.then(ready => {
 watch(()=>props.following, following => {
   if (following) { manualCenter = undefined; manualView = false; followedBearing = undefined; update(); }
 });
-watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.cameras,props.signal,props.navigating,props.following,props.headingUp,props.theme],update);
+watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.cameras,props.signal,props.navigating,props.following,props.headingUp,props.theme],requestUpdate);
 defineExpose({retry:()=>ground?.retry(), zoomBy});
 onBeforeUnmount(()=>{destroyed=true;dispose();vehicleAppearance?.dispose();if(vehicleModel)disposeGltfScenes([vehicleModel]);arrow.geometry.dispose();arrow.material.dispose();halo.geometry.dispose();halo.material.dispose();});
 </script>

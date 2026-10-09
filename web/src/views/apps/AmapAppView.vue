@@ -83,7 +83,7 @@ import { createPositionTransition } from './amapPositionTransition';
 import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
-import { cameraAssetReady, cameraSign, mapSignUrl, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
+import { cameraAssetReady, cameraSign, mapSignUrl, mapSignsVisible, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
 const mapElement = ref<HTMLElement>();
 const topPanel = ref<HTMLElement>(), footerPanel = ref<HTMLElement>();
 const overviewActive = ref(false), orientation = ref<'north' | 'heading'>('north');
@@ -94,7 +94,7 @@ let positionFrame: number | undefined;
 let lastAutoZoomAt = -Infinity;
 function followPosition(point: Point, now: number) {
   if (!map || !following.value) return;
-  applyOrientation();
+  if (!show3D.value) applyOrientation();
   const navigation = mode.value !== 'idle' && !overviewActive.value;
   const headingUp = navigation && orientation.value === 'heading';
   if (navigation) {
@@ -105,6 +105,9 @@ function followPosition(point: Point, now: number) {
       lastAutoZoomAt = now;
     }
   }
+  // The 3D camera follows displayedPosition directly. Panning Leaflet behind
+  // it adds canvas work and move events on every frame without changing it.
+  if (show3D.value) return;
   const size = map.getSize();
   const wanted = L.point(size.x / 2, size.y * (headingUp ? navigationViewport(liveSpeed.value).vehicleY : .5));
   const actual = map.latLngToContainerPoint(latLng(point));
@@ -116,8 +119,9 @@ function cancelPositionAnimation() {
   positionFrame = undefined;
 }
 function animatePosition(point: Point, snap = false) {
-  cancelPositionAnimation();
   positionTransition.move({ point, heading: heading.value || 0 }, performance.now(), snap);
+  if (positionFrame !== undefined && !snap) return;
+  if (snap) cancelPositionAnimation();
   const frame = (now: number) => {
     positionFrame = undefined;
     if (!viewActive.value || disposed || !map) return;
@@ -135,7 +139,7 @@ let headingAnchor: Point | undefined, overviewGeneration = 0;
 function applyOrientation() {
   if (!map || !viewActive.value) return;
   const bearing = orientation.value === 'heading' && !overviewActive.value ? -displayedHeading.value : 0;
-  if (Math.abs(((map.getBearing() - bearing + 540) % 360) - 180) > .5) map.setBearing(bearing);
+  if (Math.abs(((map.getBearing() - bearing + 540) % 360) - 180) > .05) map.setBearing(bearing);
   marker?.setRotation(displayedHeading.value * Math.PI / 180);
 }
 const viewModeLabel = computed(() => overviewActive.value ? '路线全览' : orientation.value === 'heading' ? '车头向上' : '北向上');
@@ -739,9 +743,10 @@ function mapSignIcon(sign: MapSign) {
   return L.icon({ iconUrl: mapSignUrl(sign), iconSize: [sign.width, sign.height],
     iconAnchor: [sign.anchorX, sign.height], className: 'amap-map-sign' });
 }
+const showMapSigns = computed(() => mapSignsVisible(mapZoom.value, overviewActive.value));
 function updateLiveLightMarker() {
   if (!map) return;
-  if (mode.value === 'idle' || overviewActive.value) {
+  if (mode.value === 'idle' || !showMapSigns.value) {
     liveLightMarker?.remove(); liveLightMarker = undefined;
     return;
   }
@@ -766,7 +771,8 @@ function drawMapSigns() {
   lightMarkers.forEach(item => item.marker.remove()); lightMarkers = [];
   cameraMarkers.forEach(item => item.remove()); cameraMarkers = [];
   liveLightMarker?.remove(); liveLightMarker = undefined;
-  for (const point of mode.value !== 'idle' && !overviewActive.value ? current.value?.trafficLights || [] : []) {
+  if (!showMapSigns.value) return;
+  for (const point of mode.value !== 'idle' ? current.value?.trafficLights || [] : []) {
     const marker = L.marker(latLng(point), { icon: mapSignIcon(trafficLightSign()),
       interactive: false, zIndexOffset: 500 }).addTo(map);
     lightMarkers.push({ point, marker });
@@ -782,7 +788,7 @@ function drawMapSigns() {
 void trafficLightAssetReady.then(ready => { if (ready && !disposed) drawMapSigns(); });
 void cameraAssetReady.then(ready => { if (ready && !disposed) drawMapSigns(); });
 watch(() => { const signal = upcomingSignal.value; return signal ? `${signal.point.join(',')}:${signal.color}:${signal.seconds}` : ''; }, updateLiveLightMarker);
-watch([mode, overviewActive], drawMapSigns);
+watch([mode, showMapSigns], drawMapSigns);
 function draw(fit = true) {
   if (!map || !viewActive.value) return;
   lines.forEach(line => line.remove()); lines = [];
@@ -842,12 +848,15 @@ function cancelSearch() {
 }
 watch([query, picking], cancelSearch, { flush: 'sync' });
 function selectPlace(place: Place) {
+  const pointType = picking.value;
   quickPlaceChoice.value = 'recent'; quickPlacesExpanded.value = false;
   saveRecentPlace(place);
   setPoint(placeNavigationPoint(place), place.name);
   following.value = false;
   map?.setView(latLng(place.location), 16);
-  status.value = '地点已选择，可以规划路线';
+  if (hasOrigin.value && hasDestination.value) void plan();
+  else if (pointType === 'destination') locate(false, true, true);
+  else status.value = '起点已选择，请选择目的地';
 }
 async function search() {
   cancelSearch();
@@ -879,6 +888,7 @@ async function plan(replan = false) {
   const id = ++generation;
   controller?.abort(); controller = new AbortController();
   busy.value = true; error.value = ''; arrived.value = false;
+  status.value = replan ? '正在重新规划路线…' : '正在规划路线…';
   try {
     const response = await axios.post('/api/amap-app/route', { origin: origin.value, destination: destination.value }, { signal: controller.signal, timeout: 45000 });
     if (disposed || id !== generation) return;
@@ -1076,7 +1086,7 @@ function startDemo() {
     updatePosition(point, 0, bearingBetween(point, pointAt(route, travel.progress + 25)), travel.speedKmh / 3.6);
   }, 250);
 }
-function locate(navigate = false, preserveRoute = false) {
+function locate(navigate = false, preserveRoute = false, planOnFix = false) {
   if (navigate) prepareVoice();
   if (!map || !navigator.geolocation) { error.value = '当前浏览器无法定位'; return; }
   if (!window.isSecureContext) { error.value = '当前位置页面不是安全连接，请通过 HTTPS 访问后再定位'; status.value = '定位需要安全连接'; return; }
@@ -1129,7 +1139,9 @@ function locate(navigate = false, preserveRoute = false) {
     liveSpeed.value = typeof position.speed === 'number' && Number.isFinite(position.speed) && position.speed >= 0 ? position.speed * 3.6 : null;
     speedEstimated.value = false;
     updatePosition(point, position.accuracy, position.heading, position.speed, accepted?.recovered);
-
+    // Selecting a destination before the first fix still leads to route choice.
+    // Only the first accepted fix plans; later fixes must not replace that choice.
+    if (first && planOnFix && mode.value === 'idle' && hasOrigin.value && hasDestination.value) void plan();
   };
   const failed = (failure: GeolocationPositionError) => {
     if (disposed || id !== locationGeneration) return;

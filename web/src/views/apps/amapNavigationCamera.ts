@@ -5,6 +5,13 @@ const MAIN_MAP_LANDSCAPE_FOV = [36, 36, 33.00600051879883, 27.006000518798828,
   42.09, 42.09, 42, 42, 42] as const; // APK mapprofile_1 levels 14–22
 const MAIN_MAP_LANDSCAPE_MAX_PITCH = [40, 40, 50, 54, 70, 74, 76, 76, 76] as const;
 
+/** OrbitControls changes camera distance without changing the 2D map zoom.
+ * Match zoomBy's sqrt(2) distance change per zoom level; orbit/pan keep distance. */
+export function manualNavigationZoom(baseZoom: number, baseDistance: number, distance: number): number {
+  if (!Number.isFinite(baseDistance) || !Number.isFinite(distance) || baseDistance <= 0 || distance <= 0) return baseZoom;
+  return baseZoom - 2 * Math.log2(distance / baseDistance);
+}
+
 export function navigationSceneCenter(center: MapPoint, position: MapPoint | undefined, following: boolean): MapPoint {
   return following && position ? position : center;
 }

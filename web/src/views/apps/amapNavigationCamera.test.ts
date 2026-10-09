@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { appLandscapeGuideFov, appLandscapeGuideMaxPitch, followCameraBearing, navigationSceneCenter, positionNavigationCamera, rebaseNavigationCamera } from './amapNavigationCamera';
+import { appLandscapeGuideFov, appLandscapeGuideMaxPitch, followCameraBearing, manualNavigationZoom, navigationSceneCenter, positionNavigationCamera, rebaseNavigationCamera } from './amapNavigationCamera';
+import { mapSignsVisible } from './amapMapSigns';
 import { groundPoint } from './teslaMapCoordinates';
 
 function screenPosition(bearing: number, zoom: number, vehicle: [number, number], following: boolean, headingUp: boolean) {
@@ -12,6 +13,30 @@ function screenPosition(bearing: number, zoom: number, vehicle: [number, number]
 }
 
 describe('3D navigation camera', () => {
+  it('hides and restores icons using actual manual camera zoom in either orientation', () => {
+    for (const headingUp of [true, false]) {
+      const camera = new THREE.PerspectiveCamera(45, 1.4, 1, 1400);
+      const target = positionNavigationCamera(camera, 0, 17, [0, 0], true, headingUp);
+      const distance = camera.position.distanceTo(target);
+      const offset = camera.position.clone().sub(target);
+      camera.position.copy(target).addScaledVector(offset, 2);
+      const zoomedOut = manualNavigationZoom(17, distance, camera.position.distanceTo(target));
+      expect(zoomedOut).toBeCloseTo(15);
+      expect(mapSignsVisible(zoomedOut)).toBe(false);
+      camera.position.copy(target).add(offset);
+      expect(mapSignsVisible(manualNavigationZoom(17, distance, camera.position.distanceTo(target)))).toBe(true);
+      // Orbiting and panning preserve the camera-target distance and visibility.
+      target.add(new THREE.Vector3(200, 0, -120));
+      camera.position.copy(target).add(new THREE.Vector3(distance, 0, 0));
+      expect(manualNavigationZoom(17, distance, camera.position.distanceTo(target))).toBeCloseTo(17);
+    }
+  });
+  it('keeps the base zoom when a manual camera distance is invalid', () => {
+    for (const distance of [0, -1, Infinity, Number.NaN]) {
+      expect(manualNavigationZoom(17, 200, distance)).toBe(17);
+      expect(manualNavigationZoom(17, distance, 200)).toBe(17);
+    }
+  });
   it('lets the car visibly lead a turn while the camera follows by the shortest angle', () => {
     const firstFrame = followCameraBearing(0, 90, 33);
     expect(firstFrame).toBeGreaterThan(0);
