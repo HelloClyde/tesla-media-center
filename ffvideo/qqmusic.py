@@ -10,10 +10,12 @@ import threading
 import time
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse, urlsplit
 
+import requests
 from cryptography.fernet import Fernet, InvalidToken
-from flask import current_app, request, session
+from flask import Response, current_app, request, session
+from itsdangerous import BadSignature, URLSafeTimedSerializer
 from qqmusic_api import Client, Credential
 from qqmusic_api.core.exceptions import RatelimitedError
 from qqmusic_api.models.login import QRLoginType
@@ -76,6 +78,53 @@ def music_text(value):
 
 class InputError(ValueError):
     """Only locally validated, safe messages may be returned to the browser."""
+
+
+def allowed_mv_url(url):
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname or ''
+        return (parsed.scheme == 'https' and parsed.port in (None, 443)
+                and parsed.username is None and parsed.password is None
+                and (host.endswith('.qq.com') or host.endswith('.qqmusic.com'))
+                and parsed.path.lower().endswith('.mp4'))
+    except ValueError:
+        return False
+
+
+def mv_item_urls(item):
+    """The QQ MV API's `url` entries are often CDN roots, not media URLs."""
+    urls = []
+    filename = getattr(item, 'cn', '') or ''
+    vkey = getattr(item, 'vkey', '') or ''
+    for source in getattr(item, 'url', []) or []:
+        try:
+            parsed = urlsplit(source)
+            if parsed.scheme not in ('http', 'https') or parsed.port not in (None, 80, 443):
+                continue
+            secure = parsed._replace(scheme='https', netloc=parsed.hostname or '').geturl()
+            if (parsed.path in ('', '/') and not parsed.query and not parsed.fragment
+                    and re.fullmatch(r'[A-Za-z0-9_.-]{1,160}\.mp4', filename)
+                    and re.fullmatch(r'[A-Za-z0-9_-]{1,512}', vkey)):
+                secure = urljoin(secure, filename) + '?vkey=' + quote(vkey, safe='')
+            if allowed_mv_url(secure):
+                urls.append(secure)
+        except ValueError:
+            continue
+    for source in getattr(item, 'freeflow_url', []) or []:
+        try:
+            parsed = urlsplit(source)
+            if parsed.scheme in ('http', 'https') and parsed.port in (None, 80, 443):
+                secure = parsed._replace(scheme='https', netloc=parsed.hostname or '').geturl()
+                if allowed_mv_url(secure):
+                    urls.append(secure)
+        except ValueError:
+            continue
+    return list(dict.fromkeys(urls))
+
+
+def mv_media_signer():
+    return URLSafeTimedSerializer(current_app.secret_key, salt='qqmusic-mv-media')
 
 
 def identity():
@@ -456,10 +505,73 @@ def add_qqmusic_route(app):
         vid = valid_id(request.args.get('id'))
         result = run(identity(), lambda c: c.mv.get_mv_urls([vid]))
         variants = result.data.get(vid)
-        urls = [u for item in (variants.mp4 if variants else []) if not item.code for u in item.url if urlparse(u).scheme == 'https' and ((urlparse(u).hostname or '').endswith('.qq.com') or (urlparse(u).hostname or '').endswith('.qqmusic.com'))]
-        if not urls:
+        playable = [item for item in (variants.mp4 if variants else []) if not item.code
+                    and mv_item_urls(item)]
+        if not playable:
             raise InputError('暂无可播放的 MV 音源')
-        return json_ok({'urls': list(dict.fromkeys(urls))})
+        # A smaller MP4 is less likely to stall the car's software decoder.
+        chosen = min(playable, key=lambda item: item.file_size if item.file_size > 0 else float('inf'))
+        urls = mv_item_urls(chosen)
+        token = mv_media_signer().dumps(urls)
+        return json_ok({'url': '/api/qqmusic/mv/media/' + token, 'directUrl': urls[0]})
+
+    @app.get('/api/qqmusic/mv/media/<string:token>')
+    @login_check
+    def qq_mv_media(token):
+        try:
+            urls = mv_media_signer().loads(token, max_age=3600)
+        except BadSignature:
+            return Response('播放地址已过期，请重新打开 MV', status=410)
+        requested = request.headers.get('Range', '')
+        match = re.fullmatch(r'bytes=(\d+)-(\d+)', requested)
+        if (not match or int(match[2]) < int(match[1])
+                or int(match[2]) - int(match[1]) >= 32 * 1024 * 1024):
+            return Response('无效 Range', status=416)
+        for url in urls:
+            if not allowed_mv_url(url):
+                continue
+            upstream = None
+            try:
+                upstream = requests.get(url, headers={
+                    'Range': requested, 'Referer': 'https://y.qq.com/',
+                    'User-Agent': 'Mozilla/5.0', 'Accept-Encoding': 'identity',
+                }, stream=True, timeout=(5, 20), allow_redirects=False)
+                if upstream.status_code != 206:
+                    upstream.close()
+                    continue
+                length = int(upstream.headers.get('Content-Length', 0))
+                content_range = upstream.headers.get('Content-Range', '')
+                returned = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', content_range)
+                if (not returned or int(returned[1]) != int(match[1])
+                        or int(returned[2]) != min(int(match[2]), int(returned[3]) - 1)
+                        or length != int(returned[2]) - int(returned[1]) + 1):
+                    upstream.close()
+                    continue
+            except (requests.RequestException, ValueError):
+                if upstream is not None:
+                    upstream.close()
+                continue
+
+            def chunks(remote=upstream, remaining=length):
+                try:
+                    for chunk in remote.iter_content(64 * 1024):
+                        if len(chunk) > remaining:
+                            raise IOError('upstream exceeded Content-Length')
+                        remaining -= len(chunk)
+                        yield chunk
+                    if remaining:
+                        raise IOError('upstream truncated response')
+                finally:
+                    remote.close()
+
+            response = Response(chunks(), status=206, content_type='video/mp4', headers={
+                'Content-Length': str(length), 'Content-Range': content_range,
+                'Accept-Ranges': 'bytes', 'Cache-Control': 'private, no-store',
+                'X-Accel-Buffering': 'no',
+            })
+            response.call_on_close(upstream.close)
+            return response
+        return Response('MV 音源暂时不可用，请重新打开', status=502)
 
     @app.get('/api/qqmusic/word-lyrics')
     @endpoint

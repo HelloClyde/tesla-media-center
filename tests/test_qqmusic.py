@@ -5,7 +5,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, Mock
 
 from flask import Flask
 from qqmusic_api import Credential
@@ -46,9 +46,53 @@ class QQMusicTest(unittest.TestCase):
 
     def test_requires_app_login(self):
         client = self.app.test_client()
-        for method, path in [('get', 'singer-profile?id=test'), ('get', 'browse?kind=tops'), ('get', 'suggestions?q=x'), ('get', 'comments?mid=x'), ('get', 'mv?id=x'), ('get', 'word-lyrics?mid=x'), ('post', 'collection'), ('get', 'lyrics?mid=test'), ('get', 'account'), ('get', 'daily'), ('get', 'library'), ('get', 'recommend'), ('get', 'search?q=test'), ('get', 'play?mid=test'),
+        for method, path in [('get', 'singer-profile?id=test'), ('get', 'browse?kind=tops'), ('get', 'suggestions?q=x'), ('get', 'comments?mid=x'), ('get', 'mv?id=x'), ('get', 'mv/media/forged'), ('get', 'word-lyrics?mid=x'), ('post', 'collection'), ('get', 'lyrics?mid=test'), ('get', 'account'), ('get', 'daily'), ('get', 'library'), ('get', 'recommend'), ('get', 'search?q=test'), ('get', 'play?mid=test'),
                              ('post', 'login'), ('post', 'login/status'), ('post', 'logout')]:
             self.assertEqual(getattr(client, method)('/api/qqmusic/' + path).json['status'], 'need_login')
+
+    def test_mv_uses_smallest_mp4_and_authenticated_byte_relay(self):
+        small = 'https://mvvideo.qq.com/music-small.mp4?token=test'
+        large = 'https://mvvideo.qq.com/music-large.mp4?token=test'
+        variants = SimpleNamespace(mp4=[
+            SimpleNamespace(code=0, file_size=9000000, url=[large]),
+            SimpleNamespace(code=0, file_size=2000000, url=[small]),
+            SimpleNamespace(code=0, file_size=1000, url=['https://mvvideo.qq.com.evil.test/bad.mp4']),
+        ])
+        with patch.object(qqmusic, 'run', return_value=SimpleNamespace(data={'abc': variants})):
+            source = self.client.get('/api/qqmusic/mv?id=abc')
+        self.assertEqual(source.status_code, 200)
+        path = source.json['data']['url']
+        self.assertEqual(source.json['data']['directUrl'], small)
+        self.assertTrue(path.startswith('/api/qqmusic/mv/media/'))
+        self.assertEqual(self.client.get(path).status_code, 416)
+        self.assertEqual(self.client.get('/api/qqmusic/mv/media/forged').status_code, 410)
+        remote = Mock(status_code=206, headers={'Content-Length': '4', 'Content-Range': 'bytes 0-3/100'})
+        remote.iter_content.return_value = [b'ab', b'cd']
+        with patch.object(qqmusic.requests, 'get', return_value=remote) as get:
+            response = self.client.get(path, headers={'Range': 'bytes=0-3'})
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.data, b'abcd')
+            self.assertEqual(response.headers['Content-Range'], 'bytes 0-3/100')
+            self.assertEqual(get.call_args.args[0], small)
+            self.assertFalse(get.call_args.kwargs['allow_redirects'])
+            response.close()
+            self.assertEqual(self.client.get(path, headers={'Range': 'bytes=0-'}).status_code, 416)
+
+    def test_mv_api_cdn_root_is_completed_with_filename_and_vkey(self):
+        item = SimpleNamespace(code=0, file_size=1000, cn='video.f9815.mp4', vkey='signed_key',
+                               url=['http://mv6.music.tc.qq.com/'], freeflow_url=[])
+        variants = SimpleNamespace(mp4=[item])
+        with patch.object(qqmusic, 'run', return_value=SimpleNamespace(data={'abc': variants})):
+            source = self.client.get('/api/qqmusic/mv?id=abc')
+        self.assertEqual(source.status_code, 200)
+        self.assertEqual(source.json['data']['directUrl'], 'https://mv6.music.tc.qq.com/video.f9815.mp4?vkey=signed_key')
+        remote = Mock(status_code=206, headers={'Content-Length': '1', 'Content-Range': 'bytes 0-0/100'})
+        remote.iter_content.return_value = [b'x']
+        with patch.object(qqmusic.requests, 'get', return_value=remote) as get:
+            response = self.client.get(source.json['data']['url'], headers={'Range': 'bytes=0-0'})
+            self.assertEqual(response.status_code, 206)
+            self.assertEqual(response.data, b'x')
+            self.assertEqual(get.call_args.args[0], 'https://mv6.music.tc.qq.com/video.f9815.mp4?vkey=signed_key')
 
     def test_invalid_input_does_not_call_upstream(self):
         with patch.object(qqmusic, 'run') as run:

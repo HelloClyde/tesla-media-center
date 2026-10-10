@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { registerMusicMediaControls, logMediaKey } from '@/functions/mediaKeyDiagnostics';
 let releaseMediaControls: (() => void) | undefined;
-import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue';
 import { backgroundMusic, musicCommands, clearBackgroundMusic } from '@/stores/backgroundMusic';
 defineOptions({ name: 'QQMusicView' });
 import { useRouter } from 'vue-router';
@@ -35,6 +35,7 @@ async function openSearch() { tab.value = 'search'; await nextTick(); searchInpu
 const searched = ref('');
 const songs = ref<Song[]>([]);
 const tab = ref('home');
+const viewActive = ref(true);
 const homeMode = ref<'cards' | 'daily'>('cards');
 const radioActive = ref(false);
 const radioBusy = ref(false);
@@ -169,6 +170,10 @@ function rememberSearch(word: string) {
 }
 function clearSearchHistory() { searchHistory.value = []; try { localStorage.removeItem('qqmusic-search-history'); } catch {} }
 function openBrowse(kind: string, id: string, title: string) { nowPlayingOpen.value = false; browseItem.value = { kind, id, title, cover: '' }; tab.value = 'browse'; }
+function openSongSinger(artist: { mid: string; name: string }) {
+  if (artist.mid) openBrowse('singer', artist.mid, artist.name);
+  else openBrowse('singer-search', artist.name, artist.name + ' · 歌手搜索');
+}
 async function playBrowse(song: Song, tracks: Song[]) { stopRadio(); queue.value = [...tracks]; await play(song); }
 async function collection(action: string, song?: Song, playlist?: string) {
   if (!account.value.loggedIn) { accountOpen.value = true; return; }
@@ -662,7 +667,8 @@ watch([current, playing, loadingTrack, elapsed, duration, error, mode, queue, ra
     nextDisabled: advancing.value || (!radioActive.value && mode.value === 'order' && queue.value.findIndex(s => s.mid === current.value?.mid) >= queue.value.length - 1),
   });
 }, { immediate: true });
-onDeactivated(() => { accountOpen.value = false; eqOpen.value = false; addSong.value = undefined; stopPoll(); saveSession(); });
+onActivated(() => { viewActive.value = true; });
+onDeactivated(() => { viewActive.value = false; accountOpen.value = false; eqOpen.value = false; addSong.value = undefined; stopPoll(); saveSession(); });
 onBeforeUnmount(clearBackgroundMusic);
 watch([() => current.value?.mid, playing, loadingTrack, error], () => {
   logMediaKey('QQ 音乐状态', `${current.value?.title || '未选择歌曲'} · ${loadingTrack.value ? '加载中' : playing.value ? '播放中' : '已暂停'}${error.value ? ' · ' + error.value : ''}`);
@@ -711,7 +717,7 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
     <el-alert v-if="error" :title="error" type="warning" show-icon :closable="false" />
     <div class="results music-scroll">
       <QQMusicComments v-if="tab === 'comments' && commentsSong" :key="commentsSong.mid" :title="commentsSong.title" :comments="comments" :busy="commentsBusy" :error="commentsError" :more="commentsMore" @more="loadComments" />
-      <QQMusicBrowse v-if="browseItem" v-show="tab === 'browse'" :active="tab === 'browse'" :initial="browseItem" :api="api" @play="playBrowse" @video="audio?.pause()" />
+      <QQMusicBrowse v-if="browseItem" v-show="tab === 'browse'" :active="tab === 'browse' && viewActive" :initial="browseItem" :api="api" @play="playBrowse" @video="audio?.pause()" />
       <section v-if="tab === 'queue'" class="queue-tab"><h2>播放队列 <small>{{ queue.length }} 首</small></h2><p v-if="radioActive">猜你喜欢连续推荐模式</p><div class="queue-list"><div v-for="(song, index) in queue" :key="song.mid + index" class="queue-row"><el-button text :type="song.mid === current?.mid ? 'primary' : 'default'" @click="play(song)">{{ index + 1 }}. {{ song.title }}</el-button><el-button text :disabled="index === 0" @click="moveQueue(index)">上移</el-button><el-button text @click="removeQueue(index)">移除</el-button></div><p v-if="!queue.length">队列为空</p></div></section>
       <template v-if="tab === 'home'">
         <template v-if="homeMode === 'cards'">
@@ -779,7 +785,7 @@ onBeforeUnmount(() => { releasePlaybackPreload?.(); clearNextPreload(); saveSess
       </div>
       <div class="seek"><span>{{ time(elapsed) }}</span><input type="range" min="0" :max="duration || 1" step="0.1" :value="elapsed" :style="{ '--seek-progress': `${duration > 0 ? Math.min(100, Math.max(0, elapsed / duration * 100)) : 0}%` }" :disabled="!duration || loadingTrack" :aria-valuetext="`${time(elapsed)} / ${time(duration)}`" aria-label="播放进度" @input="seek" /><span>{{ time(duration) }}</span></div>
     </footer>
-    <QQMusicNowPlaying v-if="nowPlayingOpen && current" :song="current" :comments-open="commentsOpen" :comments="comments" :comments-busy="commentsBusy" :comments-error="commentsError" :comments-more="commentsMore" @lyrics="commentsOpen = false" @more-comments="loadComments" :mode="mode" :mode-label="modeLabels[mode]" :radio-active="radioActive" :eq-enabled="eqEnabled" @mode="cycleMode" @equalizer="eqOpen = true" :liked="!!knownLikes[current.mid]" :collection-busy="collectionBusy" :load-word-lyrics="() => api('word-lyrics?mid=' + encodeURIComponent(current!.mid))" @queue="openQueue()" @like="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)" @comments="openComments(current)" @add="openAdd(current)" :playing="playing" :elapsed="elapsed" :duration="duration" :loading="loadingTrack" :previous-disabled="mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0" :next-disabled="advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" :error="error" :load-lyrics="() => api('lyrics?mid=' + encodeURIComponent(current!.mid))" @close="nowPlayingOpen = false; commentsOpen = false" @toggle="toggle" @previous="step(-1)" @next="step(1)" @seek="value => { if (audio && duration) audio.currentTime = Math.min(duration, value); }" />
+    <QQMusicNowPlaying v-if="nowPlayingOpen && current" :song="current" :comments-open="commentsOpen" :comments="comments" :comments-busy="commentsBusy" :comments-error="commentsError" :comments-more="commentsMore" @lyrics="commentsOpen = false" @more-comments="loadComments" :mode="mode" :mode-label="modeLabels[mode]" :radio-active="radioActive" :eq-enabled="eqEnabled" @mode="cycleMode" @equalizer="eqOpen = true" @singer="openSongSinger" :liked="!!knownLikes[current.mid]" :collection-busy="collectionBusy" :load-word-lyrics="() => api('word-lyrics?mid=' + encodeURIComponent(current!.mid))" @queue="openQueue()" @like="collection(knownLikes[current.mid] ? 'unlike' : 'like', current)" @comments="openComments(current)" @add="openAdd(current)" :playing="playing" :elapsed="elapsed" :duration="duration" :loading="loadingTrack" :previous-disabled="mode === 'order' && queue.findIndex(s => s.mid === current?.mid) <= 0" :next-disabled="advancing || loadingTrack || (!radioActive && mode === 'order' && queue.findIndex(s => s.mid === current?.mid) >= queue.length - 1)" :error="error" :load-lyrics="() => api('lyrics?mid=' + encodeURIComponent(current!.mid))" @close="nowPlayingOpen = false; commentsOpen = false" @toggle="toggle" @previous="step(-1)" @next="step(1)" @seek="value => { if (audio && duration) audio.currentTime = Math.min(duration, value); }" />
     <el-dialog v-model="eqOpen" title="音效 · 均衡器与空间感" width="min(440px, 94vw)" align-center><div class="eq-settings"><el-switch :model-value="eqEnabled" :loading="eqBusy" active-text="开启音效" @change="(value: string | number | boolean) => setEq(!!value)" /><el-select v-if="eqEnabled" v-model="eqPreset" aria-label="均衡器音效" @change="applyEq"><el-option v-for="(preset, id) in eqPresets" :key="id" :value="id" :label="preset.name" /></el-select></div><div class="spatial-settings"><el-switch v-model="spatialEnabled" :disabled="!eqEnabled || eqBusy" active-text="空间音效" @change="applySpatial" /><template v-if="spatialEnabled && eqEnabled"><el-tag>{{ spatialChannels === 8 ? '7.1 合成环绕' : spatialChannels === 6 ? '5.1 合成环绕' : '双声道混响' }}</el-tag><el-switch v-model="forceStereo" active-text="兼容模式（强制双声道）" @change="applySpatial" /><el-radio-group v-model="spatialRoom" @change="updateRoom"><el-radio-button value="room">小房间</el-radio-button><el-radio-button value="hall">音乐厅</el-radio-button></el-radio-group><label>空间强度 {{ spatialAmount }}%<el-slider v-model="spatialAmount" :min="0" :max="50" aria-label="空间混响强度" @input="applySpatial" /></label></template><p>自动尝试 7.1 → 5.1 → 双声道；音效失败时恢复原声。当前为普通歌曲合成环绕，不是原生全景声解码。若车机声场异常，可开启兼容模式。</p></div></el-dialog>
     <el-dialog :model-value="!!addSong" title="添加到我的歌单" width="min(500px, 94vw)" align-center @update:model-value="(value: boolean) => { if (!value) addSong = undefined; }"><el-button :loading="collectionBusy" @click="collection('create')">新建歌单</el-button><p v-if="!ownedPlaylists.length">暂无自建歌单</p><el-button v-for="playlist in ownedPlaylists" :key="playlist.id" class="playlist-choice" :disabled="collectionBusy" @click="collection('add', addSong, playlist.id)">{{ playlist.title }}</el-button></el-dialog>
     <!-- KeepAlive detaches its subtree; a connected audio node must outlive route changes. -->

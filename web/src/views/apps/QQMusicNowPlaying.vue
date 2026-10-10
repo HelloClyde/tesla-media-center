@@ -7,7 +7,7 @@ import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from 'vue'
 import { ArrowDown, ArrowLeft, ArrowRight } from '@element-plus/icons-vue';
 import { parseLrc, parseQrc, lyricIndex, type LyricLine } from './qqMusicLyrics';
 const props = defineProps<{
-  song: { mid: string; title: string; singer: string; cover: string; album: string };
+  song: { mid: string; title: string; singer: string; cover: string; album: string; singers?: { mid: string; name: string }[] };
   playing: boolean; elapsed: number; duration: number; loading: boolean;
   previousDisabled: boolean; nextDisabled: boolean; error: string;
   mode: PlayMode; modeLabel: string; radioActive: boolean; eqEnabled: boolean;
@@ -17,12 +17,16 @@ const props = defineProps<{
   loadWordLyrics: () => Promise<{ lyric: string }>;
   loadLyrics: () => Promise<{ lyric: string; translation: string }>;
 }>();
-const emit = defineEmits<{ close: []; toggle: []; previous: []; next: []; seek: [value: number]; queue: []; mode: []; equalizer: []; like: []; comments: []; lyrics: []; moreComments: []; add: [] }>();
+const emit = defineEmits<{ close: []; toggle: []; previous: []; next: []; seek: [value: number]; queue: []; mode: []; equalizer: []; like: []; comments: []; lyrics: []; moreComments: []; add: []; singer: [artist: { mid: string; name: string }] }>();
 const settingsOpen = ref(false);
 const fontSize = ref(23), lyricOffset = ref(0), showTranslation = ref(true);
 try { const value = JSON.parse(localStorage.getItem('qqmusic-lyrics-settings') || '{}'); fontSize.value = Math.min(36, Math.max(16, Number(value.fontSize) || 23)); lyricOffset.value = Math.min(5, Math.max(-5, Number(value.offset) || 0)); showTranslation.value = value.translation !== false; } catch {}
 watch([fontSize, lyricOffset, showTranslation], () => { try { localStorage.setItem('qqmusic-lyrics-settings', JSON.stringify({ fontSize: fontSize.value, offset: lyricOffset.value, translation: showTranslation.value })); } catch {} });
 const lyricTime = computed(() => props.elapsed + lyricOffset.value);
+const artists = computed(() => {
+  const known = props.song.singers?.filter(artist => artist.name?.trim()) || [];
+  return known.length ? known : props.song.singer.split(/\s*\/\s*/).filter(Boolean).map(name => ({ mid: '', name }));
+});
 const lines = ref<LyricLine[]>([]);
 const plain = ref('');
 const busy = ref(false);
@@ -86,7 +90,7 @@ function time(value: number) { return `${Math.floor(value / 60)}:${String(Math.f
     <div class="stage">
       <div class="artwork">
         <div class="record"><img v-if="song.cover" :src="song.cover" alt="专辑封面" /><div v-else class="cover-fallback"><QQMusicControlIcon kind="music" /></div></div>
-        <div class="track-info"><h1 ref="titleViewport" :title="song.title" :class="{ 'scrolling-title': titleOverflow > 1 }" :style="{ '--title-distance': `-${titleOverflow}px`, '--title-duration': `${6 + titleOverflow / 14}s` }"><span ref="titleText"><span :key="song.mid + song.title" class="title-motion">{{ song.title }}</span></span></h1><p>{{ song.singer }}</p><small>{{ song.album }}</small></div>
+        <div class="track-info"><h1 ref="titleViewport" :title="song.title" :class="{ 'scrolling-title': titleOverflow > 1 }" :style="{ '--title-distance': `-${titleOverflow}px`, '--title-duration': `${6 + titleOverflow / 14}s` }"><span ref="titleText"><span :key="song.mid + song.title" class="title-motion">{{ song.title }}</span></span></h1><p class="artists"><template v-for="(artist, index) in artists" :key="artist.mid || artist.name"><span v-if="index" class="artist-separator"> / </span><button type="button" class="artist-link" :aria-label="`查看${artist.name}的歌手主页`" @click="emit('singer', artist)">{{ artist.name }}</button></template></p><small>{{ song.album }}</small></div>
         <div class="sound-bars" aria-hidden="true"><i v-for="n in 17" :key="n" :style="{ animationDelay: `${n * -.17}s`, animationDuration: `${.7 + n % 5 * .16}s` }"></i></div>
       </div>
       <div class="words-panel">
@@ -117,6 +121,12 @@ function time(value: number) { return `${Math.floor(value / 60)}:${String(Math.f
 .timeline > span { flex: 0 0 5ch; width: 5ch; white-space: nowrap; }
 .timeline > span:last-child { text-align: right; }
 .record img { display: block; }
+.track-info .artists { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; min-height: 26px; height: auto; max-height: 52px; overflow: auto; scrollbar-width: none; }
+.track-info .artists::-webkit-scrollbar { display: none; }
+.artist-link { border: 0; padding: 2px 3px; background: transparent; color: #d6ffdf; font: inherit; cursor: pointer; white-space: nowrap; }
+.artist-link:hover { text-decoration: underline; }
+.artist-link:focus-visible { outline: 2px solid #b9f6ce; outline-offset: 1px; border-radius: 3px; }
+.artist-separator { color: #8daba1; }
 
 .track-info h1 > span { display: inline-block; width: max-content; max-width: none; }
 .title-motion { display: inline-block; }
