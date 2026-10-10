@@ -6,6 +6,11 @@ vi.mock('leaflet', () => ({ default: {
   layerGroup: () => ({ addTo() { return this; }, remove() {} }),
 } }));
 vi.mock('./mapRenderQueue', () => ({ createMapRenderQueue: () => ({ start() {}, cancel: cancelDraw }) }));
+vi.mock('./amapBrowserTileCache', () => ({
+  browserMapTileTtlMs: () => 7 * 24 * 3600000,
+  readMemoryMapTiles: () => new Map(), readMapTiles: async () => new Map(),
+  storeMapTiles: async () => {},
+}));
 import { attachAppMap } from './amapVectorMap';
 import type { AppRoute } from './amapNavigation';
 afterEach(() => { vi.useRealTimers(); post.mockReset(); cancelDraw.mockReset(); });
@@ -14,6 +19,7 @@ function fakeMap() {
   const events: Record<string, () => void> = {};
   const map = {
     getPane() {}, createPane: () => ({ style: {} }), getZoom: () => 14,
+    getCenter: () => ({lng: 120.0005, lat: 30.0005}),
     getBounds: () => ({ getWest: () => 120, getEast: () => 120.001, getNorth: () => 30.001, getSouth: () => 30 }),
     on(names: string, fn: () => void) { names.split(' ').forEach(name => events[name] = fn); }, off() {},
   };
@@ -50,7 +56,7 @@ it('backs off failed tiles instead of looping on the same request', async () => 
   expect(post.mock.calls.filter(c => c[1].level === firstLevel)).toHaveLength(2);
   layer.dispose();
 });
-it('loads overview and visible street detail before intermediate levels', async () => {
+it('loads street detail and intermediate levels before distant overview layers', async () => {
   vi.useFakeTimers();
   post.mockImplementation(async (_url, batch) => ({ status: 200, data: { status: 'ok', data: {
     tiles: batch.tiles.map(([x, y]: number[]) => ({ level: batch.level, x, y })),
@@ -58,7 +64,7 @@ it('loads overview and visible street detail before intermediate levels', async 
   const { map } = fakeMap();
   const layer = attachAppMap(map, vi.fn());
   await vi.advanceTimersByTimeAsync(350);
-  expect(post.mock.calls.slice(0, 4).map(call => call[1].level)).toEqual([3, 14, 12, 10]);
+  expect(post.mock.calls.slice(0, 4).map(call => call[1].level)).toEqual([14, 12, 10, 8]);
   layer.dispose();
 });
 it('warms route tiles only after the visible map and receives an empty response', async () => {

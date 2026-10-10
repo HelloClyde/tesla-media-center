@@ -1,9 +1,15 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AppRoute } from './amapNavigation';
 
 const { post } = vi.hoisted(() => ({ post: vi.fn() }));
 vi.mock('axios', () => ({ default: { post } }));
-import { createTeslaMapGround } from './teslaMapGround';
+let createTeslaMapGround: typeof import('./teslaMapGround').createTeslaMapGround;
+beforeEach(async () => {
+  // The decoder and in-memory cache are shared singletons in production;
+  // each scenario needs its own Worker lifecycle and cache contents.
+  vi.resetModules();
+  ({createTeslaMapGround} = await import('./teslaMapGround'));
+});
 
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); post.mockReset(); });
 
@@ -17,7 +23,9 @@ it('requests compact BMD for 3D roads and buildings', async () => {
     onmessage?: (event: any) => void;
     onerror?: () => void;
     constructor() { queueMicrotask(() => this.onmessage?.({data:{ready:true}})); }
-    postMessage(input: any) { queueMicrotask(() => this.onmessage?.({data:{tiles:input.tiles}})); }
+    postMessage(input: any) {
+      if (input.id) queueMicrotask(() => this.onmessage?.({data:{id:input.id,value:input.payload.tiles}}));
+    }
     terminate() {}
   }
   vi.stubGlobal('Worker', FakeWorker);
@@ -100,10 +108,13 @@ it('shows the navigation ground before distant background levels complete', asyn
   const ground = createTeslaMapGround(report);
   ground.update([120.1, 30.2], -180, 0);
   await vi.advanceTimersByTimeAsync(100);
-  expect(post.mock.calls.filter(call => call[1].layer !== 'lanes').slice(0, 3).map(call => call[1].level)).toEqual([14, 15, 3]);
+  const levels = post.mock.calls.filter(call => call[1].layer !== 'lanes').map(call => call[1].level);
+  expect(levels[0]).toBe(14);
+  expect(levels[levels.length-1]).toBe(12);
+  expect(levels).not.toContain(15);
   expect(post.mock.calls.some(call => call[1].layer === 'lanes')).toBe(false);
   expect(ground.group.visible).toBe(true);
-  expect(report).toHaveBeenCalledWith('App 道路与建筑已显示 · 正在补充地表…', true);
+  expect(report).toHaveBeenCalledWith('App 地图已显示 · 正在补充建筑与地表…', true);
   ground.dispose();
 });
 
@@ -120,7 +131,7 @@ it('paints broad App surfaces beneath detailed navigation surfaces', async () =>
       level: batch.level, x, y, collection: { features: [] }, buildings: [],
       surfaces: batch.level === 15 ? [] : [{ minZoom: 0, maxZoom: 20,
         paints: { day: [{ minZoom: 0, maxZoom: 20, color: batch.level === 14 ? '#1144aa' : '#aa4411' }] },
-        rings: [[[120, 30], [120.001, 30], [120, 30.001]]] }],
+      rings: [[[120.1, 30.2], [120.101, 30.2], [120.1, 30.201]]] }],
     })) } } }));
   const ground = createTeslaMapGround(vi.fn());
   ground.update([120.1, 30.2], -180, 0);
@@ -160,9 +171,12 @@ it('keeps compact BMD enabled after a temporary 3D map gateway failure', async (
   ground.dispose();
 });
 
-it('does not permanently fall back to JSON when the BMD worker fails once', async () => {
+it('recovers a failed Worker with local decoding without switching BMD requests to JSON', async () => {
   vi.useFakeTimers();
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({} as any);
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({
+    fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    fill() {}, stroke() {}, strokeText() {}, fillText() {},
+  } as any);
   class FailedWorker {
     onmessage?: (event: any) => void;
     onerror?: () => void;
@@ -172,7 +186,9 @@ it('does not permanently fall back to JSON when the BMD worker fails once', asyn
   }
   vi.stubGlobal('Worker', FailedWorker);
   post.mockImplementation(async (_url:string,batch:{level:number;tiles:number[][]}) => ({
-    status:200,data:{status:'ok',data:{tiles:batch.tiles.map(([x,y])=>({level:batch.level,x,y}))}},
+    status:200,data:{status:'ok',data:{tiles:batch.tiles.map(([x,y])=>({level:batch.level,x,y,
+      collection: {features: [{properties: {},geometry: {type: 'LineString',coordinates: [[120.1,30.2],[120.101,30.2]]}}]},
+    }))}},
   }));
   const ground=createTeslaMapGround(vi.fn());
   ground.update([120.1,30.2],-180,0);
@@ -183,7 +199,8 @@ it('does not permanently fall back to JSON when the BMD worker fails once', asyn
   expect(post.mock.calls.slice(0,2).map(call=>call[0])).toEqual([
     '/api/amap-app/map/bmd', '/api/amap-app/map/bmd',
   ]);
-  expect(post.mock.calls[2][0]).toBe('/api/amap-app/map');
+  expect(post.mock.calls.every(call => call[0] === '/api/amap-app/map/bmd')).toBe(true);
+  expect(ground.group.visible).toBe(true);
   ground.dispose();
 });
 

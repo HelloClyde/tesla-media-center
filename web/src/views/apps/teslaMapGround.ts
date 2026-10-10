@@ -1,17 +1,23 @@
+import {decodeAppMapTiles} from './amapMapWorker';
+import {createMapInteraction, waitForMapIdle} from './amapMapWork';
 import * as THREE from 'three';
 import axios from 'axios';
-import { decodeBmdOnMainThread, postMapTiles, rawBmdDecodeUnsupported, rawBmdUnsupported, TransientBmdDecodeError, transferableBmdBuffers } from './amapBmdTransport';
+import { postMapTiles, rawBmdDecodeUnsupported, rawBmdUnsupported } from './amapBmdTransport';
 import { createBuildingMeshes, type AppBuilding } from './teslaBuildings';
-import { viewportTiles } from './amapViewport';
+import { mapTileDistance, viewportTiles } from './amapViewport';
 import { route3DTiles } from './amapTilePrefetch';
 import type { AppRoute } from './amapNavigation';
 import { groundBounds, groundOffset, type MapPoint } from './teslaMapCoordinates';
 import { roadSpans, roadDeckGeometry, roadWidth, nearestRoadHeight, type RoadDeckEdge } from './teslaRoadLevels';
 import { createLaneMesh, laneViewportTiles, navigationLaneBoundaries } from './teslaLanes';
-import { browserMapTileTtlMs, readMapTiles, storeMapTiles } from './amapBrowserTileCache';
+import { browserMapTileTtlMs, readMemoryMapTiles, readMapTiles, storeMapTiles } from './amapBrowserTileCache';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import {geometryInView, type GeometryBounds} from './amapGeometryBounds';
 
 const SIZE = 600, RESOLUTION = 2048, ZOOM = 17;
+// Keep the high-resolution navigation patch small. The surrounding App map
+// covers the camera's far plane without fetching far-away building meshes.
+const BACKDROP_SIZE = 6000, BACKDROP_RESOLUTION = 1024;
 type Tile = { level: number; x: number; y: number; error?: string; missingLayers?: string[];
   collection?: { features: any[] }; surfaces?: any[]; buildings?: AppBuilding[];
   roadPaints?: { day?: Record<string,{minZoom:number;maxZoom:number;outerWidth:number;innerWidth:number;outer:{color:string;opacity:number};inner:{color:string;opacity:number}}[]>;
@@ -20,44 +26,9 @@ type Tile = { level: number; x: number; y: number; error?: string; missingLayers
 /** A georeferenced ground layer in the SAME scene as the vehicle. No fabricated buildings. */
 export function createTeslaMapGround(report: (text: string, ready: boolean) => void, theme: 'day' | 'night' = 'day') {
   let appearance = theme;
-  let rawUnavailable = false, authRequired = false, transientDecodeFailures = 0, workerUnavailable = false;
-  function decodeRaw(tiles: any[], paints: any): Promise<Tile[]> {
-    if (workerUnavailable || typeof Worker === 'undefined')
-      return Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints) as Tile[]);
-    let worker: Worker;
-    try { worker = new Worker(new URL('./amapBmdWorker.ts', import.meta.url), { type: 'module' }); }
-    catch {
-      workerUnavailable = true;
-      return Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints) as Tile[]);
-    }
-    return new Promise((resolve, reject) => {
-      let sent = false;
-      const local = () => {
-        workerUnavailable = true;
-        Promise.resolve().then(() => decodeBmdOnMainThread(tiles, paints) as Tile[]).then(resolve, reject);
-      };
-      const timeout = setTimeout(() => {
-        worker.terminate();
-        if (sent) reject(new TransientBmdDecodeError('BMD decode timeout'));
-        else local();
-      }, 15000);
-      worker.onmessage = event => {
-        if (event.data.ready) {
-          try { worker.postMessage({ tiles, paints }, transferableBmdBuffers(tiles)); sent = true; }
-          catch { clearTimeout(timeout); worker.terminate(); local(); }
-          return;
-        }
-        clearTimeout(timeout); worker.terminate();
-        if (event.data.error) reject(new Error(event.data.error));
-        else resolve(event.data.tiles as Tile[]);
-      };
-      worker.onerror = () => {
-        clearTimeout(timeout); worker.terminate();
-        if (sent) reject(new TransientBmdDecodeError('BMD decode failed'));
-        else local();
-      };
-    });
-  }
+  let rawUnavailable = false, authRequired = false, transientDecodeFailures = 0;
+  const decodeRaw = decodeAppMapTiles;
+  const interaction = createMapInteraction();
   const group = new THREE.Group();
   group.visible = false;
   const canvas = document.createElement('canvas'); canvas.width = canvas.height = RESOLUTION;
@@ -66,6 +37,14 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   const material = new THREE.MeshStandardMaterial({ map: texture, roughness: 1, metalness: 0 });
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE), material);
   ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; group.add(ground);
+  const backdropCanvas = document.createElement('canvas');
+  backdropCanvas.width = backdropCanvas.height = BACKDROP_RESOLUTION;
+  const backdropContext = backdropCanvas.getContext('2d')!;
+  const backdropTexture = new THREE.CanvasTexture(backdropCanvas);
+  backdropTexture.colorSpace = THREE.SRGBColorSpace;
+  const backdropMaterial = new THREE.MeshStandardMaterial({map: backdropTexture, roughness: 1, metalness: 0});
+  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(BACKDROP_SIZE, BACKDROP_SIZE), backdropMaterial);
+  backdrop.rotation.x = -Math.PI / 2; backdrop.position.y = -.04; group.add(backdrop);
   let buildingsMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | undefined;
   let landmarkBounds: number[][] = [];
   let roadsMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | undefined;
@@ -93,7 +72,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   function deckHeightAt(x:number,z:number,direction:readonly [number,number],preferredHeight?:number) {
     return nearestRoadHeight(deckIndex.get(deckKey(x,z)) || [],x,z,direction,preferredHeight);
   }
-  let revision = 0;
+  let revision = 0, roadRevision = 0;
   function clearRoads() { if (roadsMesh) { roadsMesh.removeFromParent(); roadsMesh.geometry.dispose(); roadsMesh.material.dispose(); roadsMesh=undefined; } }
   function clearLanes() { if(laneMesh) {laneMesh.removeFromParent();laneMesh.geometry.dispose();laneMesh.material.dispose();laneMesh=undefined;} }
   function clearBuildings() { if (buildingsMesh) { buildingsMesh.removeFromParent(); buildingsMesh.geometry.dispose(); (buildingsMesh.material.userData.buildingAtlas as THREE.Texture | undefined)?.dispose(); (buildingsMesh.material.userData.buildingMre as THREE.Texture | undefined)?.dispose(); buildingsMesh.material.dispose(); buildingsMesh=undefined; } }
@@ -124,7 +103,10 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
   }
   let anchor: MapPoint | undefined, latest: MapPoint | undefined;
   let displayedTiles: Tile[] = [];
+  let displayedBuildingCount = 0, displayedAppearance = appearance;
   let heading = 0, generation = 0, disposed = false, ready = false;
+  let interacting = false, pendingPresentation: (() => boolean) | undefined, pendingBuildings = false;
+  let pendingLanes: (() => void) | undefined;
   let request: AbortController | undefined, retryAfter = 0;
   let laneRequest: AbortController | undefined, laneGeneration = 0, laneKey: string | undefined;
   let laneGuidance = false, laneProgress = 0, laneProgressBucket = -1;
@@ -141,6 +123,8 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     const tiles=laneViewportTiles(point,SIZE);
     const key=tiles.map(([x,y])=>`${x}/${y}`).join(';');
     const render=()=>{
+      if (interacting) { pendingLanes = render; return; }
+      pendingLanes = undefined;
       const cached=tiles.map(([x,y])=>cachedLanes(`${x}/${y}`)).filter(entry=>entry!==undefined);
       displayLanes(cached.flatMap(entry=>entry.lines),cached.flatMap(entry=>entry.kinds),anchor || point);
     };
@@ -205,11 +189,11 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     warmRequest?.abort(); warmRequest = undefined;
   }
   function scheduleWarm(delay = 750) {
-    if (disposed || authRequired || !ready || request || !route || warmTimer !== undefined || warmRequest) return;
+    if (disposed || interacting || authRequired || !ready || request || !route || warmTimer !== undefined || warmRequest) return;
     warmTimer = setTimeout(() => { warmTimer = undefined; void warmRoute(); }, delay);
   }
   async function warmRoute() {
-    if (disposed || authRequired || !ready || request || !route || warmRequest) return;
+    if (disposed || interacting || authRequired || !ready || request || !route || warmRequest) return;
     const tile = warmTiles.find(t => browserWarmKeys.has(t.join('/')) && !cache.has(t.join('/')) && !browserAttempted.has(t.join('/')))
       || warmTiles.find(t => !cache.has(t.join('/')) && !warmAttempted.has(t.join('/')));
     if (!tile) return;
@@ -273,7 +257,49 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     group.position.x = x * Math.cos(angle) + z * Math.sin(angle);
     group.position.z = -x * Math.sin(angle) + z * Math.cos(angle);
   }
+  function paintBackdrop(tiles: Tile[], paintAnchor: MapPoint) {
+    const ctx = backdropContext, scale = BACKDROP_RESOLUTION / BACKDROP_SIZE;
+    const bounds = groundBounds(paintAnchor, BACKDROP_SIZE / 2);
+    const view: GeometryBounds = [bounds[0], bounds[3], bounds[2], bounds[1]];
+    const pixel = (point: number[]) => {
+      const [x,z] = groundOffset(point, paintAnchor);
+      return [BACKDROP_RESOLUTION / 2 + x * scale, BACKDROP_RESOLUTION / 2 + z * scale];
+    };
+    const path = (points: number[][], close = false) => {
+      points.forEach((point, index) => {
+        const [x,y] = pixel(point); if (index) ctx.lineTo(x,y); else ctx.moveTo(x,y);
+      });
+      if (close) ctx.closePath();
+    };
+    ctx.globalAlpha = 1; ctx.fillStyle = appearance === 'night' ? '#1b2634' : '#dce5e5';
+    ctx.fillRect(0,0,BACKDROP_RESOLUTION,BACKDROP_RESOLUTION);
+    for (const tile of [...tiles].sort((a,b) => a.level-b.level)) for (const surface of tile.surfaces || []) {
+      if (!geometryInView(surface.rings, view, surface.bounds)) continue;
+      const paint = (surface.paints?.[appearance] || surface.paints?.day)?.find((p: any) => ZOOM >= p.minZoom && ZOOM <= p.maxZoom);
+      if (ZOOM < surface.minZoom || ZOOM > surface.maxZoom || !paint) continue;
+      ctx.beginPath(); surface.rings.forEach((ring: number[][]) => path(ring,true));
+      ctx.fillStyle = paint.color; ctx.globalAlpha = paint.opacity ?? 1; ctx.fill('evenodd');
+    }
+    ctx.globalAlpha = 1; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const roads = tiles.flatMap(tile => (tile.collection?.features || []).filter(feature => {
+      const style = feature.properties?.style;
+      return feature.geometry?.type === 'LineString' && (style == null || (ZOOM >= (style & 31) && ZOOM <= ((style >> 5) & 31)))
+        && geometryInView(feature.geometry.coordinates, view, feature.bbox);
+    }).map(feature => ({feature, paint: (tile.roadPaints?.[appearance] || tile.roadPaints?.day)?.[feature.properties?.paintKey]
+      ?.find(paint => ZOOM >= paint.minZoom && ZOOM <= paint.maxZoom)})));
+    roads.sort((a,b) => (b.paint?.outerWidth || 30) - (a.paint?.outerWidth || 30));
+    for (const layer of ['outer','inner'] as const) for (const {feature,paint} of roads) {
+      ctx.beginPath(); path(feature.geometry.coordinates);
+      ctx.strokeStyle = paint?.[layer].color || (appearance === 'night' ? (layer === 'outer' ? '#253244' : '#536278') : (layer === 'outer' ? '#829296' : '#f7f9f8'));
+      ctx.globalAlpha = paint?.[layer].opacity ?? 1;
+      ctx.lineWidth = Math.max(.35, roadWidth(paint?.[layer === 'outer' ? 'outerWidth' : 'innerWidth'], layer === 'outer') * scale);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1; backdropTexture.needsUpdate = true;
+  }
   function paint(tiles: Tile[], paintAnchor: MapPoint) {
+    const bounds = groundBounds(paintAnchor, SIZE / 2 + 40);
+    const view: GeometryBounds = [bounds[0], bounds[3], bounds[2], bounds[1]];
     const scale = RESOLUTION / SIZE;
     const pixel = (p: number[]) => {
       const [x,z] = groundOffset(p, paintAnchor); return [RESOLUTION/2+x*scale, RESOLUTION/2+z*scale];
@@ -286,6 +312,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     // Fetch priority differs from paint order: broad App surfaces must remain
     // underneath the more detailed navigation tiles.
     for (const tile of [...tiles].sort((a,b)=>a.level-b.level)) for (const surface of tile.surfaces || []) {
+      if (!geometryInView(surface.rings, view, surface.bounds)) continue;
       if (ZOOM < surface.minZoom || ZOOM > surface.maxZoom) continue;
       const paint = (surface.paints?.[appearance] || surface.paints?.day)?.find((p: any) => ZOOM >= p.minZoom && ZOOM <= p.maxZoom);
       if (!paint) continue;
@@ -293,10 +320,11 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       ctx.fillStyle = paint.color; ctx.globalAlpha = paint.opacity ?? 1; ctx.fill('evenodd');
     }
     ctx.globalAlpha = 1; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    const roads = tiles.flatMap(t => (t.collection?.features || []).map(f=>({...f,paint:(t.roadPaints?.[appearance] || t.roadPaints?.day)?.[f.properties?.paintKey]?.find(p=>ZOOM>=p.minZoom && ZOOM<=p.maxZoom)}))).filter(f => {
+    const roads = tiles.flatMap(t => (t.collection?.features || []).filter(f => {
       const style = f.properties?.style;
-      return f.geometry?.type === 'LineString' && (style == null || (ZOOM >= (style & 31) && ZOOM <= ((style >> 5) & 31)));
-    });
+      return f.geometry?.type === 'LineString' && (style == null || (ZOOM >= (style & 31) && ZOOM <= ((style >> 5) & 31)))
+        && geometryInView(f.geometry.coordinates, view, f.bbox);
+    }).map(f=>({...f,paint:(t.roadPaints?.[appearance] || t.roadPaints?.day)?.[f.properties?.paintKey]?.find(p=>ZOOM>=p.minZoom && ZOOM<=p.maxZoom)})));
     // Preserve App rule width ratios and colors; 0.1 converts style units to
     // TMC ground metres. This is cartographic width, not measured lane geometry.
     const styled=roads.sort((a,b)=>(b.paint?.outerWidth || 30)-(a.paint?.outerWidth || 30))
@@ -372,11 +400,13 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     if (authRequired) return;
     cancelWarm();
     const id=++generation; request?.abort(); const controller=new AbortController(); request=controller;
+    pendingPresentation = undefined;
     // Keep the previous georeferenced patch visible until the replacement is
     // complete. Hiding it here caused a full grey flash every 120 m.
     report('正在加载混合地图…',ready);
     const bounds=groundBounds(point,SIZE/2);
-    const tiles=viewportTiles(ZOOM,...bounds);
+    const tiles=viewportTiles(12,...groundBounds(point,BACKDROP_SIZE/2));
+    tiles.push(...viewportTiles(ZOOM,...bounds).filter(tile => tile[0] === 14));
     // Building source is level 15 (type 5), independent of the even road levels.
     const n=2**15, x=(v:number)=>Math.max(0,Math.min(n-1,Math.floor((v+180)/360*n))), y=(v:number)=>Math.max(0,Math.min(n-1,Math.floor((90-v)/180*n)));
     for(let xx=x(bounds[0]);xx<=x(bounds[2]);xx++) for(let yy=y(bounds[1]);yy<=y(bounds[3]);yy++) tiles.push([15,xx,yy]);
@@ -384,33 +414,77 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     const collected: Tile[]=[]; let partial=false, buildingFailed=false;
     const present = (complete: boolean) => {
       if (!collected.some(t => t.collection?.features.length || t.surfaces?.length)) return false;
-      paint(collected,point); clearBuildings();
-      const buildings=createBuildingMeshes(buildingSource(collected),point,appearance);
-      buildingsMesh=buildings.mesh; if(buildingsMesh) group.add(buildingsMesh);
-      anchor=[...point]; displayedTiles=[...collected]; revision++;
+      if (interacting) {
+        // Downloads/worker decoding keep warming the cache, while the current
+        // meshes remain untouched during a pinch, wheel, pan or camera zoom.
+        // Coalesce arrivals into one presentation after the gesture settles.
+        pendingPresentation = () => !disposed && id === generation && present(complete);
+        return true;
+      }
+      pendingPresentation = undefined;
+      const moved = !anchor || anchor[0] !== point[0] || anchor[1] !== point[1] || displayedAppearance !== appearance;
+      const changed = (select: (tile: Tile) => boolean) => {
+        const before = displayedTiles.filter(select), after = collected.filter(select);
+        return moved || before.length !== after.length || before.some((tile, index) => tile !== after[index]);
+      };
+      const roadsChanged = changed(tile => !!tile.collection?.features?.length || !!tile.surfaces?.length);
+      const buildingsChanged = pendingBuildings || changed(tile => !!tile.buildings?.length);
+      if (roadsChanged) {paintBackdrop(collected,point); paint(collected,point); roadRevision++;}
+      if (buildingsChanged) {
+        clearBuildings();
+        const buildings=createBuildingMeshes(buildingSource(collected),point,appearance);
+        displayedBuildingCount=buildings.count; buildingsMesh=buildings.mesh;
+        if(buildingsMesh) group.add(buildingsMesh);
+      }
+      pendingBuildings = false;
+      anchor=[...point]; displayedTiles=[...collected]; displayedAppearance=appearance;
+      if (roadsChanged || buildingsChanged) revision++;
       retryAfter=0; ready=true; group.visible=true; align();
       // The lane overlay needs the detailed road deck, not every distant
       // surface tile. Start it as soon as the priority map is visible.
-      if (laneGuidance) void loadLanes(point);
+      if (laneGuidance) {if (roadsChanged) void loadLanes(point);}
       else clearLanes();
       if (complete) {
         const detail=roadsMesh?' · 立交层高示意':'';
-        const status=(buildingFailed?'混合地图 · 建筑图层不完整，可重试':partial?'混合地图 · 部分图层缺失':buildings.count ? `App 立体建筑 · ${buildings.count} 栋` : '混合地图 · 此处暂无建筑数据')+detail;
+        const status=(buildingFailed?'混合地图 · 建筑图层不完整，可重试':partial?'混合地图 · 部分图层缺失':displayedBuildingCount ? `App 立体建筑 · ${displayedBuildingCount} 栋` : '混合地图 · 此处暂无建筑数据')+detail;
         report(status,true);
-      } else report('App 道路与建筑已显示 · 正在补充地表…',true);
+      } else report('App 地图已显示 · 正在补充建筑与地表…',true);
       return true;
     };
     try {
-      // Roads and buildings are needed for navigation. Show them before the
-      // lower-detail background layers finish their separate App requests.
+      const collect = () => {
+        collected.splice(0, collected.length, ...tiles.flatMap(tile => cache.get(tile.join('/'))?.tile || []));
+      };
+      for (const [key, saved] of readMemoryMapTiles('full', tiles)) cache.set(key, {tile: saved.tile as Tile, at: saved.at});
+      collect();
+      present(false);
+      // Fill the visible map before waiting for optional building downloads.
+      // Previously a slow level-15 request held every background layer behind
+      // it, and their completed batches were not painted until the very end.
+      const priority = [14,12,3,6,8,10,15];
       const levels=[...new Set(tiles.map(t=>t[0]))].sort((a,b)=>
-        a===14?-1:b===14?1:a===15?-1:b===15?1:a-b);
-      for (const level of levels) {
+        priority.indexOf(a)-priority.indexOf(b));
+      const batches = levels.flatMap(level => {
+        const keys = tiles.filter(tile => tile[0] === level).sort((a, b) =>
+          mapTileDistance(a, point[0], point[1]) - mapTileDistance(b, point[0], point[1]));
+        const first = level === 14 ? keys.splice(0,1) : [];
+        return [...(first.length ? [first] : []), ...Array.from({length: Math.ceil(keys.length / 4)}, (_, index) => keys.slice(index * 4, index * 4 + 4))];
+      });
+      for (const keys of batches) {
+        const level = keys[0][0];
         try {
-        const keys=tiles.filter(t=>t[0]===level);
-        const stored=await readMapTiles('full',keys);
-        if(disposed || id!==generation) return;
-        for(const [key,saved] of stored) cache.set(key,{tile:saved.tile as Tile,at:saved.at});
+        const diskKeys = keys.filter(tile => {
+          const entry = cache.get(tile.join('/'));
+          return !entry || Date.now() - entry.at > browserMapTileTtlMs();
+        });
+        if (diskKeys.length) {
+          // Decoding every cached background/building tile before presenting
+          // a cached road made a 2D -> 3D switch wait for the entire viewport.
+          const stored = await readMapTiles('full', diskKeys);
+          if (disposed || id !== generation) return;
+          for (const [key,saved] of stored) cache.set(key,{tile: saved.tile as Tile, at: saved.at});
+          if (stored.size) {collect(); present(false);}
+        }
         const missing=keys.filter(t=>!cache.has(t.join('/')) || Date.now()-cache.get(t.join('/'))!.at>browserMapTileTtlMs());
         if (missing.length) {
           let response; const deadline=Date.now()+90000;
@@ -451,6 +525,8 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
               downloaded=response.data.data.tiles as Tile[];
             }
           }
+          await waitForMapIdle();
+          if (disposed || id !== generation) return;
           for (const tile of downloaded) {
             if (tile.error) { partial=true; if(level===15) buildingFailed=true; continue; }
             if (tile.missingLayers?.length) { partial=true; if(level===15) buildingFailed=true; }
@@ -458,8 +534,8 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
           }
           void storeMapTiles('full',downloaded);
         }
-        collected.push(...keys.flatMap(t=>cache.get(t.join('/'))?.tile || []));
-        if(level===15 && !disposed && id===generation) present(false);
+        collect();
+        if(!disposed && id===generation) present(false);
         } catch(error) {
           if(level===14 || authRequired) throw error;
           if(level===15) buildingFailed=true;
@@ -488,26 +564,46 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     }
   }
   return { group,
+    setInteracting(value: boolean) {
+      interacting = value;
+      interaction.set(value);
+      if (value) { cancelWarm(); return; }
+      if (!value && pendingPresentation && !disposed) {
+        const present = pendingPresentation; pendingPresentation = undefined;
+        present();
+      }
+      if (!value && pendingBuildings && !disposed && anchor) {
+        pendingBuildings = false;
+        clearBuildings();
+        buildingsMesh=createBuildingMeshes(buildingSource(displayedTiles),anchor,appearance).mesh;
+        if (buildingsMesh) group.add(buildingsMesh);
+        revision++;
+      }
+      if (pendingLanes && !disposed) pendingLanes();
+      if (!disposed) scheduleWarm();
+    },
     setTheme(nextTheme: 'day' | 'night') {
       if (appearance===nextTheme) return;
       appearance=nextTheme;
       if (!anchor || !displayedTiles.length) return;
-      paint(displayedTiles,anchor);
+      paintBackdrop(displayedTiles,anchor); paint(displayedTiles,anchor);
       clearBuildings();
       buildingsMesh=createBuildingMeshes(buildingSource(displayedTiles),anchor,appearance).mesh;
       if(buildingsMesh) group.add(buildingsMesh);
       if(laneMesh) laneMesh.material.color.set(appearance==='night'?'#b8c9d7':'#f8fbfa');
-      revision++;
+      revision++; roadRevision++;
     },
     setLandmarkBounds(bounds: number[][]) {
       landmarkBounds = bounds.filter(box => box.length === 4 && box.every(Number.isFinite));
       if (!anchor || !displayedTiles.length) return;
+      if (interacting) { pendingBuildings = true; return; }
       clearBuildings();
       buildingsMesh=createBuildingMeshes(buildingSource(displayedTiles),anchor,appearance).mesh;
       if (buildingsMesh) group.add(buildingsMesh);
       revision++;
     },
     revision() { return revision; },
+    roadRevision() { return roadRevision; },
     roadHeight(point: MapPoint, direction: readonly [number,number]) {
       if(!anchor) return 0;
       const [x,z]=groundOffset(point,anchor);
@@ -537,10 +633,10 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       latest=point; if (Number.isFinite(angle)) heading=angle;
       group.position.y=groundY; align();
       const offset=anchor?groundOffset(point,anchor):[Infinity,Infinity];
-      if (!authRequired && !request && (!anchor || (Math.hypot(...offset)>120 && Date.now()>retryAfter) ||
+      if ((!interacting || (!anchor && !pendingPresentation)) && !authRequired && !request && (!anchor || (Math.hypot(...offset)>120 && Date.now()>retryAfter) ||
           (!ready && Date.now()>retryAfter))) void load(point);
     },
     retry() { authRequired=false; if (latest) void load(latest); },
-    dispose() { disposed=true; cancelWarm(); generation++; request?.abort(); laneGeneration++; laneRequest?.abort(); clearLanes(); clearBuildings(); clearRoads(); deckEdges=[]; deckIndex.clear(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); cache.clear(); laneCache.clear(); },
+    dispose() { disposed=true; interaction.dispose(); pendingPresentation=undefined; pendingLanes=undefined; cancelWarm(); generation++; request?.abort(); laneGeneration++; laneRequest?.abort(); clearLanes(); clearBuildings(); clearRoads(); deckEdges=[]; deckIndex.clear(); group.removeFromParent(); ground.geometry.dispose(); material.dispose(); texture.dispose(); backdrop.geometry.dispose(); backdropMaterial.dispose(); backdropTexture.dispose(); cache.clear(); laneCache.clear(); },
   };
 }

@@ -1,4 +1,6 @@
 /** Per-device cache for decoded App tiles. The server remains authoritative. */
+import {encodeBrowserMapTile, decodeBrowserMapTile} from './amapMapWorker';
+import {waitForMapIdle} from './amapMapWork';
 export type CachedMapTile = { level: number; x: number; y: number; error?: string; missingLayers?: string[]; [key: string]: unknown };
 export type CacheKind = 'rendered' | 'full' | 'lanes';
 
@@ -12,6 +14,17 @@ type Row = { key: string; fetchedAt: number; touchedAt: number; bytes: number; p
 const MAX_MODEL_BYTES = 16 * 1024 * 1024;
 const modelKey = (name: string) => /^[0-9]{1,19}-[0-9a-f]{12}\.glb$/.test(name) ? `model/${name}` : undefined;
 let opening: Promise<IDBDatabase | undefined> | undefined;
+// Keep a small decoded window across 2D/3D switches. Disk writes are asynchronous;
+// the other renderer should not wait for compression, IDB or decompression.
+const memory = new Map<string, {tile: CachedMapTile; at: number}>();
+let cacheGeneration = 0;
+function remember(kind: CacheKind, tile: CachedMapTile, at: number) {
+  if (tile.error || tile.missingLayers?.length || !Number.isInteger(tile.level) ||
+      !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) return;
+  const id = key(kind, tile.level, tile.x, tile.y);
+  memory.delete(id); memory.set(id, {tile, at});
+  while (memory.size > 8) memory.delete(memory.keys().next().value!);
+}
 function limits() {
   try {
     const stored=JSON.parse(localStorage.getItem(SETTINGS) || '{}');
@@ -32,7 +45,7 @@ function open() {
   opening = new Promise(resolve => {
     if (typeof indexedDB === 'undefined') { resolve(undefined); return; }
     try {
-      const request = indexedDB.open(NAME, 1);
+      const request = indexedDB.open(NAME, 2);
       let settled = false;
       const finish = (db?: IDBDatabase) => {
         if (settled) { db?.close(); return; }
@@ -43,7 +56,13 @@ function open() {
       };
       // An unavailable or blocked store must never stall navigation startup.
       const timer = setTimeout(() => finish(), 1000);
-      request.onupgradeneeded = () => request.result.createObjectStore(STORE, { keyPath: 'key' });
+      request.onupgradeneeded = () => {
+        const store = request.result.objectStoreNames.contains(STORE)
+          ? request.transaction!.objectStore(STORE) : request.result.createObjectStore(STORE, {keyPath: 'key'});
+        // Key-only scans never deserialize each cached map/model payload just
+        // to total its size or decide which old entries to evict.
+        if (!store.indexNames.contains('metadata')) store.createIndex('metadata', ['touchedAt', 'bytes', 'fetchedAt']);
+      };
       request.onsuccess = () => finish(request.result);
       request.onerror = () => finish();
       request.onblocked = () => finish();
@@ -57,22 +76,9 @@ function complete(tx: IDBTransaction) {
     tx.onabort = tx.onerror = () => reject(tx.error || new Error('map cache transaction failed'));
   });
 }
-async function encode(tile: CachedMapTile) {
-  const json = JSON.stringify(tile);
-  if (typeof CompressionStream === 'undefined') return { payload: json, encoding: 'json' as const, bytes: new TextEncoder().encode(json).length };
-  try {
-    const stream = new Blob([json]).stream().pipeThrough(new CompressionStream('gzip'));
-    const payload = new Uint8Array(await new Response(stream).arrayBuffer());
-    return { payload, encoding: 'gzip' as const, bytes: payload.byteLength };
-  } catch { return { payload: json, encoding: 'json' as const, bytes: new TextEncoder().encode(json).length }; }
-}
 async function decode(row: Row): Promise<CachedMapTile> {
   if (row.encoding === 'glb') throw new Error('binary model is not a map tile');
-  const text = row.encoding === 'gzip'
-    ? await new Response(new Blob([new Uint8Array(row.payload as Uint8Array)]).stream()
-      .pipeThrough(new DecompressionStream('gzip'))).text()
-    : row.payload as string;
-  return JSON.parse(text) as CachedMapTile;
+  return decodeBrowserMapTile(row);
 }
 
 /** Landmark GLBs share the tile budget and clear-cache control. */
@@ -123,15 +129,32 @@ export async function forgetMapModel(name: string) {
   } catch { /* A bad row will still expire under the normal TTL. */ }
 }
 
-export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
+export function readMemoryMapTiles(kind: CacheKind, tiles: number[][]) {
   const result = new Map<string,{ tile: CachedMapTile; at: number }>();
+  for (const [level, x, y] of tiles) {
+    const id = key(kind, level, x, y), entry = memory.get(id);
+    if (!entry) continue;
+    if (Date.now() - entry.at > browserMapTileTtlMs()) { memory.delete(id); continue; }
+    memory.delete(id); memory.set(id, entry);
+    result.set(`${level}/${x}/${y}`, entry);
+  }
+  return result;
+}
+
+export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
+  const result = readMemoryMapTiles(kind, tiles);
+  const generation = cacheGeneration;
+  const missing = tiles.filter(tile => !result.has(tile.join('/')));
+  if (!missing.length) return result;
+  await waitForMapIdle();
   const db = await open();
-  if (!db || !tiles.length) return result;
+  if (generation !== cacheGeneration) return new Map<string,{tile: CachedMapTile; at: number}>();
+  if (!db) return result;
   const rows: Row[] = [];
   try {
     const tx = db.transaction(STORE,'readwrite'), store = tx.objectStore(STORE), done = complete(tx);
     const now = Date.now(), ttl=limits().ttlHours*3600000;
-    for (const [level,x,y] of tiles) {
+    for (const [level,x,y] of missing) {
       const request = store.get(key(kind,level,x,y));
       request.onsuccess = () => {
         const row = request.result as Row | undefined;
@@ -145,6 +168,8 @@ export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
       try {
         const tile = await decode(row);
         if (tile.error || tile.missingLayers?.length || row.key !== key(kind,tile.level,tile.x,tile.y)) continue;
+        if (generation !== cacheGeneration) return new Map<string,{tile: CachedMapTile; at: number}>();
+        remember(kind, tile, row.fetchedAt);
         result.set(`${tile.level}/${tile.x}/${tile.y}`,{tile,at:row.fetchedAt});
       } catch { /* A damaged entry is a miss; the next request replaces it. */ }
     }
@@ -153,14 +178,15 @@ export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
 }
 
 async function prune(db: IDBDatabase) {
+  await waitForMapIdle();
   const {ttlHours,maxMB}=limits(), ttl=ttlHours*3600000, maxBytes=maxMB*1048576;
   const metadata: {key:string;bytes:number;fetchedAt:number;touchedAt:number}[] = [];
-  const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).openCursor(), done=complete(tx);
+  const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).index('metadata').openKeyCursor(), done=complete(tx);
   request.onsuccess=()=>{
     const cursor=request.result;
     if(!cursor) return;
-    const row=cursor.value as Row;
-    metadata.push({key:row.key,bytes:row.bytes,fetchedAt:row.fetchedAt,touchedAt:row.touchedAt});
+    const [touchedAt,bytes,fetchedAt] = cursor.key as number[];
+    metadata.push({key:cursor.primaryKey as string,bytes,fetchedAt,touchedAt});
     cursor.continue();
   };
   await done;
@@ -176,16 +202,20 @@ async function prune(db: IDBDatabase) {
 }
 
 export async function storeMapTiles(kind: CacheKind, tiles: CachedMapTile[]) {
+  const generation = cacheGeneration;
+  const now=Date.now();
+  for (const tile of tiles) remember(kind, tile, now);
+  await waitForMapIdle();
   const db=await open();
-  if(!db || !tiles.length) return;
-  const now=Date.now(), rows:Row[]=[];
+  if(!db || !tiles.length || generation !== cacheGeneration) return;
+  const rows:Row[]=[];
   for(const tile of tiles) {
     if(tile.error || tile.missingLayers?.length || !Number.isInteger(tile.level) || !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) continue;
-    const encoded=await encode(tile);
+    const encoded=await encodeBrowserMapTile(tile);
     if(encoded.bytes>MAX_TILE_BYTES) continue;
     rows.push({key:key(kind,tile.level,tile.x,tile.y),fetchedAt:now,touchedAt:now,...encoded});
   }
-  if(!rows.length) return;
+  if(!rows.length || generation !== cacheGeneration) return;
   try {
     const tx=db.transaction(STORE,'readwrite'), store=tx.objectStore(STORE), done=complete(tx);
     rows.forEach(row=>store.put(row));
@@ -200,8 +230,8 @@ export async function browserMapCacheStats() {
   if(!db) return {available:false,count:0,usedBytes:0,ttlHours,maxMB};
   let count=0,usedBytes=0;
   try {
-    const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).openCursor(), done=complete(tx);
-    request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;const row=cursor.value as Row;count++;usedBytes+=row.bytes;cursor.continue();};
+    const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).index('metadata').openKeyCursor(), done=complete(tx);
+    request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;count++;usedBytes+=(cursor.key as number[])[1];cursor.continue();};
     await done;
     return {available:true,count,usedBytes,ttlHours,maxMB};
   } catch {return {available:false,count:0,usedBytes:0,ttlHours,maxMB};}
@@ -218,6 +248,7 @@ export async function updateBrowserMapCacheConfig(ttlHours:number,maxMB:number) 
 }
 
 export async function clearBrowserMapCache() {
+  cacheGeneration++; memory.clear();
   const db=await open();
   if(!db) return false;
   try {const tx=db.transaction(STORE,'readwrite'), done=complete(tx);tx.objectStore(STORE).clear();await done;return true;}

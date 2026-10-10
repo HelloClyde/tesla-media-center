@@ -4,9 +4,9 @@ import { appLandscapeGuideFov, appLandscapeGuideMaxPitch, followCameraBearing, m
 import { mapSignsVisible } from './amapMapSigns';
 import { groundPoint } from './teslaMapCoordinates';
 
-function screenPosition(bearing: number, zoom: number, vehicle: [number, number], following: boolean, headingUp: boolean) {
-  const camera = new THREE.PerspectiveCamera(45, 1.4, 1, 1400);
-  positionNavigationCamera(camera, bearing, zoom, vehicle, following, headingUp);
+function screenPosition(bearing: number, zoom: number, vehicle: [number, number], following: boolean, headingUp: boolean, navigating = false, aspect = 1.4) {
+  const camera = new THREE.PerspectiveCamera(45, aspect, 1, 1400);
+  positionNavigationCamera(camera, bearing, zoom, vehicle, following, headingUp, navigating);
   camera.updateMatrixWorld();
   const projected = new THREE.Vector3(vehicle[0], 3, vehicle[1]).project(camera);
   return { x: (projected.x + 1) / 2, y: (1 - projected.y) / 2 };
@@ -74,16 +74,29 @@ describe('3D navigation camera', () => {
     expect(camera.position.toArray().every(Number.isFinite)).toBe(true);
   });
 
-  it('keeps the vehicle near the APK-style lower-screen anchor across guided zooms', () => {
+  it('keeps the lower-screen anchor while moving navigation right of the left guidance card', () => {
     for (const bearing of [0, 90, 210]) {
       for (const zoom of [15.5, 17, 18]) {
-        const position = screenPosition(bearing, zoom, [120, -90], true, true);
+        const position = screenPosition(bearing, zoom, [120, -90], true, true, true);
         const targetY = .75 + .03 * Math.max(0, Math.min(1, (17 - zoom) / 1.5));
-        expect(position.x).toBeCloseTo(.5, 4);
+        expect(position.x).toBeCloseTo(.6, 4);
         expect(position.y).toBeGreaterThan(targetY - .04);
         expect(position.y).toBeLessThan(targetY + .04);
       }
     }
+  });
+
+  it('keeps the navigation offset stable across aspect ratios and either follow orientation', () => {
+    for (const aspect of [1.2, 1.8, 2.5])
+      for (const bearing of [0, 90, 210])
+        for (const zoom of [15.5, 17, 18])
+          for (const headingUp of [true, false]) {
+            const position = screenPosition(bearing, zoom, [120, -90], true, headingUp, true, aspect);
+            const centered = screenPosition(bearing, zoom, [120, -90], true, headingUp, false, aspect);
+            expect(position.x).toBeCloseTo(.6, 4);
+            expect(position.y).toBeCloseTo(centered.y, 4);
+            expect(centered.x).toBeCloseTo(.5, 4);
+          }
   });
 
   it('keeps a junction 110 metres ahead visible above the vehicle in a short landscape viewport', () => {
@@ -123,7 +136,7 @@ describe('3D navigation camera', () => {
 
   it('keeps manual panning centered on the map instead of the vehicle', () => {
     const camera = new THREE.PerspectiveCamera(45, 1.4, 1, 1400);
-    positionNavigationCamera(camera, 0, 17, [120, -90], false, true);
+    positionNavigationCamera(camera, 0, 17, [120, -90], false, true, true);
     expect(camera.position.x).toBeCloseTo(0);
     expect(camera.position.z).toBeCloseTo(220);
   });

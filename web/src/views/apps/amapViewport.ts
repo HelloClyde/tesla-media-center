@@ -1,5 +1,12 @@
 // App BMD uses a geographic grid, not Web Mercator XYZ tiles. Source levels
 // are sparse: level 3 supplies the overview surfaces; level 6 adds trunk roads.
+/** Within a source level, load the vehicle/view centre before the outer tiles. */
+export function mapTileDistance(tile: number[], longitude: number, latitude: number) {
+  const size = 2 ** tile[0];
+  return Math.hypot(tile[1] + .5 - (longitude + 180) / 360 * size,
+    tile[2] + .5 - (90 - latitude) / 180 * size);
+}
+
 export function viewportTiles(zoom: number, west: number, north: number, east: number, south: number) {
   const tiles: number[][] = [];
   for (const level of [3, 6, 8, 10, 12, 14]) {

@@ -1,5 +1,6 @@
+import {isNavigationManeuver, navigationManeuvers, type NavigationManeuver} from '@/components/navigationArrow';
 export type Point = [number, number];
-export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; roundaboutExit?: number; maneuver?: 'left' | 'right' | 'bear-left' | 'bear-right' | 'fork-left' | 'fork-middle' | 'fork-right' | 'roundabout-enter' | 'roundabout-exit' }
+export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; roundaboutExit?: number; maneuver?: NavigationManeuver }
 export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; trafficRuns?: import('./amapRouteTraffic').CongestionRun[]; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[]; laneGuides?: import('./amapLaneGuidance').LaneGuide[] }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
@@ -55,27 +56,40 @@ export function pointAt(route: AppRoute, progress: number): Point {
 export function instruction(route: AppRoute, progress: number) {
   const values = cumulative(route);
   const stepIndex = route.steps.findIndex(step => values[step.end] > progress + 5);
+  return instructionAtStep(route, progress, values, stepIndex);
+}
+
+/** The second action's distance starts at the first action, not at the car. */
+export function upcomingInstructions(route: AppRoute, progress: number) {
+  const values = cumulative(route);
+  const stepIndex = route.steps.findIndex(step => values[step.end] > progress + 5);
+  const first = instructionAtStep(route, progress, values, stepIndex);
+  if (stepIndex < 0 || stepIndex >= route.steps.length - 1) return [first];
+  return [first, instructionAtStep(route, values[route.steps[stepIndex].end], values, stepIndex + 1)];
+}
+
+function instructionAtStep(route: AppRoute, progress: number, values: number[], stepIndex: number) {
   const step = route.steps[stepIndex < 0 ? route.steps.length - 1 : stepIndex];
   const next = route.steps[stepIndex + 1];
-  if (!next || stepIndex < 0) return { text: '到达目的地附近', arrow: '⚑', road: step.road, distance: Math.max(0, values[values.length - 1] - progress), key: route.steps.length };
+  if (!next || stepIndex < 0) return { text: navigationManeuvers.destination.text, arrow: 'destination', maneuver: 'destination', road: step.road, distance: Math.max(0, values[values.length - 1] - progress), key: route.steps.length };
   if (step.maneuver === 'roundabout-enter' || step.maneuver === 'roundabout-exit') {
     const entering = step.maneuver === 'roundabout-enter';
     const candidate = entering && next.maneuver === 'roundabout-exit' ? next.roundaboutExit : step.roundaboutExit;
     const exit = typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 1 && candidate <= 16 ? candidate : undefined;
     return { text: entering ? `进入环岛${exit ? `，从第${exit}出口驶出` : ''}`
-      : exit ? `从第${exit}出口驶出环岛` : '驶出环岛', arrow: '⟳', road: next.road,
+      : exit ? `从第${exit}出口驶出环岛` : '驶出环岛', arrow: step.maneuver, road: next.road,
       distance: Math.max(0, values[step.end] - progress), key: stepIndex, maneuver: step.maneuver };
   }
   const a = route.path[Math.max(step.start, step.end - 1)], b = route.path[step.end];
   const c = route.path[next.start], d = route.path[Math.min(next.end, next.start + 1)];
   const bearing = (a: Point, b: Point) => Math.atan2((b[0] - a[0]) * Math.cos(a[1] * Math.PI / 180), b[1] - a[1]) * 180 / Math.PI;
   const angle = ((bearing(c, d) - bearing(a, b) + 540) % 360) - 180;
-  const text = step.maneuver === 'left' ? '左转' : step.maneuver === 'right' ? '右转'
-    : step.maneuver === 'bear-left' ? '靠左行驶' : step.maneuver === 'bear-right' ? '靠右行驶'
-    : step.maneuver === 'fork-left' ? '走左侧岔路' : step.maneuver === 'fork-middle' ? '走中间岔路'
-    : step.maneuver === 'fork-right' ? '走右侧岔路'
-    : Math.abs(angle) > 150 ? '掉头' : angle > 35 ? '右转' : angle < -35 ? '左转' : '继续直行';
-  return { text, arrow: text === '右转' || text === '靠右行驶' || text === '走右侧岔路' ? '↱'
-    : text === '左转' || text === '靠左行驶' || text === '走左侧岔路' ? '↰' : text === '掉头' ? '↶' : '↑', road: next.road,
+  // Explicit route actions survive even when a loop's final two edges do not
+  // reflect its overall turn. Geometry is used only for an unknown action.
+  const fallback: NavigationManeuver = Math.abs(angle) > 150 ? (angle > 0 ? 'uturn-right' : 'uturn-left')
+    : angle > 120 ? 'sharp-right' : angle < -120 ? 'sharp-left'
+    : angle > 35 ? 'right' : angle < -35 ? 'left' : 'straight';
+  const maneuver = step.maneuver && isNavigationManeuver(step.maneuver) ? step.maneuver : fallback;
+  return { text: navigationManeuvers[maneuver].text, arrow: maneuver, maneuver, road: next.road,
     distance: Math.max(0, values[step.end] - progress), key: stepIndex };
 }

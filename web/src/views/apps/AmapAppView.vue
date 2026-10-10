@@ -80,7 +80,7 @@ import 'leaflet/dist/leaflet.css';
 import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRemainingDuration, formatRouteDuration, formatRouteTolls, remainingRouteDuration } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
-import { cumulative, instruction, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
+import { cumulative, upcomingInstructions, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 import { cameraAssetReady, cameraSign, mapSignUrl, mapSignsVisible, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
@@ -97,8 +97,9 @@ function followPosition(point: Point, now: number) {
   if (!show3D.value) applyOrientation();
   const navigation = mode.value !== 'idle' && !overviewActive.value;
   const headingUp = navigation && orientation.value === 'heading';
+  const viewport = navigationViewport(liveSpeed.value);
   if (navigation) {
-    const target = navigationViewport(liveSpeed.value).zoom;
+    const target = viewport.zoom;
     const current = map.getZoom();
     if (Math.abs(target - current) >= .3 && now - lastAutoZoomAt >= 1200) {
       map.setZoom(current + Math.max(-.5, Math.min(.5, target - current)), { animate: false });
@@ -109,7 +110,7 @@ function followPosition(point: Point, now: number) {
   // it adds canvas work and move events on every frame without changing it.
   if (show3D.value) return;
   const size = map.getSize();
-  const wanted = L.point(size.x / 2, size.y * (headingUp ? navigationViewport(liveSpeed.value).vehicleY : .5));
+  const wanted = L.point(size.x * (navigation ? viewport.vehicleX : .5), size.y * (headingUp ? viewport.vehicleY : .5));
   const actual = map.latLngToContainerPoint(latLng(point));
   const shift = actual.subtract(wanted);
   if (Math.abs(shift.x) > 1 || Math.abs(shift.y) > 1) map.panBy(shift, { animate: false });
@@ -535,8 +536,10 @@ watch([mode, routeToken, selected, trafficEnabled], ([, , , enabled], previous) 
   if (enabled && previous?.[3] === false && routeTrafficTimer) void refreshRouteTraffic();
 });
 watch(routeToken, () => { trafficUpdatedAt.value = routeToken.value ? Date.now() : 0; });
-const next = computed(() => current.value ? instruction(current.value,
-  mode.value === 'live' ? guidanceProgress.value ?? progress.value : progress.value) : undefined);
+const guidanceInstructions = computed(() => current.value ? upcomingInstructions(current.value,
+  mode.value === 'live' ? guidanceProgress.value ?? progress.value : progress.value) : []);
+const next = computed(() => guidanceInstructions.value[0]);
+const afterNext = computed(() => guidanceInstructions.value[1]);
 type JunctionPicture = { state: 'ready'; width: number; height: number; roadJpeg: string; arrowPng: string };
 const junctionPicture = ref<{ key: string; picture: JunctionPicture }>();
 const junctionRequested = new Set<string>();
@@ -733,6 +736,7 @@ function endpoints() {
   if ((hasOrigin.value || hasDestination.value) && !appMap) {
     appMap = attachAppMap(map, message => updateMapStatus(message, '2d'));
     appMap.setFollowing(following.value);
+    appMap.setActive(!show3D.value);
   }
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
@@ -851,9 +855,9 @@ function selectPlace(place: Place) {
   const pointType = picking.value;
   quickPlaceChoice.value = 'recent'; quickPlacesExpanded.value = false;
   saveRecentPlace(place);
-  setPoint(placeNavigationPoint(place), place.name);
   following.value = false;
   map?.setView(latLng(place.location), 16);
+  setPoint(placeNavigationPoint(place), place.name);
   if (hasOrigin.value && hasDestination.value) void plan();
   else if (pointType === 'destination') locate(false, true, true);
   else status.value = '起点已选择，请选择目的地';
@@ -1129,7 +1133,14 @@ function locate(navigate = false, preserveRoute = false, planOnFix = false) {
     locationTimeout = undefined;
     const point = browserNavigationPoint(position.longitude, position.latitude);
     lastGpsPoint.value = point;
-    if (mode.value === 'idle') { hasOrigin.value = true; origin.value = point; originName.value = '当前位置'; endpoints(); if (first && !preserveRoute && !navigate) map.setView(latLng(point), 16); if (!preserveRoute && !navigate) status.value = '已定位，请选择目的地'; }
+    if (mode.value === 'idle') {
+      hasOrigin.value = true; origin.value = point; originName.value = '当前位置';
+      // Set the actual view before attaching the layer, so startup cannot
+      // occupy the map helper with the initial world/place-holder viewport.
+      if (first && !preserveRoute && !navigate) map.setView(latLng(point), 16);
+      endpoints();
+      if (!preserveRoute && !navigate) status.value = '已定位，请选择目的地';
+    }
     if (mode.value === 'live' && routeFusion) {
       const result = routeFusion.accept({ point, accuracy: position.accuracy, speed: position.speed, heading: position.heading, timestamp: position.timestamp }, performance.now());
       renderFusion(result);
@@ -1207,6 +1218,7 @@ onMounted(() => {
     if (!viewActive.value) return;
     map.invalidateSize({ pan: false });
     if (overviewActive.value) void overview();
+    else if (following.value && displayedPosition.value) followPosition(displayedPosition.value, performance.now());
   });
   resizeObserver.observe(mapElement.value);
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
@@ -1273,6 +1285,10 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
         <div class="turn-summary"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
         <AmapLaneGuide v-if="visibleLane" :guide="visibleLane" />
         <AmapJunctionPreview v-if="visibleJunction" :road-jpeg="visibleJunction.roadJpeg" :arrow-png="visibleJunction.arrowPng" :width="visibleJunction.width" :height="visibleJunction.height" />
+        <div v-if="afterNext" class="following-turn" aria-label="再下一个导航动作">
+          <NavigationTurnIcon class="following-turn-arrow" :arrow="afterNext.arrow" />
+          <span class="following-turn-text"><small>{{ afterNext.distance < 10 ? '紧接着' : '随后' }}</small>{{ afterNext.distance < 10 ? '' : `${formatDistance(afterNext.distance)}后` }}{{ afterNext.text }}</span>
+        </div>
       </div>
       <div v-if="!overviewActive && (upcomingSignal || nextRouteLight)" class="signal-card glass" role="status">
         <span class="signal-icon" :class="upcomingSignal?.color" aria-hidden="true"><span class="signal-lamp red"></span><span class="signal-lamp yellow"></span><span class="signal-lamp green"></span></span><div><strong>{{ upcomingSignal ? `${signalLabel} ${upcomingSignal.seconds} 秒${signalAwaitingUpdate ? ' · 待更新' : ''}` : '前方红绿灯' }}</strong><small>前方 {{ Math.round(upcomingSignal?.distance ?? nextRouteLight!.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
@@ -1317,7 +1333,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
       <div v-if="trafficEnabled" class="traffic-legend"><span><i class="traffic-clear"></i>引导线</span><span><i class="traffic-slow"></i>缓行</span><span><i class="traffic-jam"></i>拥堵</span><span><i class="traffic-severe"></i>严重拥堵</span></div>
       <small v-if="trafficEnabled && current" class="traffic-message">高德 App 路线数据 · {{ trafficUpdatedLabel }}更新</small>
     </div>
-    <footer ref="footerPanel" class="navigation-footer glass">
+    <footer ref="footerPanel" class="navigation-footer glass" :class="{ 'following-navigation': mode !== 'idle' && following && !overviewActive }">
       <p v-if="show3D ? map3DStatus : mapStatus" class="map-notice">{{ show3D ? map3DStatus : mapStatus }} <button v-if="!(show3D ? map3DStatus : mapStatus).startsWith('路线总览') && !(show3D ? map3DStatus : mapStatus).startsWith('正在加载')" @click="retryActiveMap">{{ (show3D ? map3DStatus : mapStatus).startsWith('TMC 登录已失效') ? '登录 TMC' : '重试' }}</button></p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
@@ -1350,6 +1366,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 .route-options button{flex:1 0 180px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:3px 8px;text-align:left;align-items:center}.route-options .route-lights{justify-self:end}.route-options .route-cost,.route-options .route-label{grid-column:1/-1;overflow:hidden;text-overflow:ellipsis;max-width:100%;white-space:nowrap}
 .signal-card{display:flex;flex:0 1 235px;align-items:center;gap:12px;padding:10px 14px;color:#213c36;max-width:100%;box-sizing:border-box;min-width:0}.signal-card>div{min-width:0}.signal-card strong{display:block;font-size:19px;font-variant-numeric:tabular-nums}.signal-card small{display:block;color:#6f837b;font-size:12px}.signal-icon{width:24px;height:38px;box-sizing:border-box;display:flex;flex:none;flex-direction:column;align-items:center;justify-content:space-evenly;padding:3px 0;border:2px solid #b7c8d5;border-radius:12px;background:#293443;box-shadow:0 1px 4px #172a3150}.signal-lamp{width:8px;height:8px;border-radius:50%;background:#626d76;box-shadow:inset 0 1px 2px #111a27}.signal-icon.red .signal-lamp.red{background:#ff4a51;box-shadow:0 0 7px #ff4a51,inset 0 1px 2px #ffffff88}.signal-icon.yellow .signal-lamp.yellow{background:#ffd243;box-shadow:0 0 7px #ffd243,inset 0 1px 2px #ffffff88}.signal-icon.green .signal-lamp.green{background:#37db75;box-shadow:0 0 7px #37db75,inset 0 1px 2px #ffffff88}
 .signal-card .green-wave{margin-top:5px;color:#087f5b;font-weight:600}
+.navigation-footer.following-navigation .map-notice{max-width:min(360px,calc(40% - 44px))}
 </style>
 <style>.amap-vehicle{width:36px;height:36px;display:grid;place-items:center;border:3px solid white;border-radius:50%;background:#078cda;color:white;font-size:24px;box-shadow:0 2px 12px #06365466}</style>
 
@@ -1368,7 +1385,12 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 <style scoped>
 .turn-card .turn-summary{display:flex;align-items:center;gap:10px;min-width:0}
 .turn-card .turn-summary>div{min-width:0}
-.navigation-guidance .turn-card{position:relative;left:auto;top:auto;flex:0 1 auto;min-width:0;max-width:min(300px,100%);box-sizing:border-box;padding:10px 14px;border-radius:14px}
+.navigation-guidance .turn-card{position:relative;left:auto;top:auto;display:block;flex:0 1 auto;min-width:0;max-width:min(300px,100%);box-sizing:border-box;padding:10px 14px;border-radius:14px}
+.turn-card .following-turn{display:flex;align-items:center;gap:7px;margin-top:7px;padding-top:6px;border-top:1px solid #ffffff24;min-width:0}
+.turn-card .following-turn-arrow{width:20px;height:24px;flex:none;color:#d7f3e9}
+.turn-card .following-turn-text{font-size:12px;line-height:1.4;color:#e0f1eb;overflow-wrap:anywhere}
+.turn-card .following-turn-text small{margin-right:5px;color:#85dfbd;font-size:10px}
+.turn-card.has-junction .following-turn,.turn-card.has-lanes .following-turn{margin-top:0;padding:5px 10px 6px}
 .turn-card .turn-arrow{width:36px;height:44px}
 .turn-card h2{font-size:18px;line-height:1.25;margin:3px 0;overflow-wrap:anywhere}
 .turn-card p{font-size:12px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

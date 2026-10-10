@@ -96,56 +96,65 @@ def main(payload):
     host, versions = version_catalog(material, payload.get('versionCachePath'))
     paints = load_paints(ASSETS, 8, variant='navigation') if level == 15 else load_paints(ASSETS, 2)
     road_paints = load_paints(ASSETS, 1) if level != 15 else {}
-    def fetch(tile):
-        x, y = tile
+    layers = [(5, 'buildings')] if level == 15 else [(2, 'collection'), (1, 'surfaces'), (6, 'transit')]
+    if level in (3, 6):
+        layers.append((0, 'placeLabels'))
+
+    def fetch_layer(task):
+        index, (x, y), kind, field = task
         identity = tile_id(level, x, y)
-        result = {'x': x, 'y': y, 'level': level}
+        result = {}
         failures = []
-        layers = [(5, 'buildings')] if level == 15 else [(2, 'collection'), (1, 'surfaces'), (6, 'transit')]
-        # These two source levels cover the App's far-view labels at zoom 3–9.
-        result['placeLabels'] = []
-        if level in (3, 6):
-            layers.append((0, 'placeLabels'))
-        for kind, field in layers:
-            try:
-                response = download(host + '/ws/render/bmd/tile', dict(version=versions[kind], tileType=kind, tileId=identity,
-                                    i18nVer=0, ct=1, isolTag=162500, cSrc=1))
-                data = unpack(response, identity, kind)
-                if raw_mode:
-                    result[field + 'Bmd'] = base64.b64encode(data).decode('ascii')
-                    if kind == 2 and data:
-                        from bmd_geometry import decode as decode_roads
-                        from bmd_styles import style_bindings
-                        bindings = style_bindings(data, 31, len(decode_roads(data)))
-                        used = {f'{category}/{subtype}' for category, subtype in bindings.values()}
-                        result['roadPaints'] = {
-                            theme: {f'{category}/{subtype}': stops for (category, subtype), stops in lookup.items()
-                                    if f'{category}/{subtype}' in used}
-                            for theme, lookup in road_paints.items()
-                        }
-                elif kind == 5:
-                    result['buildings'], skipped = geographic_buildings(data, (level, x, y), paints) if data else ([], 0)
-                    if skipped:
-                        result['unsupportedBuildingParts'] = skipped
-                        failures.append('building-parts')
-                elif kind == 2:
-                    result[field] = geographic_features(data, (level, x, y), road_paints) if data else {'type': 'FeatureCollection', 'features': []}
-                    used = {f['properties'].get('paintKey') for f in result[field]['features']}
-                    result['roadPaints'] = {theme: {f'{k[0]}/{k[1]}': v for k, v in lookup.items() if f'{k[0]}/{k[1]}' in used}
-                                            for theme, lookup in road_paints.items()}
-                elif kind in (0, 6):
-                    result[field] = geographic_labels(data, (level, x, y), places=kind == 0) if data else []
-                else:
-                    result[field] = geographic_surfaces(data, (level, x, y), paints) if data else []
-            except Exception:
-                failures.append(field)
-        if all(field in failures for _, field in layers):
-            result['error'] = 'unsupported-tile'
-        elif failures:
-            result['missingLayers'] = failures
-        return result
+        try:
+            response = download(host + '/ws/render/bmd/tile', dict(version=versions[kind], tileType=kind, tileId=identity,
+                                i18nVer=0, ct=1, isolTag=162500, cSrc=1))
+            data = unpack(response, identity, kind)
+            if raw_mode:
+                result[field + 'Bmd'] = base64.b64encode(data).decode('ascii')
+                if kind == 2 and data:
+                    from bmd_geometry import decode as decode_roads
+                    from bmd_styles import style_bindings
+                    bindings = style_bindings(data, 31, len(decode_roads(data)))
+                    used = {f'{category}/{subtype}' for category, subtype in bindings.values()}
+                    result['roadPaints'] = {
+                        theme: {f'{category}/{subtype}': stops for (category, subtype), stops in lookup.items()
+                                if f'{category}/{subtype}' in used}
+                        for theme, lookup in road_paints.items()
+                    }
+            elif kind == 5:
+                result['buildings'], skipped = geographic_buildings(data, (level, x, y), paints) if data else ([], 0)
+                if skipped:
+                    result['unsupportedBuildingParts'] = skipped
+                    failures.append('building-parts')
+            elif kind == 2:
+                result[field] = geographic_features(data, (level, x, y), road_paints) if data else {'type': 'FeatureCollection', 'features': []}
+                used = {f['properties'].get('paintKey') for f in result[field]['features']}
+                result['roadPaints'] = {theme: {f'{k[0]}/{k[1]}': v for k, v in lookup.items() if f'{k[0]}/{k[1]}' in used}
+                                        for theme, lookup in road_paints.items()}
+            elif kind in (0, 6):
+                result[field] = geographic_labels(data, (level, x, y), places=kind == 0) if data else []
+            else:
+                result[field] = geographic_surfaces(data, (level, x, y), paints) if data else []
+        except Exception:
+            failures.append(field)
+        return index, result, failures
+
+    # Bound all upstream work to four requests, including a one-tile startup.
+    # Previously that tile downloaded roads, surfaces and labels sequentially,
+    # holding Flask's single map-helper slot throughout all three round trips.
+    results = [{'x': x, 'y': y, 'level': level, 'placeLabels': []} for x, y in tiles]
+    failures = [[] for _ in tiles]
+    tasks = [(index, tile, kind, field) for index, tile in enumerate(tiles) for kind, field in layers]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        result = {'tiles': list(pool.map(fetch, tiles))}
+        for index, values, failed in pool.map(fetch_layer, tasks):
+            results[index].update(values)
+            failures[index].extend(failed)
+        for tile, failed in zip(results, failures):
+            if all(field in failed for _, field in layers):
+                tile['error'] = 'unsupported-tile'
+            elif failed:
+                tile['missingLayers'] = failed
+        result = {'tiles': results}
         if raw_mode:
             result['paints'] = {theme: {f'{key[0]}/{key[1]}': stops for key, stops in table.items()}
                                 for theme, table in paints.items()}

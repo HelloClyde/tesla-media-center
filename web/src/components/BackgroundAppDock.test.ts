@@ -30,3 +30,14 @@ it('uses one entry and shows music and navigation together with independent cont
     clearBackgroundNavigation(); await flushPromises(); expect(view.findAll('.background-slot')).toHaveLength(1);
   } finally { view.unmount(); }
 });
+it('retains the fork arrow in the background navigation dock', async () => {
+  publishBackgroundNavigation({simulated: true, muted: false, arrow: 'fork-left', instruction: '100 米后走左侧岔路',
+    road: '测试岔路', remaining: '2 公里', remainingDuration: '约 5 分钟', status: ''}, {});
+  const router = createRouter({history: createMemoryHistory(), routes: [{path: '/apps/home', component: {template: '<div />'}}]});
+  await router.push('/apps/home'); await router.isReady();
+  const view = mount(BackgroundAppDock, {global: {plugins: [router], stubs: {teleport: true}}});
+  try {
+    await view.get('[aria-label="后台应用列表"]').trigger('click'); await flushPromises();
+    expect(view.get('.nav-guidance image').attributes('href')).toBe('/amap/navigation-arrows/action-65.webp');
+  } finally {view.unmount();}
+});

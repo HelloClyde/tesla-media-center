@@ -96,6 +96,23 @@ class AmapAppTest(unittest.TestCase):
             self.assertEqual(self.app.test_client().post('/api/amap-app/route', json=self.payload).json['status'], 'need_login')
             helper.assert_not_called()
 
+    def test_route_actions_keep_uturn_sharp_and_straight_semantics(self):
+        step = {'start': 0, 'end': 1, 'road': '回环匝道'}
+        data = {'state': 'ready', 'routes': [{'path': [[116.4, 39.9], [116.401, 39.9]],
+                'steps': [step], 'distance': 85, 'labels': [], 'breaks': []}]}
+        for action, assistant, expected in (
+                (5, 0, 'sharp-left'), (6, 0, 'sharp-right'),
+                (7, 1, 'uturn-left'), (7, 2, 'uturn-right'), (7, 0, 'uturn-left'),
+                # U-turn wins over a fork; a straight action still allows a fork.
+                (7, 8, 'uturn-left'), (8, 8, 'fork-left'), (8, 0, 'straight')):
+            with self.subTest(action=action, assistant=assistant):
+                step.update(actionCode=action, assistantActionCode=assistant)
+                with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+                    cleaned = amap_app.invoke_helper(self.payload)['routes'][0]['steps'][0]
+                self.assertEqual(cleaned['maneuver'], expected)
+                self.assertNotIn('actionCode', cleaned)
+                self.assertNotIn('assistantActionCode', cleaned)
+
     def test_roundabout_action_preserves_exit_and_takes_priority_over_fork(self):
         step = {'start': 0, 'end': 1, 'road': '环岛', 'actionCode': 12,
                 'assistantActionCode': 7, 'roundaboutExit': 4}

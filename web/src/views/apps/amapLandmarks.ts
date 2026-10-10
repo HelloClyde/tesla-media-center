@@ -39,6 +39,7 @@ export function createAmapLandmarks(renderer: THREE.WebGLRenderer, onBounds: (bo
   const loaded = new Map<string, Loaded>();
   let anchor: MapPoint = [0, 0], requested: MapPoint | undefined;
   let theme: 'day' | 'night' = 'day', generation = 0, disposed = false, pending = false, attemptedAt = 0;
+  let allowQueries = true;
   let queryController: AbortController | undefined;
   const modelControllers = new Set<AbortController>();
 
@@ -126,7 +127,7 @@ export function createAmapLandmarks(renderer: THREE.WebGLRenderer, onBounds: (bo
         queryController = undefined;
         // The car can leave the queried area while a GLB is downloading.
         // Fetch the newest area even if no further position event arrives.
-        if (!disposed && Math.hypot(...groundOffset(point, anchor)) > 180) {
+        if (!disposed && allowQueries && Math.hypot(...groundOffset(point, anchor)) > 180) {
           requested = [...anchor];
           attemptedAt = Date.now();
           void query([...anchor]);
@@ -136,15 +137,16 @@ export function createAmapLandmarks(renderer: THREE.WebGLRenderer, onBounds: (bo
   }
   return {
     group,
-    update(point: MapPoint, nextTheme: 'day' | 'night') {
+    update(point: MapPoint, nextTheme: 'day' | 'night', allowQuery = true) {
       if (disposed) return;
+      allowQueries = allowQuery;
       anchor = point;
       if (theme !== nextTheme) {
         theme = nextTheme;
         for (const entry of loaded.values()) choose(entry);
       }
       position();
-      if (!pending && (!requested || Math.hypot(...groundOffset(requested, point)) > 180 ||
+      if (allowQuery && !pending && (!requested || Math.hypot(...groundOffset(requested, point)) > 180 ||
           Date.now() - attemptedAt > 60000)) {
         requested = [...point];
         attemptedAt = Date.now();

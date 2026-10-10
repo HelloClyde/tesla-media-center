@@ -3,7 +3,7 @@ import { navigationViewport } from './amapNavigationViewport';
 
 describe('speed-aware navigation viewport', () => {
   it('keeps local streets close and positions the vehicle below center', () => {
-    expect(navigationViewport(25)).toEqual({ zoom: 17, vehicleY: .62 });
+    expect(navigationViewport(25)).toEqual({ zoom: 17, vehicleX: .6, vehicleY: .62 });
   });
   it('shows substantially more road ahead at highway speed', () => {
     const city = navigationViewport(50);

@@ -26,6 +26,7 @@ SESSION_TTL = 2 * 60 * 60
 TRAFFIC_ADIU = secrets.token_hex(15)
 TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 MANEUVERS = {1: 'left', 2: 'right', 3: 'bear-left', 4: 'bear-right',
+             5: 'sharp-left', 6: 'sharp-right', 7: 'uturn-left', 8: 'straight',
              11: 'roundabout-enter', 12: 'roundabout-exit'}
 FORK_ACTIONS = {6: 'fork-middle', 7: 'fork-right', 8: 'fork-left'}
 
@@ -275,13 +276,18 @@ def invoke_helper(payload=None):
                     raise ValueError("invalid route step")
                 safe_step = {"start": start, "end": end, "road": road}
                 # v5.1 segment.1 is the maneuver at this segment's exit.
-                # Only codes verified against live route geometry are exposed.
+                # This is the route action numbering, not the guide's icon ID.
                 action = step.get('actionCode')
                 assistant_action = step.get('assistantActionCode')
                 # Preserve ring semantics; ordinary fork instructions then take
                 # priority over their primary straight/turn action.
                 if type(action) is int and action in (11, 12):
                     safe_step['maneuver'] = MANEUVERS[action]
+                elif type(action) is int and action == 7:
+                    # Captures pair left/right U-turns with assist action 1/2.
+                    # A U-turn must never be replaced by a fork or by the angle
+                    # between the loop's last edge and the next segment.
+                    safe_step['maneuver'] = 'uturn-right' if type(assistant_action) is int and assistant_action == 2 else 'uturn-left'
                 elif type(assistant_action) is int and assistant_action in FORK_ACTIONS:
                     safe_step['maneuver'] = FORK_ACTIONS[assistant_action]
                 elif type(action) is int and action in MANEUVERS:

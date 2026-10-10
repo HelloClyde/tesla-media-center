@@ -1,0 +1,164 @@
+[
+  {
+    "icon": 0,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou0@3x.webp",
+    "bytes": 3072,
+    "sha256": "20dd55b35157be4a6fd80a60a4d127fffe664d95c2b7bec5f7056dfa87b7c0bc"
+  },
+  {
+    "icon": 2,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou2@3x.webp",
+    "bytes": 960,
+    "sha256": "f98bd03661da361e5622a514f8a05d98abd3f625bbf2556ad2d0b93e657aa0a5"
+  },
+  {
+    "icon": 3,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou3@3x.webp",
+    "bytes": 978,
+    "sha256": "15519e33618ad31750b5eb5f3b23c588fd3be9abe62b34f133a561ec7232a467"
+  },
+  {
+    "icon": 4,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou4@3x.webp",
+    "bytes": 1368,
+    "sha256": "fb92cb9c3d8704cf32b7ec32e2b60c905de3983ac7c1ce366744feaade3b7aac"
+  },
+  {
+    "icon": 5,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou5@3x.webp",
+    "bytes": 1352,
+    "sha256": "f555c138403945ecb75062e0fcdd1b4e266173d01567cdee603f4db298beff68"
+  },
+  {
+    "icon": 6,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou6@3x.webp",
+    "bytes": 1556,
+    "sha256": "242ef3fb08fe02f22dc137753ce3bfbfa4f72bfd04d26ec2a1a9368d27bc0d6f"
+  },
+  {
+    "icon": 7,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou7@3x.webp",
+    "bytes": 1526,
+    "sha256": "a105b651b64f5cb4754b304f5a87eccb0db89fe6c02f6f9a70bb8fc7c2a95069"
+  },
+  {
+    "icon": 8,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/default_car_action_8@3x.webp",
+    "bytes": 1262,
+    "sha256": "18510f9d86f2749118c3911c728c4680053fcbc46103538373d25eeea877d6d5"
+  },
+  {
+    "icon": 9,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou9@3x.webp",
+    "bytes": 610,
+    "sha256": "43049716f417f098e2595b20bf9bba02c38d1fc3346e142584fd123d6199c5a6"
+  },
+  {
+    "icon": 10,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou10@3x.webp",
+    "bytes": 2762,
+    "sha256": "386ba0777bc640242c07a92470e68c45987f1ca255325fc7baf3c42caf935646"
+  },
+  {
+    "icon": 11,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou11@3x.webp",
+    "bytes": 2198,
+    "sha256": "282bd6762e71ffdd45288a9188b7d9411a124880cfcb2760c039a0af13899776"
+  },
+  {
+    "icon": 12,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou12@3x.webp",
+    "bytes": 1984,
+    "sha256": "9c5fb7fcd7f610539c5e552f508b583fcfecdc535cb0b11d68bc79f900eb5f10"
+  },
+  {
+    "icon": 13,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou13@3x.webp",
+    "bytes": 1308,
+    "sha256": "832333495a6153df5ee0e064c249ea0bc19018d91bef8ae19c00c7382b8bfef9"
+  },
+  {
+    "icon": 14,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou14@3x.webp",
+    "bytes": 1426,
+    "sha256": "26a0b9cebc28102885c574bdc1c828101740f24dcf17477fdc2320c40495d909"
+  },
+  {
+    "icon": 15,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/default_car_action_end@3x.webp",
+    "bytes": 3020,
+    "sha256": "3798a03cb7fd14c3211e0007806c130bc1407ad5bd561b41be07dc24fbbd15c6"
+  },
+  {
+    "icon": 16,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou16@3x.webp",
+    "bytes": 2008,
+    "sha256": "2301c76144abfde711aaa4c675620aa7cfb47dcf3478b89b2867ddad9df46ea2"
+  },
+  {
+    "icon": 17,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou17@3x.webp",
+    "bytes": 2186,
+    "sha256": "af08ad7ff4d5e920c8e3c2bedb6f3493aac08796f020ea4aa30c6e525240790a"
+  },
+  {
+    "icon": 18,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou18@3x.webp",
+    "bytes": 2026,
+    "sha256": "af72c730268e0db4e58b147af8b92f6fe7ff73167c52fe277dcc419023f90545"
+  },
+  {
+    "icon": 19,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou19@3x.webp",
+    "bytes": 1964,
+    "sha256": "70ae927f03cdfbb74f2fcae20918d0b3a3b9bfd8d2ec4b03927bb33dffa65919"
+  },
+  {
+    "icon": 20,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou20@3x.webp",
+    "bytes": 578,
+    "sha256": "dc78a12b24b4e14f3883e5754771d5261e65cac1d5e9088c7debf14c42ea346b"
+  },
+  {
+    "icon": 24,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou24@3x.webp",
+    "bytes": 2324,
+    "sha256": "a1d51131bad4c4285ce5a50f8baa03f8b16ff871124ca084d140cf448f502712"
+  },
+  {
+    "icon": 25,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou25@3x.webp",
+    "bytes": 2466,
+    "sha256": "91a59f9b4d56fcb521344e36d5364cf8967da9e2cdff666cf1e5b1c2ece150ab"
+  },
+  {
+    "icon": 26,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou26@3x.webp",
+    "bytes": 2352,
+    "sha256": "76654c5259515ebb6b27083242208da6e5c95a6e6eccd80ad8639e4e651125a8"
+  },
+  {
+    "icon": 28,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou28@3x.webp",
+    "bytes": 2320,
+    "sha256": "c94c6f8bcc0a47ef4addd8252fe96e86a6a878f9d9ce5e4339fd325fcb125b53"
+  },
+  {
+    "icon": 55,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou55@3x.webp",
+    "bytes": 1452,
+    "sha256": "658e0bb17bf9602f50cc02ed53931baab21f73056fa8dd209440f54d74ea3e0a"
+  },
+  {
+    "icon": 65,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou65@3x.webp",
+    "bytes": 1678,
+    "sha256": "3e7f77ebe64f18c5905a6c6ca63a668fb31a8e215b2adb99e341553d977833a5"
+  },
+  {
+    "icon": 66,
+    "source": "amap_bundle_drive/ajx_modules/amap_bundle_lib_drivecommon/src/img/sou66@3x.webp",
+    "bytes": 1652,
+    "sha256": "f9ee17c297b1a8b23f9aa74cadeae867fc15b1740cc34b4ca7d711bdf6698145"
+  }
+]

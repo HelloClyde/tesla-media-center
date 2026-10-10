@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { groundOffset, groundPoint, type MapPoint } from './teslaMapCoordinates';
+import { NAVIGATION_VEHICLE_X } from './amapNavigationViewport';
 
 const MAIN_MAP_LANDSCAPE_FOV = [36, 36, 33.00600051879883, 27.006000518798828,
   42.09, 42.09, 42, 42, 42] as const; // APK mapprofile_1 levels 14–22
@@ -59,6 +60,7 @@ export function positionNavigationCamera(
   vehicle: readonly [number, number],
   following: boolean,
   headingUp: boolean,
+  navigating = false,
 ) {
   const safeZoom = Number.isFinite(zoom) ? zoom : 17;
   const fov = appLandscapeGuideFov(safeZoom);
@@ -101,6 +103,18 @@ export function positionNavigationCamera(
   const ahead = guidance ? lookAhead(height) : 0;
   camera.position.set(focusX - Math.sin(angle) * distance, height, focusZ + Math.cos(angle) * distance);
   const target = new THREE.Vector3(focusX + Math.sin(angle) * ahead, 0, focusZ - Math.cos(angle) * ahead);
+  if (following && navigating) {
+    // Shift the camera and its target together to reserve space for the left
+    // guidance card. Use perspective depth so the screen offset stays stable
+    // across bearings, zoom levels and landscape aspect ratios.
+    const depth = (distance * (distance + ahead) + height * (height - carHeight))
+      / Math.hypot(height, distance + ahead);
+    const shift = (NAVIGATION_VEHICLE_X * 2 - 1) * depth
+      * Math.tan(THREE.MathUtils.degToRad(fov / 2)) * camera.aspect;
+    const right = new THREE.Vector3(Math.cos(angle), 0, Math.sin(angle));
+    camera.position.addScaledVector(right, -shift);
+    target.addScaledVector(right, -shift);
+  }
   camera.lookAt(target);
   return target;
 }

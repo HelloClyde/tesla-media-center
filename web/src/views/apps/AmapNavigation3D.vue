@@ -12,6 +12,7 @@ import { createTeslaMapGround } from './teslaMapGround';
 import { createAmapLandmarks, disposeGltfScenes } from './amapLandmarks';
 import { groundOffset, groundPoint, type MapPoint } from './teslaMapCoordinates';
 import { followCameraBearing, manualNavigationZoom, navigationSceneCenter, positionNavigationCamera, rebaseNavigationCamera } from './amapNavigationCamera';
+import { createNavigationZoom } from './amapZoomTransition';
 import { matchPosition, meters, type AppRoute } from './amapNavigation';
 import { congestionSegmentProgresses, type CongestionRun } from './amapRouteTraffic';
 import { ribbonJoinNormal, roundedRoutePoints, routeRibbonCutProgress, trimRouteRibbon, type RibbonSpan } from './amapRouteRibbon';
@@ -26,6 +27,8 @@ let landmarks: ReturnType<typeof createAmapLandmarks> | undefined;
 let controls: OrbitControls | undefined, manualCenter: MapPoint | undefined, manualView = false;
 let settingCamera = false, suppressPickUntil = 0, followedBearing: number | undefined;
 let cameraBaseZoom = 17, cameraBaseDistance = 0;
+const cameraZoom = createNavigationZoom(), zoomOffset = new THREE.Vector3();
+let cameraGesture = false, cameraBusy = false, cameraIdleAt = 0;
 const scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera(45, 1, 1, 1400);
 const ambient = new THREE.HemisphereLight(0xffffff,0x81979c,2.5);
 const routeGroup = new THREE.Group();
@@ -148,10 +151,10 @@ function updateMapSigns(center: MapPoint) {
   if (!signGroup.visible) return;
   const route = props.route;
   if (route !== renderedSignRoute || props.cameras !== renderedCameras || props.navigating !== renderedSignNavigating || !signAnchor
-      || signGroundRevision !== ground?.revision() || Math.hypot(...groundOffset(center, signAnchor)) > 120) {
+      || signGroundRevision !== ground?.roadRevision() || Math.hypot(...groundOffset(center, signAnchor)) > 120) {
     clearMapSigns();
     renderedSignRoute = route; renderedCameras = props.cameras; renderedSignNavigating = props.navigating;
-    signGroundRevision = ground?.revision() ?? -1;
+    signGroundRevision = ground?.roadRevision() ?? -1;
     signAnchor = [...center];
     if (route) {
       for (const point of props.navigating ? route.trafficLights || [] : []) {
@@ -228,21 +231,30 @@ function beginManualView() {
 function manualFocus(): MapPoint | undefined {
   return controls && groundPoint(sceneCenter(), controls.target.x, controls.target.z);
 }
+function markCameraBusy() {
+  cameraBusy = true; cameraIdleAt = performance.now() + 120;
+  ground?.setInteracting(true);
+}
+function onCameraStart() {
+  cameraZoom.cancel(); cameraGesture = true; markCameraBusy();
+}
 function onCameraChange() {
   if (settingCamera || !controls) return;
   beginManualView();
+  markCameraBusy();
   suppressPickUntil = performance.now() + 250;
-  if (syncMapSignVisibility() && signGroup.visible) updateMapSigns(sceneCenter());
+  if (syncMapSignVisibility()) requestUpdate();
   const nextCenter = rebaseNavigationCamera(camera, controls.target, sceneCenter());
   if (!nextCenter) return;
   manualCenter = nextCenter;
   settingCamera = true;
   controls.update();
   settingCamera = false;
-  update();
+  requestUpdate();
   emit('viewcenter', nextCenter);
 }
 function onCameraEnd() {
+  cameraGesture = false; markCameraBusy();
   if (!manualView) return;
   const focus = manualFocus();
   if (focus) emit('viewcenter', focus);
@@ -250,10 +262,17 @@ function onCameraEnd() {
 function zoomBy(steps: number) {
   if (!controls) return;
   beginManualView();
-  const distance = camera.position.clone().sub(controls.target);
-  camera.position.copy(controls.target).addScaledVector(distance, 2 ** (-steps * .5));
-  controls.update();
-  onCameraEnd();
+  markCameraBusy();
+  suppressPickUntil = performance.now() + 250;
+  cameraZoom.start(camera.position.distanceTo(controls.target), steps, performance.now(), controls.minDistance, controls.maxDistance);
+  if (!cameraZoom.active) onCameraEnd();
+}
+function onCameraWheel(event: WheelEvent) {
+  if (!controls?.enabled || !controls.enableZoom || cameraGesture || event.deltaY === 0) return;
+  event.preventDefault(); event.stopImmediatePropagation();
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? host.value?.clientHeight || 600 : 1;
+  const steps = -event.deltaY * unit * .005 * (event.ctrlKey ? 10 : 1);
+  zoomBy(Math.max(-2, Math.min(2, steps)));
 }
 function clearTraffic() {
   for (const child of [...trafficGroup.children]) {
@@ -264,10 +283,10 @@ function clearTraffic() {
 }
 function updateTraffic(cutProgress: number) {
   const center = sceneCenter();
-  if (props.trafficRuns !== renderedTraffic || !trafficAnchor || trafficGroundRevision !== ground?.revision() || Math.hypot(...groundOffset(center, trafficAnchor)) > 120) {
+  if (props.trafficRuns !== renderedTraffic || !trafficAnchor || trafficGroundRevision !== ground?.roadRevision() || Math.hypot(...groundOffset(center, trafficAnchor)) > 120) {
     clearTraffic();
     renderedTraffic = props.trafficRuns;
-    trafficGroundRevision = ground?.revision() ?? -1;
+    trafficGroundRevision = ground?.roadRevision() ?? -1;
     trafficAnchor = [...center];
     for (const run of props.trafficRuns) {
       const vertices: number[] = [], spans: { start: number; end: number }[] = [];
@@ -325,22 +344,25 @@ function update() {
   if (!renderer) return;
   if (renderedTheme !== props.theme) {
     renderedTheme = props.theme;
-    const background=props.theme==='night'?'#1b2634':'#dce5e5';
     scene.background=null;
-    scene.fog=new THREE.Fog(background,280,600);
+    // Camera distance grows with zoom-out; distance fog would obscure the
+    // whole navigation map instead of only a distant horizon.
+    scene.fog=null;
     ambient.intensity=props.theme==='night'?1.15:2.5;
     ground?.setTheme(props.theme);
   }
   const center = sceneCenter();
+  // Alignment is cheap and must continue when manual panning rebases the
+  // local origin. Only loading/rebuilding is deferred, never geographic motion.
   ground?.update(center, -180, 0);
-  landmarks?.update(center, props.theme);
-  ground?.setRoute(props.route, props.progress, props.navigating);
+  landmarks?.update(center, props.theme, !cameraBusy);
+  if (!cameraBusy) ground?.setRoute(props.route, props.progress, props.navigating);
   const [x,z] = groundOffset(props.position || center, center);
   if (!manualView) {
     const guidedFollow = props.following && !!props.position && props.headingUp;
     if (!guidedFollow) followedBearing = undefined;
     else followedBearing ??= props.bearing;
-    const target = positionNavigationCamera(camera, followedBearing ?? props.bearing, props.zoom, [x, z], props.following && !!props.position, props.headingUp);
+    const target = positionNavigationCamera(camera, followedBearing ?? props.bearing, props.zoom, [x, z], props.following && !!props.position, props.headingUp, props.navigating);
     cameraBaseZoom = props.zoom;
     cameraBaseDistance = camera.position.distanceTo(target);
     if (controls) {
@@ -360,10 +382,11 @@ function update() {
   vehicle.position.set(x, vehicleRoadHeight + .2, z);
   if (ground) ground.group.userData.vehicleFocus = vehicle.visible ? vehicle.position : undefined;
   vehicle.rotation.y = -headingRadians;
+  if (cameraBusy) { alignOverlays(center); return; }
   const route = props.route;
   const signalKey = props.signal ? `${props.signal.point.join(',')}:${props.signal.color}:${props.signal.seconds}` : '';
   const detailChanged = signVisibilityChanged || route !== renderedRoute || props.navigating !== renderedNavigating
-    || routeGroundRevision !== (ground?.revision() ?? -1) || props.trafficRuns !== renderedTraffic
+    || routeGroundRevision !== (ground?.roadRevision() ?? -1) || props.trafficRuns !== renderedTraffic
     || props.cameras !== renderedCameras || signalKey !== lastDetailSignal;
   const now = performance.now();
   if (!detailChanged && now - lastDetailUpdate < 100) {
@@ -373,11 +396,11 @@ function update() {
     return;
   }
   lastDetailUpdate = now; lastDetailSignal = signalKey;
-  if (route !== renderedRoute || props.navigating !== renderedNavigating || !routeAnchor || routeGroundRevision !== ground?.revision() || Math.hypot(...groundOffset(center, routeAnchor)) > 120) {
+  if (route !== renderedRoute || props.navigating !== renderedNavigating || !routeAnchor || routeGroundRevision !== ground?.roadRevision() || Math.hypot(...groundOffset(center, routeAnchor)) > 120) {
     clearRoute();
     renderedRoute = route;
     renderedNavigating = props.navigating;
-    routeGroundRevision = ground?.revision() ?? -1;
+    routeGroundRevision = ground?.roadRevision() ?? -1;
     routeAnchor = [...center];
     if (route) {
       const vertices: number[] = [], outlines: number[] = [];
@@ -465,6 +488,10 @@ function initialize() {
     controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
     controls.touches.ONE = THREE.TOUCH.PAN;
     controls.touches.TWO = THREE.TOUCH.DOLLY_ROTATE;
+    // Wheel dolly shares the button transition; pinch/pan/rotate stay under
+    // OrbitControls and cancel an unfinished button/wheel animation on start.
+    renderer.domElement.addEventListener('wheel', onCameraWheel, {passive: false, capture: true});
+    controls.addEventListener('start', onCameraStart);
     controls.addEventListener('change', onCameraChange);
     controls.addEventListener('end', onCameraEnd);
     scene.add(ambient,routeGroup,trafficGroup,signGroup,vehicle);
@@ -477,12 +504,23 @@ function initialize() {
       landmarks=createAmapLandmarks(renderer, bounds => ground?.setLandmarkBounds(bounds));
       scene.add(landmarks.group);
     } catch { landmarks=undefined; }
-    observer=new ResizeObserver(()=>{if(!host.value||!renderer)return;const {clientWidth:w,clientHeight:h}=host.value;renderer.setSize(w,h);camera.aspect=w/Math.max(h,1);camera.updateProjectionMatrix();}); observer.observe(host.value!);
+    observer=new ResizeObserver(()=>{if(!host.value||!renderer)return;const {clientWidth:w,clientHeight:h}=host.value;renderer.setSize(w,h);camera.aspect=w/Math.max(h,1);camera.updateProjectionMatrix();requestUpdate();}); observer.observe(host.value!);
     update(); let last=0;
     const render=(time:number)=>{
       frame=requestAnimationFrame(render);
       if(document.hidden)return;
       const elapsed = last ? time-last : 0; last=time;
+      const zoomDistance = cameraZoom.sample(time);
+      if (zoomDistance !== undefined && controls) {
+        zoomOffset.copy(camera.position).sub(controls.target).setLength(zoomDistance);
+        camera.position.copy(controls.target).add(zoomOffset);
+        settingCamera = true; controls.update(); settingCamera = false;
+        if (syncMapSignVisibility()) requestUpdate();
+        if (!cameraZoom.active) onCameraEnd();
+      }
+      if (cameraBusy && !cameraGesture && !cameraZoom.active && time >= cameraIdleAt) {
+        cameraBusy = false; ground?.setInteracting(false); requestUpdate();
+      }
       if (renderUpdatePending) { renderUpdatePending = false; update(); }
       if (!manualView && props.following && props.headingUp && props.position && followedBearing !== undefined) {
         const next = followCameraBearing(followedBearing, props.bearing, elapsed);
@@ -490,7 +528,7 @@ function initialize() {
         if (turn > .05) {
           followedBearing = next;
           const [x,z] = groundOffset(props.position, sceneCenter());
-          const target = positionNavigationCamera(camera, next, props.zoom, [x,z], true, true);
+          const target = positionNavigationCamera(camera, next, props.zoom, [x,z], true, true, props.navigating);
           if (controls) {
             settingCamera = true; controls.target.copy(target); controls.update(); settingCamera = false;
           }
@@ -502,6 +540,8 @@ function initialize() {
 }
 function dispose() {
   cancelAnimationFrame(frame); frame = 0;
+  cameraZoom.cancel(); cameraGesture = false; cameraBusy = false; cameraIdleAt = 0;
+  controls?.removeEventListener('start', onCameraStart);
   controls?.removeEventListener('change', onCameraChange);
   controls?.removeEventListener('end', onCameraEnd);
   controls?.dispose(); controls = undefined;
@@ -520,6 +560,7 @@ function dispose() {
   scene.clear();
   if (renderer) {
     renderer.domElement.removeEventListener('webglcontextlost',lost);
+    renderer.domElement.removeEventListener('wheel', onCameraWheel, true);
     renderer.forceContextLoss();
     renderer.dispose();
     renderer.domElement.remove();
@@ -544,7 +585,11 @@ void cameraAssetReady.then(ready => {
   update();
 });
 watch(()=>props.following, following => {
-  if (following) { manualCenter = undefined; manualView = false; followedBearing = undefined; update(); }
+  if (following) {
+    cameraZoom.cancel(); cameraGesture = false; cameraBusy = false;
+    ground?.setInteracting(false);
+    manualCenter = undefined; manualView = false; followedBearing = undefined; update();
+  }
 });
 watch(()=>[props.center,props.position,props.heading,props.bearing,props.zoom,props.route,props.progress,props.trafficRuns,props.cameras,props.signal,props.navigating,props.following,props.headingUp,props.theme],requestUpdate);
 defineExpose({retry:()=>ground?.retry(), zoomBy});
