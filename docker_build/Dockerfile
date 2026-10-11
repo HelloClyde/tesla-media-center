@@ -19,6 +19,7 @@ COPY web/public/icon/ /assets/icon/
 COPY web/public/vendor/ /assets/vendor/
 COPY web/public/basis/ /assets/basis/
 COPY web/public/amap/ /assets/amap/
+COPY web/public/monitor/ /assets/monitor/
 RUN node /precompress-dist.mjs /assets
 
 FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder

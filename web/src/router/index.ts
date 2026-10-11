@@ -22,6 +22,7 @@ const router = createRouter({
         { path: 'tencent-video', name: 'tencent-video', component: () => import('../views/apps/TencentVideoView.vue') },
         { path: 'gam4980', name: 'gam4980', component: () => import('../views/apps/Gam4980View.vue') },
         { path: 'amap', name: 'amap-app', component: () => import('../views/apps/AmapAppView.vue') },
+        { path: 'monitor', name: 'monitor', component: () => import('../views/apps/MonitorView.vue') },
         { path: 'qqmusic', name: 'qqmusic', component: () => import('../views/apps/QQMusicView.vue') },
         {
           path: 'home',

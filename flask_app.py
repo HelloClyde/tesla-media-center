@@ -9,7 +9,7 @@ from ffvideo import utils as futils
 from ffvideo.utils import login_check
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
-from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, amap_recent_places, tencent_video
+from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, amap_recent_places, tencent_video, monitor
 from ffvideo.tesla_skins import add_tesla_skin_routes
 from ffvideo.tesla_appearance import add_routes as add_tesla_appearance_routes
 import time
@@ -39,6 +39,7 @@ def login():
 # 登出接口
 @app.route('/api/logout', methods=['GET'])
 def logout():
+    monitor.relay.revoke(session.pop('monitor_client', None))
     session.pop('last_visit', None)
     return futils.json_ok({})
 
@@ -116,6 +117,7 @@ def static_web(name):
 if __name__ == '__main__':
     # 运行Flask应用，并启用多线程支持
     local_video.add_local_video_route(app)
+    monitor.add_routes(app)
     gba.add_gba_route(app)
     gam4980.add_gam4980_route(app)
     bv.add_bv_route(app)

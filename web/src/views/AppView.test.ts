@@ -7,7 +7,31 @@ import AppView from './AppView.vue';
 import { backgroundNavigation, clearBackgroundNavigation, publishBackgroundNavigation } from '@/stores/backgroundNavigation';
 import { backgroundApps } from '@/stores/backgroundApps';
 import { clearBackgroundMusic } from '@/stores/backgroundMusic';
+import { monitorPublisher } from './apps/monitor/publisher';
 afterEach(() => { clearBackgroundMusic(); clearBackgroundNavigation(); });
+
+it('keeps monitoring across app switches and releases capture on logout', async () => {
+  const created = vi.fn(), disposed = vi.fn(), stopTrack = vi.fn();
+  const Monitor = defineComponent({name: 'MonitorView', setup() {
+    created(); monitorPublisher.phase = 'connected';
+    monitorPublisher.stream = {getTracks: () => [{stop: stopTrack}]} as unknown as MediaStream;
+    onBeforeUnmount(disposed); return () => h('div', 'Monitor');
+  }});
+  const router = createRouter({history: createMemoryHistory(), routes: [
+    {path: '/apps', component: AppView, children: [
+      {path: 'monitor', component: Monitor}, {path: 'gba', component: {render: () => h('div', 'GBA')}},
+    ]}, {path: '/login', component: {render: () => h('div', 'Login')}},
+  ]});
+  await router.push('/apps/monitor'); await router.isReady();
+  const view = mount({template: '<router-view />'}, {global: {plugins: [router], stubs: {'el-icon': true}}});
+  await router.push('/apps/gba'); await flushPromises();
+  expect(disposed).not.toHaveBeenCalled(); expect(stopTrack).not.toHaveBeenCalled();
+  expect(view.find('[aria-label="车内监控运行状态"]').text()).toContain('监控已开启');
+  await router.push('/apps/monitor'); await flushPromises(); expect(created).toHaveBeenCalledTimes(1);
+  await router.push('/login'); await flushPromises();
+  expect(disposed).toHaveBeenCalledTimes(1); expect(stopTrack).toHaveBeenCalledTimes(1);
+  expect(monitorPublisher.phase).toBe('idle'); view.unmount();
+});
 
 it('retains only the QQ player across app navigation and disposes it on logout', async () => {
   const created = vi.fn(), stopped = vi.fn(), otherStopped = vi.fn();

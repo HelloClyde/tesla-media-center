@@ -17,6 +17,7 @@ export const applications: AppEntry[] = [
   { route: '/apps/douyin', label: '抖音', description: '发现、搜索和播放公开短视频', icon: '/icon/DOUYIN_LOGO.svg', color: '#fe2c55', badge: '实验', keywords: '抖音 短视频 douyin' },
   { route: '/apps/amap', label: '高德导航', description: '路线规划与行程导航', icon: '/icon/AMAP_LOGO.ico', color: '#1595e7', badge: '实验', keywords: '地图 导航 amap' },
   { route: '/apps/tesla', label: '特斯拉', description: '查看车辆状态', icon: '/icon/TESLA_LOGO.svg', color: '#d24c59', keywords: '车辆 tesla' },
+  { route: '/apps/monitor', label: '监控', description: '查看车内实时画面与双向对讲', icon: '/icon/MONITOR_LOGO.svg', color: '#119d84', keywords: '监控 摄像头 麦克风 车内 远程 对讲 camera monitor' },
   { route: '/apps/qqmusic', label: 'QQ 音乐', description: '发现音乐，随心播放', icon: '/icon/QQMUSIC_LOGO.ico', color: '#13ac7b', keywords: '歌曲 音乐 qq' },
   { route: '/apps/bilibili', label: '哔哩哔哩', description: '浏览和播放喜欢的视频', icon: '/icon/BILIBILI_LOGO.svg', color: '#20a5d6', keywords: '视频 b站 bilibili' },
   { route: '/apps/tencent-video', label: '腾讯视频', description: '发现、搜索和播放视频', icon: '/icon/TENCENT_VIDEO_LOGO.png', color: '#15b86a', keywords: '腾讯 视频 qq tencent' },
