@@ -265,7 +265,7 @@ it('keeps the current App map visible while the next patch is still loading', as
   });
   const ground = createTeslaMapGround(vi.fn());
   ground.update([120.1,30.2],-180,0);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   expect(ground.group.visible).toBe(true);
   hold = true;
   ground.update([120.103,30.2],-180,0);
@@ -333,7 +333,7 @@ it('lifts the navigation ribbon onto an App elevated road with matching directio
   ground.setRoute({id:1,path:[[120.1,30.2],[120.102,30.2]],steps:[{start:0,end:1,road:'测试路'}],
     breaks:[],distance:190,labels:[]},0,true);
   ground.update([120.101,30.2],-180,0);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   expect(ground.roadHeight([120.1005,30.2],[1,0])).toBeGreaterThan(3);
   expect(ground.roadHeight([120.1005,30.2],[0,1])).toBe(0);
   const lanes=ground.group.children.find(child=>child.name==='AppLaneBoundaries') as any;
@@ -357,13 +357,13 @@ it('keeps preview roads clean and loads LNDS only during navigation', async () =
         rings:[[[120,30],[120.001,30],[120,30.001]]]}]})}}}));
   const ground=createTeslaMapGround(vi.fn());
   ground.update([120.1,30.2],-180,0);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(100);
   expect(ground.group.visible).toBe(true);
   expect(ground.group.children.some(child=>child.name==='AppLaneBoundaries')).toBe(false);
   expect(post.mock.calls.some(call=>call[1].layer==='lanes')).toBe(false);
   ground.setRoute({id:1,path:[[120.1,30.2],[120.1002,30.2]],steps:[{start:0,end:1,road:'测试路'}],
     breaks:[],distance:20,labels:[]},0,true);
-  await vi.advanceTimersByTimeAsync(10);
+  await vi.advanceTimersByTimeAsync(50);
   expect(ground.group.children.some(child=>child.name==='AppLaneBoundaries')).toBe(true);
   expect(post.mock.calls.some(call=>call[1].layer==='lanes')).toBe(true);
   ground.setRoute(undefined,0,false);

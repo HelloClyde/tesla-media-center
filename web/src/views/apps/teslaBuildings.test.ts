@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { Color, Vector3 } from 'three';
-import { createBuildingMeshes, occludingBuildingIndices } from './teslaBuildings';
+import { describe, expect, it, vi } from 'vitest';
+import { BufferGeometry, Color, Vector3 } from 'three';
+import { createBuildingMeshes, createBuildingMeshSteps, occludingBuildingIndices } from './teslaBuildings';
 
 describe('App building extrusion', () => {
   const ring = [[116,40],[116.0001,40],[116.0001,40.0001],[116,40.0001]];
@@ -18,6 +18,18 @@ describe('App building extrusion', () => {
   it('rejects invalid heights and buildings outside the visible neighbourhood', () => {
     expect(createBuildingMeshes([{id:'x',parts:[{ring,base:0,height:NaN}]}],[116,40]).count).toBe(0);
     expect(createBuildingMeshes([{id:'x',parts:[{ring,base:0,height:20}]}],[117,41]).count).toBe(0);
+  });
+  it('disposes already extruded parts when an unfinished viewport is replaced', () => {
+    const dispose = vi.spyOn(BufferGeometry.prototype, 'dispose');
+    const work = createBuildingMeshSteps([
+      {id: 'first', parts: [{ring, base: 0, height: 20}]},
+      {id: 'second', parts: [{ring, base: 0, height: 30}]},
+    ], [116, 40]);
+    work.next(); work.next();
+    expect(dispose).not.toHaveBeenCalled();
+    work.return({mesh: undefined, count: 0});
+    expect(dispose).toHaveBeenCalledTimes(1);
+    dispose.mockRestore();
   });
   it('omits the repeated flag-8 rooftop pieces while retaining flag-4 roof structures', () => {
     const source={id:'roof',overallHeight:20,parts:[

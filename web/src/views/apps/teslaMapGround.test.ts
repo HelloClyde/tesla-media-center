@@ -9,7 +9,7 @@ vi.mock('./amapBrowserTileCache', () => ({
   readMemoryMapTiles: mocks.memoryReads,
   storeMapTiles: vi.fn(async () => {}),
 }));
-vi.mock('./teslaBuildings', () => ({createBuildingMeshes: mocks.buildings}));
+vi.mock('./teslaBuildings', () => ({createBuildingMeshSteps: function* (...args: any[]) { return mocks.buildings(...args); }}));
 vi.mock('./teslaRoadLevels', () => ({roadSpans: () => [], roadDeckGeometry: vi.fn(), roadWidth: vi.fn(), nearestRoadHeight: () => 0}));
 import { createTeslaMapGround } from './teslaMapGround';
 import {groundPoint} from './teslaMapCoordinates';
@@ -29,7 +29,7 @@ beforeEach(() => {
     mocks.contexts.set(this.width, context); return context as any;
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 it('shows roads before a delayed building request completes', async () => {
   mocks.post.mockImplementation((_path: string, payload: {level: number; tiles: number[][]}) => payload.level === 15
@@ -75,12 +75,12 @@ it('paints roads beyond the local 600 m patch before a stalled building response
   expect(ground.group.visible).toBe(true);
   ground.dispose();
 });
-it('shows shared in-memory roads even while IndexedDB reads are blocked', () => {
+it('shows shared in-memory roads even while IndexedDB reads are blocked', async () => {
   mocks.memoryReads.mockReturnValue(new Map([['14/1/1', {tile: road, at: Date.now()}]]));
   mocks.reads.mockImplementation(() => new Promise(() => {}));
   const ground = createTeslaMapGround(vi.fn());
   ground.update([120.2, 30.2], 0, 0);
-  expect(ground.group.visible).toBe(true);
+  await vi.waitFor(() => expect(ground.group.visible).toBe(true));
   expect(mocks.post).not.toHaveBeenCalled();
   ground.dispose();
 });
@@ -127,6 +127,7 @@ it('keeps geographic alignment while deferring new geometry during manual pannin
   mocks.reads.mockImplementation(() => new Promise(() => {}));
   const ground = createTeslaMapGround(vi.fn()), center: [number, number] = [120.2, 30.2];
   ground.update(center, -180, 0);
+  await vi.waitFor(() => expect(ground.group.visible).toBe(true));
   const revision = ground.revision();
   const roadRevision = ground.roadRevision();
   mocks.buildings.mockClear();
@@ -139,7 +140,56 @@ it('keeps geographic alignment while deferring new geometry during manual pannin
   ground.setLandmarkBounds([[120, 30.4, 120.4, 30]]);
   expect(mocks.buildings).not.toHaveBeenCalled();
   ground.setInteracting(false);
-  expect(mocks.buildings).toHaveBeenCalledTimes(1);
+  await vi.waitFor(() => expect(mocks.buildings).toHaveBeenCalledTimes(1));
   expect(ground.roadRevision()).toBe(roadRevision);
+  ground.dispose();
+});
+
+it('spreads a dense arriving tile across frames and pauses its traversal for camera input', async () => {
+  vi.useFakeTimers();
+  const outside = {bbox: [121, 31, 121.01, 31.01], properties: {}, geometry: {
+    type: 'LineString', coordinates: [[121, 31], [121.01, 31.01]],
+  }};
+  const dense = {...road, collection: {features: [...Array(20000).fill(outside), ...road.collection.features]}};
+  mocks.memoryReads.mockReturnValue(new Map([['14/1/1', {tile: dense, at: Date.now()}]]));
+  mocks.reads.mockImplementation(() => new Promise(() => {}));
+  const ground = createTeslaMapGround(vi.fn());
+  ground.update([120.2, 30.2], 0, 0);
+  expect(mocks.contexts.get(1024).fillRect).not.toHaveBeenCalled();
+  expect(mocks.buildings).not.toHaveBeenCalled();
+  await vi.advanceTimersToNextFrame();
+  expect(ground.group.visible).toBe(false);
+  ground.setInteracting(true);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(ground.group.visible).toBe(false);
+  expect(mocks.buildings).not.toHaveBeenCalled();
+  ground.setInteracting(false);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(ground.group.visible).toBe(true);
+  expect(mocks.contexts.get(1024).stroke).toHaveBeenCalled();
+  expect(mocks.buildings).toHaveBeenCalledTimes(1);
+  ground.dispose();
+});
+
+it('applies theme and landmark changes to the latest uncommitted viewport', async () => {
+  vi.useFakeTimers();
+  const outside = {bbox: [121, 31, 121.01, 31.01], properties: {}, geometry: {
+    type: 'LineString', coordinates: [[121, 31], [121.01, 31.01]],
+  }};
+  const tile = {...road, collection: {features: [...Array(12000).fill(outside), ...road.collection.features]},
+    buildings: [{id: 'landmark-placeholder', parts: [{base: 0, height: 10,
+      ring: [[120.2, 30.2], [120.2001, 30.2], [120.2, 30.2001]]}]}]};
+  mocks.memoryReads.mockReturnValue(new Map([['14/1/1', {tile, at: Date.now()}]]));
+  mocks.reads.mockImplementation(() => new Promise(() => {}));
+  const ground = createTeslaMapGround(vi.fn());
+  ground.update([120.2, 30.2], 0, 0);
+  await vi.advanceTimersToNextFrame();
+  expect(ground.group.visible).toBe(false);
+  ground.setTheme('night');
+  ground.setLandmarkBounds([[120.19, 30.21, 120.21, 30.19]]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(ground.group.visible).toBe(true);
+  expect(mocks.buildings).toHaveBeenCalledWith([], [120.2, 30.2], 'night');
+  expect(mocks.contexts.get(1024).strokeStyle).toBe('#536278');
   ground.dispose();
 });

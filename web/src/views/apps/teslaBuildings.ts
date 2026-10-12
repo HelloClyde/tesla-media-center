@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { mergeMapGeometries } from './mapGeometryMerge';
 import { groundOffset, type MapPoint } from './teslaMapCoordinates';
 
 type BuildingPaint = {minZoom:number;maxZoom:number;surface:{color:string;opacity:number};colorSlots?:string[];
@@ -61,15 +61,28 @@ export function occludingBuildingIndices(occluders: BuildingOccluder[], camera: 
 }
 
 export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint, theme: 'day' | 'night' = 'day') {
+  const work = createBuildingMeshSteps(buildings, anchor, theme);
+  let step = work.next();
+  while (!step.done) step = work.next();
+  return step.value;
+}
+
+/** Keep the synchronous entry for small standalone scenes; navigation runs
+ * these same operations with a frame budget, including vertex-buffer copies. */
+export function* createBuildingMeshSteps(buildings: AppBuilding[], anchor: MapPoint, theme: 'day' | 'night' = 'day'):
+  Generator<void, {mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial> | undefined; count: number}> {
   const geometries: THREE.BufferGeometry[] = [];
   const seen = new Set<string>(), displayed = new Set<string>();
   const occluders = new Map<string, BuildingOccluder>();
   let vertices = 0, hasFacadeTexture = false, hasMreTexture = false;
+  let currentGeometry: THREE.BufferGeometry | undefined;
+  try {
   for (const building of buildings) {
     const nativeHeight = building.overallHeight;
     const colorHeight = Number.isFinite(nativeHeight) && nativeHeight! > 0
       ? nativeHeight! : Math.max(1,...(building.parts || []).map(part=>part.base+part.height));
     for (const part of building.parts || []) {
+    yield;
     // libamapr ParseBuilding selects flag 8 only for theme ID "f_lego" and
     // flag 4 for the normal 3D-building path. TMC uses the normal navigation
     // theme; rendering both created the repeated rooftop cylinders.
@@ -83,9 +96,10 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
     seen.add(key);
     const shape = new THREE.Shape(points.map(([x,z]) => new THREE.Vector2(x,-z)));
     const geometry = new THREE.ExtrudeGeometry(shape, { depth: part.height, bevelEnabled: false, steps: 1, curveSegments: 1 });
+    currentGeometry = geometry;
     geometry.rotateX(-Math.PI/2); geometry.translate(0,part.base,0);
     const count = geometry.getAttribute('position').count;
-    if (vertices + count > 250000) { geometry.dispose(); continue; }
+    if (vertices + count > 250000) { geometry.dispose(); currentGeometry = undefined; continue; }
     vertices += count;
     let occluder = occluders.get(building.id);
     if (!occluder) { occluder = { index: occluders.size + 1, parts: [] }; occluders.set(building.id, occluder); }
@@ -99,7 +113,9 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
     if(part.smoothWalls) {
       const cx=points.reduce((sum,p)=>sum+p[0],0)/points.length;
       const cz=points.reduce((sum,p)=>sum+p[1],0)/points.length;
-      for(let i=0;i<count;i++) if(Math.abs(normal.getY(i))<.5) {
+      for(let i=0;i<count;i++) {
+        if ((i & 1023) === 1023) yield;
+        if (Math.abs(normal.getY(i)) >= .5) continue;
         const dx=position.getX(i)-cx,dz=position.getZ(i)-cz,length=Math.hypot(dx,dz);
         if(length>.001) {normal.setXYZ(i,dx/length,0,dz/length);}
       }
@@ -125,6 +141,7 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
     const emissionMask=new Float32Array(count);
     const emissionColor=new Float32Array(count*3);
     for (let i=0;i<count;i++) {
+      if ((i & 1023) === 1023) yield;
       if(colorSlots) {
         // APK BUILDING_WINDOW divides absolute vertex elevation by a height
         // carried in the UV. The BMD feature-level height is the matching
@@ -144,6 +161,7 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
       // uniforms have not yet been recovered, so repetition remains pending.
       for (const group of geometry.groups) if (group.materialIndex===1) {
         for (let start=group.start;start+5<group.start+group.count;start+=6) {
+          if ((start - group.start) % 1020 === 0) yield;
           let min=Infinity,max=-Infinity;
           for(let i=start;i<start+6;i++) {
             min=Math.min(min,originalUv.getX(i)); max=Math.max(max,originalUv.getX(i));
@@ -166,11 +184,11 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
     geometry.setAttribute('buildingFacadeUv',new THREE.BufferAttribute(facadeUv,2));
     geometry.setAttribute('buildingEmissionMask',new THREE.BufferAttribute(emissionMask,1));
     geometry.setAttribute('buildingEmissionColor',new THREE.BufferAttribute(emissionColor,3));
-    geometry.clearGroups(); geometries.push(geometry); displayed.add(building.id);
+    geometry.clearGroups(); geometries.push(geometry); currentGeometry = undefined; displayed.add(building.id);
     }
   }
-  const merged = geometries.length ? mergeGeometries(geometries,false) : null;
-  geometries.forEach(g=>g.dispose());
+  const merged = yield* mergeMapGeometries(geometries);
+  geometries.forEach(g=>g.dispose()); geometries.length = 0;
   if (!merged) return { mesh: undefined, count: 0 };
   const material = new THREE.MeshStandardMaterial({ vertexColors:true, roughness:.92, metalness:0,
     // The APK's BUILDING_WINDOW shader adds an emission term after its dark
@@ -275,4 +293,8 @@ export function createBuildingMeshes(buildings: AppBuilding[], anchor: MapPoint,
   };
   mesh.name='AppBuildings';
   return { mesh, count:displayed.size };
+  } finally {
+    currentGeometry?.dispose();
+    geometries.forEach(geometry => geometry.dispose());
+  }
 }

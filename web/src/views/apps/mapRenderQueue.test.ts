@@ -51,3 +51,31 @@ it('reports rendering errors without leaving scheduled work behind', () => {
   queue.start((function* () { throw new Error('broken geometry'); yield; })());
   vi.runAllTimers(); expect(error).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
 });
+it('pauses an unfinished mesh for input, resumes its next step, and disposes it on replacement', () => {
+  let completed = 0, released = 0;
+  const queue = createMapRenderQueue(vi.fn());
+  queue.start((function* () {
+    try { for (let i = 0; i < 1000; i++) { completed++; yield; } }
+    finally { released++; }
+  })());
+  vi.advanceTimersToNextFrame();
+  const before = completed;
+  queue.setPaused(true); vi.advanceTimersByTime(200);
+  expect(completed).toBe(before); expect(released).toBe(0);
+  queue.setPaused(false); vi.advanceTimersToNextFrame();
+  expect(completed).toBeGreaterThan(before);
+  queue.cancel(); expect(released).toBe(1);
+  vi.runAllTimers(); expect(released).toBe(1);
+});
+it('can recenter from within the completed old job without closing a running generator', () => {
+  const errors = vi.fn(), queue = createMapRenderQueue(errors);
+  let fresh = 0, released = 0;
+  queue.start((function* () {
+    try {
+      yield;
+      queue.start((function* () { fresh++; yield; })());
+    } finally { released++; }
+  })());
+  vi.runAllTimers();
+  expect(errors).not.toHaveBeenCalled(); expect(fresh).toBe(1); expect(released).toBe(1);
+});

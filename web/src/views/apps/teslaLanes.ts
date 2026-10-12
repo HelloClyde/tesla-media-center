@@ -2,6 +2,12 @@ import * as THREE from 'three';
 import { cumulative, type AppRoute } from './amapNavigation';
 import { groundBounds, groundOffset, type MapPoint } from './teslaMapCoordinates';
 
+function finish<T>(work: Generator<void, T>): T {
+  let step = work.next();
+  while (!step.done) step = work.next();
+  return step.value;
+}
+
 const routeLengths = new WeakMap<AppRoute, { path: AppRoute['path']; values: number[] }>();
 
 /** A visual inference from adjacent LNDS boundaries, not an APK paint enum.
@@ -10,12 +16,18 @@ const routeLengths = new WeakMap<AppRoute, { path: AppRoute['path']; values: num
 export function inferredLaneMarkings(lines: number[][][], origin: MapPoint,
   deckHeight?: (x:number,z:number,direction:readonly [number,number])=>number,
   kinds?: number[]): ('solid' | 'dashed')[] {
+  return finish(inferredLaneMarkingSteps(lines, origin, deckHeight, kinds));
+}
+function* inferredLaneMarkingSteps(lines: number[][][], origin: MapPoint,
+  deckHeight?: (x:number,z:number,direction:readonly [number,number])=>number,
+  kinds?: number[]): Generator<void, ('solid' | 'dashed')[]> {
   type Segment = { x:number; z:number; dx:number; dz:number; length:number; height:number; line:number };
   const cellSize=12, cells=new Map<string,Segment[]>(), segments:Segment[][]=[];
   const key=(x:number,z:number)=>`${Math.floor(x/cellSize)}/${Math.floor(z/cellSize)}`;
-  lines.forEach((line,index)=>{
+  for (const [index, line] of lines.entries()) {
     const owned:Segment[]=[];
     for(let i=1;i<line.length;i++) {
+      yield;
       const a=groundOffset(line[i-1],origin),b=groundOffset(line[i],origin);
       const dx=b[0]-a[0],dz=b[1]-a[1],length=Math.hypot(dx,dz);
       if(!Number.isFinite(length) || length<2 || length>1000) continue;
@@ -30,12 +42,16 @@ export function inferredLaneMarkings(lines: number[][][], origin: MapPoint,
         }
     }
     segments.push(owned);
-  });
-  return segments.map((owned,index)=>{
-    if(kinds && kinds[index]!==3) return 'solid';
-    for(const segment of owned) {
+  }
+  const markings: ('solid' | 'dashed')[] = [];
+  for (const [index, owned] of segments.entries()) {
+    yield;
+    if (kinds && kinds[index] !== 3) { markings.push('solid'); continue; }
+    let style: 'solid' | 'dashed' = 'solid';
+    search: for(const segment of owned) {
       let left=false,right=false;
       for(const other of cells.get(key(segment.x,segment.z))||[]) {
+        yield;
         if(other.line===index || Math.abs(segment.height-other.height)>1.5 ||
             Math.abs((segment.dx*other.dx+segment.dz*other.dz)/
             (segment.length*other.length))<.92) continue;
@@ -44,17 +60,22 @@ export function inferredLaneMarkings(lines: number[][][], origin: MapPoint,
         const along=(segment.dx*(other.x-segment.x)+segment.dz*(other.z-segment.z))/segment.length;
         if(Math.abs(along)>(segment.length+other.length)/2) continue;
         if(cross>0) left=true;else right=true;
-        if(left&&right) return 'dashed';
+        if(left&&right) { style='dashed'; break search; }
       }
     }
-    return 'solid';
-  });
+    markings.push(style);
+  }
+  return markings;
 }
 
 /** LNDS contains every road in the tile. Keep only boundaries following the
  * driven route near the car until the APK's per-boundary style is understood. */
 export function navigationLaneBoundaries(lines: number[][][], route: AppRoute, progress: number,
   origin: MapPoint, kinds?: number[], selectedKinds?: number[]): number[][][] {
+  return finish(navigationLaneBoundarySteps(lines, route, progress, origin, kinds, selectedKinds));
+}
+export function* navigationLaneBoundarySteps(lines: number[][][], route: AppRoute, progress: number,
+  origin: MapPoint, kinds?: number[], selectedKinds?: number[]): Generator<void, number[][][]> {
   if (!Number.isFinite(progress) || route.path.length < 2) return [];
   let cached = routeLengths.get(route);
   if (!cached || cached.path !== route.path) {
@@ -89,11 +110,13 @@ export function navigationLaneBoundaries(lines: number[][][], route: AppRoute, p
   }
   const selected: number[][][] = [], selectedSources:number[]=[];
   for (const [lineIndex,line] of lines.entries()) for (let i = 1; i < line.length; i++) {
+    yield;
     const a = groundOffset(line[i - 1],origin), b = groundOffset(line[i],origin);
     const dx = b[0] - a[0], dz = b[1] - a[1], span = Math.hypot(dx,dz);
     if (!Number.isFinite(span) || span < .5 || span > 1000) continue;
     const pieces = Math.ceil(span / 20);
     for (let part = 0; part < pieces; part++) {
+      yield;
       const from = part / pieces, to = (part + 1) / pieces;
       const x = a[0] + dx * (from + to) / 2, z = a[1] + dz * (from + to) / 2;
       for (const segment of grid.get(key(x,z)) || []) {
@@ -115,6 +138,7 @@ export function navigationLaneBoundaries(lines: number[][][], route: AppRoute, p
   const joined:number[][][]=[];
   let previousSource=-1;
   for(let i=0;i<selected.length;i++) {
+    yield;
     const [a,b]=selected[i], last=joined[joined.length-1];
     if(previousSource===selectedSources[i] && last &&
         Math.hypot(last[last.length-1][0]-a[0],last[last.length-1][1]-a[1])<1e-9) last.push(b);
@@ -143,12 +167,18 @@ export function laneViewportTiles(point: MapPoint, size = 600): [number, number]
 export function createLaneMesh(lines: number[][][], origin: MapPoint, size = 600,
   deckHeight?: (x: number, z: number, direction: readonly [number, number], preferredHeight?:number) => number,
   kinds?: number[]) {
+  return finish(createLaneMeshSteps(lines, origin, size, deckHeight, kinds));
+}
+export function* createLaneMeshSteps(lines: number[][][], origin: MapPoint, size = 600,
+  deckHeight?: (x: number, z: number, direction: readonly [number, number], preferredHeight?:number) => number,
+  kinds?: number[]): Generator<void, THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial> | undefined> {
   const positions: number[] = [], seen = new Set<string>();
   const half = size / 2, width = 0.09;
-  const markingStyles=inferredLaneMarkings(lines,origin,deckHeight,kinds);
+  const markingStyles = yield* inferredLaneMarkingSteps(lines, origin, deckHeight, kinds);
   for (const [lineIndex,line] of lines.entries()) {
     let previousHeight:number|undefined;
     for (let i = 1; i < line.length; i++) {
+      yield;
       if (![...line[i - 1].slice(0, 2), ...line[i].slice(0, 2)].every(Number.isFinite)) continue;
       const a = groundOffset(line[i - 1], origin), b = groundOffset(line[i], origin);
       const dx = b[0] - a[0], dz = b[1] - a[1];
@@ -172,6 +202,7 @@ export function createLaneMesh(lines: number[][][], origin: MapPoint, size = 600
       // Sample the already-clipped edge locally without altering its XY line.
       const pieces = Math.ceil(length / 5);
       for (let piece = 0; piece < pieces; piece++) {
+        yield;
         const start = piece / pieces, end = (piece + 1) / pieces;
         const sx = x + (xx - x) * start, sz = z + (zz - z) * start;
         const ex = x + (xx - x) * end, ez = z + (zz - z) * end;
