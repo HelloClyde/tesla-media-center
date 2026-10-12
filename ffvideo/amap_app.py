@@ -43,7 +43,7 @@ def validate_point(value):
 def clean_traffic_runs(runs, length):
     if not isinstance(runs, list) or len(runs) > 10000:
         raise ValueError("invalid route traffic")
-    safe, point_count, previous_end = [], 0, 0
+    safe, point_count, timing_count, previous_end = [], 0, 0, 0
     for run in runs:
         if not isinstance(run, dict):
             raise ValueError("invalid route traffic")
@@ -58,8 +58,41 @@ def clean_traffic_runs(runs, length):
         point_count += len(path)
         if point_count > 100000:
             raise ValueError("route traffic too large")
-        safe.append({"status": status, "start": start, "end": end,
-                     "path": [validate_point(point) for point in path]})
+        clean = {"status": status, "start": start, "end": end,
+                 "path": [validate_point(point) for point in path]}
+        if "timings" in run:
+            timings = run["timings"]
+            if not isinstance(timings, list) or not 1 <= len(timings) <= 10000:
+                raise ValueError("invalid congestion timings")
+            timing_count += len(timings)
+            if timing_count > 100000:
+                raise ValueError("congestion timings too large")
+            clean_timings, boundary = [], start
+            for timing in timings:
+                if not isinstance(timing, dict):
+                    raise ValueError("invalid congestion timing")
+                a, b, seconds = timing.get("start"), timing.get("end"), timing.get("duration")
+                if (type(a) not in (int, float) or type(b) not in (int, float)
+                        or not math.isfinite(a) or not math.isfinite(b)
+                        or abs(a - boundary) > .2 or not start <= a < b <= end
+                        or seconds is not None and (type(seconds) is not int
+                                                  or not 0 < seconds <= 30 * 86400)):
+                    raise ValueError("invalid congestion timing")
+                clean_timings.append({"start": a, "end": b, "duration": seconds})
+                boundary = b
+            if abs(boundary - end) > .2:
+                raise ValueError("incomplete congestion timings")
+            duration = (sum(timing["duration"] for timing in clean_timings)
+                        if all(timing["duration"] is not None for timing in clean_timings) else None)
+            if duration is not None and duration > 30 * 86400:
+                raise ValueError("invalid congestion duration")
+            clean.update(timings=clean_timings, duration=duration)
+        elif "duration" in run:
+            duration = run["duration"]
+            if duration is not None and (type(duration) is not int or not 0 < duration <= 30 * 86400):
+                raise ValueError("invalid congestion duration")
+            clean["duration"] = duration
+        safe.append(clean)
         previous_end = end
     return safe
 
@@ -229,6 +262,38 @@ def invoke_helper(payload=None):
             breaks = route.get("breaks", [])
             if not isinstance(breaks, list) or any(type(v) is not int or not 1 <= v < len(path) for v in breaks):
                 raise ValueError("invalid route breaks")
+            road_links = route.get('roadLinks', [])
+            if not isinstance(road_links, list) or len(road_links) > 100000:
+                raise ValueError('invalid road links')
+            safe_road_links, previous_link_end = [], 0
+            break_set = set(breaks)
+            for link in road_links:
+                if not isinstance(link, dict):
+                    raise ValueError('invalid road link')
+                start, end, road = link.get('start'), link.get('end'), link.get('road')
+                if (type(start) is not int or type(end) is not int
+                        or not previous_link_end <= start < end < len(path)
+                        or not isinstance(road, str) or len(road) > 1024
+                        or any(index in break_set for index in range(start + 1, end + 1))):
+                    raise ValueError('invalid road link')
+                safe_link = {'start': start, 'end': end, 'road': road}
+                link_id = link.get('id')
+                if link_id is not None:
+                    if (not isinstance(link_id, str) or not 1 <= len(link_id) <= 20
+                            or not link_id.isascii() or not link_id.isdecimal()
+                            or str(int(link_id)) != link_id or int(link_id) >= 1 << 64):
+                        raise ValueError('invalid road link ID')
+                    safe_link['id'] = link_id
+                for field, minimum, maximum in (('roadProperty', -(1 << 31), (1 << 31) - 1),
+                                                 ('linkType', -(1 << 31), (1 << 31) - 1),
+                                                 ('roadClass', 0, 0xFFFFFFFF)):
+                    value = link.get(field)
+                    if value is not None:
+                        if type(value) is not int or not minimum <= value <= maximum:
+                            raise ValueError('invalid road attribute')
+                        safe_link[field] = value
+                safe_road_links.append(safe_link)
+                previous_link_end = end
             traffic_lights = route.get("trafficLights", [])
             traffic_light_count = route.get("trafficLightCount", 0)
             if (not isinstance(traffic_lights, list) or len(traffic_lights) > 10000
@@ -319,6 +384,7 @@ def invoke_helper(payload=None):
             clean["routes"].append({**summary, "id": index, "path": path, "steps": safe_steps, "breaks": breaks,
                                     "trafficLights": traffic_lights, "trafficLightCount": traffic_light_count,
                                     "trafficRuns": safe_traffic_runs,
+                                    "roadLinks": safe_road_links,
                                     "speedLimits": safe_speed_limits,
                                     "speedCameras": safe_speed_cameras,
                                     "distance": length, "labels": labels[:10]})
@@ -468,6 +534,45 @@ def add_amap_app_route(app):
             return json_ok(invoke_helper())
         except (OSError, ValueError, subprocess.SubprocessError):
             return json_ok({"state": "unavailable", "navigationAvailable": False})
+
+    @app.post('/api/amap-app/switch-road')
+    @login_check
+    def amap_app_switch_road():
+        if request.content_length and request.content_length > 4096:
+            return json_fail(message='请求内容过大'), 413
+        payload = request.get_json(silent=True)
+        try:
+            if not isinstance(payload, dict): raise ValueError('请求格式不正确')
+            index, link_id, link_start = payload.get('routeIndex'), payload.get('linkId'), payload.get('linkStart')
+            if (type(index) is not int or not 0 <= index <= 9
+                    or type(link_start) is not int or not 0 <= link_start < 100000
+                    or not isinstance(link_id, str) or not re.fullmatch(r'0|[1-9][0-9]{0,19}', link_id)
+                    or int(link_id) >= 1 << 64):
+                raise ValueError('当前道路信息无效，请重新规划路线')
+            position = validate_point(payload.get('point'))
+            observation = {}
+            for field, maximum in (('accuracy', 20000), ('speed', 120), ('heading', 360)):
+                value = payload.get(field)
+                if value is not None:
+                    if (type(value) not in (int, float) or not math.isfinite(value)
+                            or not 0 <= value <= maximum or field == 'heading' and value == 360):
+                        raise ValueError('车辆定位信息无效')
+                    observation[field] = value
+            raw = load_route_session(payload.get('routeToken'))
+        except (ValueError, OSError) as exception:
+            return json_fail(message=str(exception) if isinstance(exception, ValueError)
+                             else '路线会话已过期，请重新规划路线'), 400
+        if not PROBE_LOCK.acquire(blocking=False):
+            return json_fail(message='正在校验路线，请稍后重试'), 429
+        try:
+            return json_ok(invoke_helper({'action': 'switch-road', 'rawRoute': raw, 'routeIndex': index,
+                'linkId': link_id, 'linkStart': link_start, 'point': position, **observation}))
+        except subprocess.TimeoutExpired:
+            return json_fail(message='道路切换请求超时，请稍后重试'), 504
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return json_fail(message='道路切换暂不可用'), 502
+        finally:
+            PROBE_LOCK.release()
 
     @app.post("/api/amap-app/route")
     @app.post("/api/amap-app/probe")

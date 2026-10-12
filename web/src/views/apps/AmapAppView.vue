@@ -3,8 +3,13 @@ import { navigationEngine, navigationEngineNotice } from '@/functions/navigation
 import { createRouteFusion, type FusionPosition } from './amapRouteFusion';
 import { navigationViewport } from './amapNavigationViewport';
 import { remainingRouteSections } from './amapRemainingRoute';
-import { remainingCongestionPath, type CongestionRun } from './amapRouteTraffic';
-import { findParallelRoute, type RoadKind } from './amapParallelRoad';
+import { remainingCongestionPath, upcomingCongestion, type CongestionRun } from './amapRouteTraffic';
+import AmapCongestionNotice from './AmapCongestionNotice.vue';
+import AmapRoutePreviewBubbles from './AmapRoutePreviewBubbles.vue';
+import { layoutRouteBubbles, previewRouteBounds, routePreviewColor, routePreviewSamples,
+  ROUTE_BUBBLE_WIDTH, ROUTE_BUBBLE_HEIGHT, type RouteBubblePlacement } from './amapRoutePreview';
+import { directRoadSwitchTargets, findParallelRoute, matchRoadLink, roadKindLabels, type RoadKind } from './amapParallelRoad';
+import { matchOverviewRoute, navigationRouteOptions, type NavigationRouteOption } from './amapNavigationOverview';
 import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
 import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
@@ -80,7 +85,7 @@ import 'leaflet/dist/leaflet.css';
 import { browserNavigationPoint } from '@/functions/navigationCoordinates';
 import { formatRemainingDuration, formatRouteDuration, formatRouteTolls, remainingRouteDuration } from './amapRouteSummary';
 import { createPositionTransition } from './amapPositionTransition';
-import { cumulative, upcomingInstructions, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
+import { cumulative, formatDistance, upcomingInstructions, matchPosition, meters, pointAt, type AppRoute, type Point } from './amapNavigation';
 import { createTrafficSignalReminder, greenWaveSpeedWindow, mergeTrafficSignalLights, recentTrafficSignalFix, trustedTrafficSignalFix, upcomingRouteTrafficLight, upcomingTrafficSignal, type LiveTrafficLight } from './amapTrafficSignals';
 import { cameraEventAhead, createSpeedLimitSectionEvents, createSpeedReminder, speedWarningLevel, upcomingSpeedLimit, upcomingSpeedSign, type SpeedLimitSection, type SpeedSignPoint } from './amapSpeedLimit';
 import { cameraAssetReady, cameraSign, mapSignUrl, mapSignsVisible, routeCameraSigns, trafficLightAssetReady, trafficLightSign, type MapSign, type TrafficLightColor } from './amapMapSigns';
@@ -153,21 +158,43 @@ function cycleViewMode() {
 }
 async function overview() {
   if (!viewActive.value) return;
+  const entering = !overviewActive.value;
   overviewActive.value = true;
   following.value = false;
+  if (entering && mode.value !== 'idle') {
+    navigationOptions.value = navigationRouteOptions(routes.value, selected.value, routeToken.value, progress.value);
+    void refreshOverviewRoutes();
+  }
   applyOrientation();
+  draw(false);
+  await fitOverview();
+}
+async function fitOverview() {
   const id = ++overviewGeneration;
   await nextTick();
   if (disposed || id !== overviewGeneration || !overviewActive.value || !map || !current.value) return;
-  const bounds = L.latLngBounds([...current.value.path, origin.value, destination.value].map(latLng));
+  const corners = previewRouteBounds(previewRoutes.value,
+    [...(mode.value === 'idle' && hasOrigin.value ? [origin.value] : []), ...(hasDestination.value ? [destination.value] : [])]);
+  if (!corners) return;
+  const bounds = L.latLngBounds(corners.map(latLng));
   if (!bounds.isValid()) return;
-  const top = (topPanel.value?.offsetTop ?? 14) + (topPanel.value?.offsetHeight ?? 0) + 24;
-  const bottom = map.getSize().y - (footerPanel.value?.offsetTop ?? map.getSize().y) + 24;
-  map.fitBounds(bounds, { paddingTopLeft: [32, top], paddingBottomRight: [92, bottom], maxZoom: 17, animate: false });
+  const area = routePreviewArea();
+  if (area.bottom <= area.top || area.right <= area.left) { scheduleRouteBubbles(); return; }
+  const bubbleX = ROUTE_BUBBLE_WIDTH / 2;
+  const bubbleY = Math.min(ROUTE_BUBBLE_HEIGHT / 2, Math.max(0, (area.bottom - area.top - 70) / 2));
+  map.fitBounds(bounds, { paddingTopLeft: [32 + bubbleX, area.top + bubbleY],
+    paddingBottomRight: [92 + bubbleX, map.getSize().y - area.bottom + bubbleY], maxZoom: 17, animate: false });
+  scheduleRouteBubbles();
 }
 function followLocation() {
+  const wasOverview = overviewActive.value;
   overviewActive.value = false; overviewGeneration++;
+  cancelOverviewRefresh();
   following.value = true;
+  if (wasOverview && mode.value !== 'idle') {
+    navigationOptions.value = []; overviewUpdatedAt.value = 0; overviewError.value = '';
+    draw(false);
+  }
   if (heading.value === undefined && current.value) {
     const ahead = pointAt(current.value, progress.value + 25);
     heading.value = bearingBetween(pointAt(current.value, progress.value), ahead);
@@ -181,6 +208,111 @@ function followLocation() {
   if (location.value) animatePosition(location.value, true);
 }
 const routes = ref<AppRoute[]>([]), selected = ref(0), busy = ref(false), error = ref(''), mapReady = ref(false);
+const searchCollapsed = ref(false);
+const navigationOptions = ref<NavigationRouteOption[]>([]);
+const overviewRefreshing = ref(false), overviewError = ref(''), overviewUpdatedAt = ref(0);
+let overviewRequest = 0, overviewAbort: AbortController | undefined;
+const navigationOverview = computed(() => mode.value !== 'idle' && overviewActive.value);
+const previewRoutes = computed(() => navigationOverview.value ? navigationOptions.value.map(option => option.preview) : routes.value);
+const previewSelected = computed(() => navigationOverview.value ? 0 : selected.value);
+const previewPaths = computed(() => previewRoutes.value.map(routePreviewSamples));
+const showRouteBubbles = computed(() => viewActive.value && mapReady.value && (mode.value === 'idle' || navigationOverview.value)
+  && !show3D.value && previewRoutes.value.length > 0);
+const overviewUpdatedLabel = computed(() => overviewUpdatedAt.value
+  ? new Date(overviewUpdatedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '');
+function cancelOverviewRefresh() {
+  overviewRequest++; overviewAbort?.abort(); overviewAbort = undefined;
+  overviewRefreshing.value = false;
+}
+async function refreshOverviewRoutes() {
+  if (!viewActive.value || !navigationOverview.value || !current.value || busy.value || overviewRefreshing.value) return;
+  if (!location.value) { overviewError.value = '等待车辆位置后才能刷新备选路线'; return; }
+  const active = current.value, token = routeToken.value, activeIndex = selected.value;
+  const point = location.value, destinationPoint = destination.value;
+  cancelOverviewRefresh();
+  const request = overviewRequest;
+  overviewAbort = new AbortController(); overviewRefreshing.value = true; overviewError.value = '';
+  try {
+    const response = await axios.post('/api/amap-app/route', { origin: point, destination: destinationPoint },
+      { signal: overviewAbort.signal, timeout: 45000 });
+    if (disposed || request !== overviewRequest || !navigationOverview.value || current.value !== active
+      || routeToken.value !== token || selected.value !== activeIndex) return;
+    if (response.data.status === 'need_login') { tmcLoginVisible.value = true; throw new Error('请登录 TMC 后刷新路线'); }
+    const data = response.data?.data;
+    if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length || !data.routeToken)
+      throw new Error(response.data.message || '备选路线暂时无法刷新，继续当前导航');
+    navigationOptions.value = navigationRouteOptions(routes.value, selected.value, token, progress.value, data.routes, data.routeToken);
+    overviewUpdatedAt.value = Date.now();
+    draw(false); await fitOverview();
+  } catch (exception) {
+    if (disposed || request !== overviewRequest) return;
+    overviewError.value = axios.isAxiosError(exception) ? exception.response?.data?.message || '刷新失败，请重试；当前导航继续运行' : (exception as Error).message;
+  } finally { if (request === overviewRequest) overviewRefreshing.value = false; }
+}
+async function choosePreviewRoute(index: number) {
+  if (!navigationOverview.value) { choose(index); return; }
+  const option = navigationOptions.value[index];
+  if (!option || busy.value) return;
+  if (option.current) { followLocation(); return; }
+  const point = location.value, route = option.routes[option.routeIndex];
+  const corrected = point && matchOverviewRoute(route, point, heading.value, liveSpeed.value);
+  if (!point || !corrected) {
+    overviewError.value = '车辆已驶离该方案的可切换路段，请刷新路线后再选择';
+    return;
+  }
+  await applyNavigationRoute(option, point, corrected,
+    mode.value === 'demo' ? '模拟导航 · 2 倍速 · 已切换路线' : '实时导航中 · 已切换路线');
+}
+async function applyNavigationRoute(option: Pick<NavigationRouteOption, 'routes' | 'routeIndex' | 'token'>,
+  point: Point, corrected: NonNullable<ReturnType<typeof matchOverviewRoute>>, message: string) {
+  cancelOverviewRefresh(); stopLocalSpeech(); cancelLocalSpeechPreload();
+  overviewActive.value = false; overviewGeneration++;
+  routes.value = option.routes; routeToken.value = option.token; selected.value = option.routeIndex;
+  origin.value = point; originName.value = '当前位置'; progress.value = corrected.progress;
+  guidanceProgress.value = undefined; location.value = corrected.point; arrived.value = false;
+  offCount = 0; spoken = ''; lastTurnVoiceAttemptKey = ''; announcedServiceAreas.clear();
+  navigationOptions.value = []; overviewUpdatedAt.value = 0;
+  // Keep the existing GPS watch / simulation clock; native event requests use
+  // the original index within the newly selected session, not the card index.
+  await nextTick();
+  if (mode.value === 'idle' || routeToken.value !== option.token || selected.value !== option.routeIndex) return false;
+  followLocation(); draw(false);
+  if (mode.value === 'demo') updatePosition(corrected.point, 0, heading.value, (liveSpeed.value ?? 0) / 3.6, true);
+  else {
+    navigationFixValid.value = true;
+    if (marker && !map.hasLayer(marker)) marker.addTo(map);
+    // Seed fusion only from a recent actual GPS fix. Never turn an estimate
+    // into a precise fix just because the user selected another route.
+    const fix = geoLocation.getCurPosition();
+    if (routeFusion && fix?.source === 'gps' && Date.now() - fix.timestamp < 5000) {
+      renderFusion(routeFusion.accept({ point: browserNavigationPoint(fix.longitude, fix.latitude), accuracy: fix.accuracy,
+        speed: fix.speed, heading: fix.heading, timestamp: fix.timestamp }, performance.now()));
+    }
+  }
+  status.value = message;
+  return true;
+}
+const routeBubbles = ref<RouteBubblePlacement[]>([]);
+let routeBubbleFrame: number | undefined;
+function routePreviewArea() {
+  const size = map.getSize();
+  const notice = footerPanel.value?.querySelector<HTMLElement>('.map-notice');
+  return { left: 14, right: size.x - 72,
+    top: (topPanel.value?.offsetTop ?? 14) + (topPanel.value?.offsetHeight ?? 0) + 18,
+    bottom: (footerPanel.value?.offsetTop ?? size.y) - (notice ? notice.offsetHeight + 8 : 0) - 18 };
+}
+function scheduleRouteBubbles() {
+  if (!showRouteBubbles.value || !map) { routeBubbles.value = []; return; }
+  if (routeBubbleFrame !== undefined) return;
+  routeBubbleFrame = requestAnimationFrame(() => {
+    routeBubbleFrame = undefined;
+    if (disposed || !showRouteBubbles.value || !map) { routeBubbles.value = []; return; }
+    routeBubbles.value = layoutRouteBubbles(previewPaths.value.map(path => path.map(point => {
+      const pixel = map.latLngToContainerPoint(latLng(point));
+      return { x: pixel.x, y: pixel.y };
+    })), routePreviewArea());
+  });
+}
 const routeToken = ref('');
 const liveLights = ref<LiveTrafficLight[]>([]), liveUpdatedAt = ref(0), signalClock = ref(Date.now());
 const signalFixTrusted = ref(false), signalFixAt = ref(0);
@@ -423,9 +555,17 @@ function navigationRunning() { return mode.value !== 'idle'; }
 const navigationFixValid = ref(false);
 watch(following, value => appMap?.setFollowing(value), { flush: 'sync' });
 const status = ref('点击地图选择终点；先定位可使用当前位置作为起点'), location = ref<Point>(), arrived = ref(false);
-const roadSwitchOpen = ref(false);
 const lastGpsPoint = ref<Point>();
 const current = computed(() => routes.value[selected.value]);
+const roadSwitchTargets = computed(() => {
+  const point = location.value || lastGpsPoint.value;
+  return mode.value === 'live' && !overviewActive.value && current.value && point
+    ? directRoadSwitchTargets(current.value, point, routes.value, progress.value) : [];
+});
+const roadSwitchIcons: Record<RoadKind, string> = {
+  main: 'ic-lane-o-b.svg', side: 'ic-siderode-o-b.svg', ground: 'ic-bridgedown-o-b.svg',
+  elevated: 'ic-bridgeup-o-b.svg', tunnel: 'ic-bridgedown-o-b.svg',
+};
 const visibleLane = computed(() => mode.value !== 'idle' && !overviewActive.value
   ? upcomingLaneGuide(current.value?.laneGuides, progress.value) : undefined);
 const speedLimitSection = ref<SpeedLimitSection>();
@@ -506,6 +646,8 @@ watch([mode, routeToken, selected], () => {
 });
 const congestionRuns = computed(() => current.value && trafficEnabled.value ? current.value.trafficRuns || [] : []);
 const navigationCongestionRuns = computed(() => congestionRuns.value);
+const congestionNotice = computed(() => mode.value !== 'idle' && !overviewActive.value
+  ? upcomingCongestion(congestionRuns.value, progress.value) : undefined);
 const trafficUpdatedLabel = computed(() => trafficUpdatedAt.value
   ? new Date(trafficUpdatedAt.value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '规划时');
 watch(trafficEnabled, () => draw(false));
@@ -616,12 +758,20 @@ function routeLineStates(route: AppRoute, distance: number): LineState[] {
   return states;
 }
 const latLng = (p: Point): L.LatLngTuple => [p[1], p[0]];
+watch([showRouteBubbles, previewPaths], scheduleRouteBubbles, { flush: 'post' });
+watch(previewRoutes, () => { routeBubbles.value = []; }, { flush: 'sync' });
+watch([routeToken, selected], () => {
+  cancelOverviewRefresh(); navigationOptions.value = []; overviewUpdatedAt.value = 0; overviewError.value = '';
+  if (navigationOverview.value) {
+    navigationOptions.value = navigationRouteOptions(routes.value, selected.value, routeToken.value, progress.value);
+    void nextTick().then(refreshOverviewRoutes);
+  }
+});
 let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
 let simulation: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '', lastTurnVoiceAttemptAt = 0, lastTurnVoiceAttemptKey = '';
 const announcedServiceAreas = new Set<string>();
-const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 function speak(text: string, maxDelayMs = 15000, isRelevant?: () => boolean): Promise<boolean> {
   if (muted.value) return Promise.resolve(false);
   navigationVoiceRequests++;
@@ -667,33 +817,56 @@ function endNavigation() { finishNavigationFollow('导航已结束，继续跟�
 
 async function switchParallelRoad(target: RoadKind) {
   if (mode.value !== 'live' || busy.value || !current.value || !lastGpsPoint.value) return;
-  const previous = current.value, point = lastGpsPoint.value;
+  const previous = current.value, point = location.value || lastGpsPoint.value;
   const id = ++generation;
   controller?.abort(); controller = new AbortController();
   busy.value = true; error.value = '';
-  status.value = '正在查找相邻道路…';
+  status.value = `正在查找附近的${roadKindLabels[target]}路线…`;
   try {
-    const response = await axios.post('/api/amap-app/route', { origin: point, destination: destination.value },
+    // Apply an already planned, distinguishable candidate before requesting
+    // another route. Ordinary coordinate-only replanning can snap back to the
+    // old road; it must not overwrite a manual correction's native session.
+    const knownIndex = findParallelRoute(routes.value, previous, point, target, progress.value);
+    if (knownIndex >= 0 && routeToken.value) {
+      const corrected = matchPosition(routes.value[knownIndex], point, 0, true);
+      const applied = await applyNavigationRoute({ routes: routes.value, routeIndex: knownIndex, token: routeToken.value },
+        point, corrected, `已切换至${roadKindLabels[target]}，后续导航已更新`);
+      if (applied) void speak(`已切换至${roadKindLabels[target]}`);
+      return;
+    }
+    const source = matchRoadLink(previous, point, progress.value).link;
+    const fix = geoLocation.getCurPosition();
+    // Wenyi West Tunnel's live controls return a valid surface link 6–21 m
+    // away, while coordinate-based startAvoidLink returns StartNoRoad. For a
+    // native-classified layer switch, request the full 5.1 candidates and let
+    // findParallelRoute confirm target type, distinct ID, distance and heading.
+    // Main/side correction retains the native old-link exclusion request.
+    const nativeLevelCorrection = (target === 'ground' || target === 'tunnel' || target === 'elevated')
+      && [0, 2, 3, 4].includes(source?.linkType ?? -1);
+    const constrained = !nativeLevelCorrection && !!source?.id && !!routeToken.value;
+    const response = await axios.post(constrained ? '/api/amap-app/switch-road' : '/api/amap-app/route',
+      constrained ? { routeToken: routeToken.value, routeIndex: selected.value, linkId: source!.id, linkStart: source!.start,
+        point, accuracy: fix?.accuracy ?? null, speed: liveSpeed.value === null ? null : liveSpeed.value / 3.6,
+        heading: heading.value ?? null } : { origin: point, destination: destination.value },
       { signal: controller.signal, timeout: 45000 });
     if (disposed || id !== generation || mode.value !== 'live') return;
     const data = response.data.data;
-    if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length)
-      throw new Error(response.data.message || '暂时无法重新规划路线');
-    const index = findParallelRoute(data.routes, previous, point, target);
-    if (index < 0) {
-      status.value = '附近没有可确认的对应道路，继续当前路线';
+    if (response.data.status === 'ok' && data?.state === 'absent') {
+      status.value = `附近没有可确认的${roadKindLabels[target]}路线，继续当前导航`;
       return;
     }
-    routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = index;
-    const corrected = matchPosition(data.routes[index], point, 0, true);
-    progress.value = corrected.progress;
-    location.value = corrected.point;
-    origin.value = point; originName.value = '当前位置';
-    offCount = 0; spoken = ''; announcedServiceAreas.clear();
-    roadSwitchOpen.value = false;
-    draw(false); followLocation();
-    status.value = '已切换道路，路线已重新规划';
-    speak('已为您重新规划路线');
+    if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length || !data.routeToken)
+      throw new Error(response.data.message || '暂时无法重新规划路线');
+    const latestPoint = location.value || lastGpsPoint.value || point;
+    const index = findParallelRoute(data.routes, previous, latestPoint, target, progress.value);
+    if (index < 0) {
+      status.value = `附近没有可确认的${roadKindLabels[target]}路线，继续当前导航`;
+      return;
+    }
+    const corrected = matchPosition(data.routes[index], latestPoint, 0, true);
+    const applied = await applyNavigationRoute({ routes: data.routes, routeIndex: index, token: data.routeToken },
+      latestPoint, corrected, `已切换至${roadKindLabels[target]}，路线已重新规划`);
+    if (applied) void speak('已为您重新规划路线');
   } catch (exception) {
     if (disposed || id !== generation) return;
     status.value = '道路切换失败，继续当前路线';
@@ -709,6 +882,7 @@ watchEffect(() => {
   }, { stop: endNavigation, toggleVoice });
 });
 onDeactivated(() => {
+  cancelOverviewRefresh();
   cancelPositionAnimation();
   viewActive.value = false; appMap?.setActive(false); appMap?.releaseMemory(); cancelSearch();
   if (mode.value === 'idle') { resumeLocationOnActivate = trackingLocation; stop(); }
@@ -717,7 +891,7 @@ watch(show3D, enabled => {
   // The 3D ground has its own decoded-tile warm-up. Keep the hidden 2D layer
   // idle so both renderers do not compete for the single map helper.
   appMap?.setActive(!enabled && viewActive.value);
-  appMap?.setRoute(enabled ? undefined : current.value, progress.value);
+  appMap?.setRoute(enabled || navigationOverview.value ? undefined : current.value, progress.value);
 });
 onActivated(async () => {
   viewActive.value = true;
@@ -728,6 +902,7 @@ onActivated(async () => {
   map.invalidateSize({ pan: false }); appMap?.setActive(!show3D.value); endpoints(); draw(false);
   if (location.value) animatePosition(location.value, true);
   applyOrientation();
+  if (navigationOverview.value) void refreshOverviewRoutes();
   if (resumeLocationOnActivate) { resumeLocationOnActivate = false; locate(false, true); }
 });
 
@@ -740,7 +915,7 @@ function endpoints() {
   }
   startMarker?.remove(); endMarker?.remove();
   const pin = (text: string, color: string) => L.divIcon({ className: '', html: `<span style="display:block;background:${color};color:white;border:2px solid white;border-radius:50%;width:26px;height:26px;text-align:center;line-height:23px;font-size:12px">${text}</span>`, iconSize: [26,26], iconAnchor: [13,13] });
-  if (hasOrigin.value && hasDestination.value) startMarker = L.marker(latLng(origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
+  if (hasOrigin.value && hasDestination.value) startMarker = L.marker(latLng(navigationOverview.value ? location.value || origin.value : origin.value), { icon: pin('起', '#0ca87f') }).addTo(map);
   if (hasDestination.value) endMarker = L.marker(latLng(destination.value), { icon: pin('终', '#f38159') }).addTo(map);
 }
 function mapSignIcon(sign: MapSign) {
@@ -798,17 +973,26 @@ function draw(fit = true) {
   lines.forEach(line => line.remove()); lines = [];
   congestionLines.forEach(({ line }) => line.remove()); congestionLines = [];
   lineStates = [];
-  routes.value.forEach((route, index) => {
-    if (mode.value !== 'idle' && index !== selected.value) return;
-    const sections = remainingRouteSections(route, mode.value === 'idle' ? 0 : progress.value);
-    if (mode.value !== 'idle') lineStates = routeLineStates(route, progress.value);
+  // Keep the selected route above shared sections of the alternatives.
+  const drawingRoutes = navigationOverview.value ? previewRoutes.value : routes.value;
+  const drawingSelected = navigationOverview.value ? previewSelected.value : selected.value;
+  const drawingOrder = drawingRoutes.map((route, index) => ({ route, index }))
+    .sort((a, b) => Number(a.index === drawingSelected) - Number(b.index === drawingSelected));
+  drawingOrder.forEach(({ route, index }) => {
+    if (mode.value !== 'idle' && !navigationOverview.value && index !== selected.value) return;
+    const sections = remainingRouteSections(route, mode.value === 'idle' || navigationOverview.value ? 0 : progress.value);
+    if (mode.value !== 'idle' && !navigationOverview.value) lineStates = routeLineStates(route, progress.value);
     for (const path of sections) {
-      lines.push(L.polyline(path.map(latLng), { color: index === selected.value ? mode.value === 'idle' ? '#12bc87' : '#1688ef' : '#8aa1b3', weight: index === selected.value ? 8 : 5,
-        opacity: index === selected.value ? 1 : .55, lineJoin: 'round', lineCap: 'round' }).addTo(map));
+      const selectable = mode.value === 'idle' || navigationOverview.value;
+      const line = L.polyline(path.map(latLng), { color: selectable ? routePreviewColor(index, drawingSelected, navigationOverview.value) : '#1688ef', weight: index === drawingSelected ? 8 : 5,
+        opacity: index === drawingSelected ? 1 : .8, lineJoin: 'round', lineCap: 'round',
+        interactive: selectable, bubblingMouseEvents: false }).addTo(map);
+      if (selectable) line.on('click', () => void choosePreviewRoute(index));
+      lines.push(line);
     }
   });
   drawMapSigns();
-  for (const run of congestionRuns.value) {
+  for (const run of navigationOverview.value ? [] : congestionRuns.value) {
     const path = remainingCongestionPath(run, mode.value === 'idle' ? 0 : progress.value);
     const line = L.polyline(path.map(latLng), { color: run.status === 4 ? '#923d6d' : run.status === 3 ? '#e44650' : '#f5a623', weight: 8,
       opacity: 1, lineJoin: 'round', lineCap: 'round', interactive: false }).addTo(map);
@@ -816,11 +1000,12 @@ function draw(fit = true) {
   }
   renderedLineProgress = progress.value;
   endpoints();
-  appMap?.setRoute(show3D.value ? undefined : current.value, progress.value);
+  appMap?.setRoute(show3D.value || navigationOverview.value ? undefined : current.value, progress.value);
   if (fit && lines.length) void overview();
+  else scheduleRouteBubbles();
 }
 function trimDrivenRoute() {
-  if (mode.value === 'idle' || !current.value || Math.abs(progress.value - renderedLineProgress) < 8) return;
+  if (mode.value === 'idle' || navigationOverview.value || !current.value || Math.abs(progress.value - renderedLineProgress) < 8) return;
   const sections = remainingRouteSections(current.value, progress.value);
   if (sections.length !== lines.length) { draw(false); return; }
   const states = routeLineStates(current.value, progress.value);
@@ -837,7 +1022,7 @@ function trimDrivenRoute() {
   renderedLineProgress = progress.value;
 }
 function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; announcedServiceAreas.clear(); draw(); }
-function clearRoute() { overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; routeToken.value = ''; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
+function clearRoute() { searchCollapsed.value = false; overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; routeToken.value = ''; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
 function setPoint(point: Point, name: string) {
   cancelSearch();
   clearRoute();
@@ -900,6 +1085,7 @@ async function plan(replan = false) {
     const data = response.data.data;
     if (response.data.status !== 'ok' || data?.state !== 'ready' || !data.routes?.length) throw new Error(response.data.message || '这条路线暂未成功解析，请更换地点或重试');
     routes.value = data.routes; routeToken.value = data.routeToken || ''; selected.value = 0; progress.value = 0; offCount = 0; spoken = '';
+    if (!replan) { searchCollapsed.value = true; pointMenuOpen.value = false; cancelSearch(); }
     announcedServiceAreas.clear(); draw(!replan);
     status.value = replan ? '路线已重新规划' : '路线已就绪，选择方案后开始导航';
     if (replan) speak('已为您重新规划路线');
@@ -959,7 +1145,7 @@ function updatePosition(point: Point, accuracy = 0, gpsHeading?: number | null, 
   if (event) applySpeedLimitEvent(event);
   applySpeedCameraEvent(cameraEventAhead(current.value.speedCameras, progress.value));
   trimDrivenRoute();
-  appMap?.setRoute(current.value, progress.value);
+  if (!navigationOverview.value) appMap?.setRoute(current.value, progress.value);
   if (recovered) spoken = '';
   status.value = mode.value === 'demo' ? '模拟导航 · 2 倍速 · 非车辆实时位置'
     : '实时导航中 · 车机定位';
@@ -1038,6 +1224,7 @@ watch(current, () => {
 let trackingLocation = false, resumeLocationOnActivate = false;
 watch(navigationEngine, () => startFusion());
 function stop(keepLocation = false) {
+  cancelOverviewRefresh(); navigationOptions.value = []; overviewUpdatedAt.value = 0; overviewError.value = '';
   routeTrafficRequest++;
   if (routeTrafficTimer) clearInterval(routeTrafficTimer);
   routeTrafficTimer = undefined;
@@ -1053,7 +1240,6 @@ function stop(keepLocation = false) {
   speedSigns.value = [];
   stopSignals();
   stopFusion();
-  roadSwitchOpen.value = false;
   announcedServiceAreas.clear();
   cancelLocalSpeechPreload();
   if (!keepLocation) {
@@ -1189,13 +1375,16 @@ function locate(navigate = false, preserveRoute = false, planOnFix = false) {
   geoLocation.refresh();
 }
 function pauseMapFollowing() {
-  following.value = false; overviewActive.value = false; overviewGeneration++;
+  following.value = false;
+  if (!routes.value.length) overviewActive.value = false;
+  overviewGeneration++;
 }
 function move3DMapCenter(point: Point) {
   if (map && !following.value) map.setView(latLng(point), map.getZoom(), { animate: false });
 }
 function zoomMap(steps: number) {
-  overviewActive.value = false; overviewGeneration++;
+  if (!routes.value.length) overviewActive.value = false;
+  overviewGeneration++;
   if (show3D.value) map3D.value?.zoomBy(steps);
   else { following.value = false; if (steps > 0) map?.zoomIn(); else map?.zoomOut(); }
 }
@@ -1210,6 +1399,8 @@ onMounted(() => {
   mapElement.value.addEventListener('touchstart', beginMapTouch, { passive: true, capture: true });
   map = L.map(mapElement.value, { rotate: true, rotateControl: false, touchRotate: true, shiftKeyRotate: false, zoomControl: false, attributionControl: true, minZoom: 3, maxZoom: 18, zoomSnap: .25 }).setView([20, 0], 3);
   map.on('move zoom', () => { const center=map.getCenter(); mapCenter.value=[center.lng,center.lat]; mapZoom.value=map.getZoom(); });
+  map.on('movestart zoomstart', () => { routeBubbles.value = []; });
+  map.on('moveend zoomend', scheduleRouteBubbles);
   map.attributionControl.addAttribution('© 高德地图 · App 矢量地图');
 
   map.on('click', event => { if (mode.value === 'idle' && !busy.value) setPoint([event.latlng.lng, event.latlng.lat], '地图选点'); });
@@ -1217,19 +1408,25 @@ onMounted(() => {
   resizeObserver = new ResizeObserver(() => {
     if (!viewActive.value) return;
     map.invalidateSize({ pan: false });
-    if (overviewActive.value) void overview();
+    if (overviewActive.value) void fitOverview();
     else if (following.value && displayedPosition.value) followPosition(displayedPosition.value, performance.now());
   });
   resizeObserver.observe(mapElement.value);
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
+  if (topPanel.value) resizeObserver.observe(topPanel.value);
   mapReady.value = true; endpoints(); locate(false);
 });
-onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMenuOnOutsideClick); clearJunctionRetry(); cancelPositionAnimation(); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+watch(topPanel, (panel, previous) => {
+  if (previous) resizeObserver?.unobserve(previous);
+  if (panel) resizeObserver?.observe(panel);
+}, { flush: 'post' });
+onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMenuOnOutsideClick); clearJunctionRetry(); cancelPositionAnimation(); if (routeBubbleFrame !== undefined) cancelAnimationFrame(routeBubbleFrame); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
   <section class="navigation-app" :class="{ 'map-day': mapAppearance.theme === 'day' }">
     <div ref="mapElement" class="navigation-map" aria-label="高德导航地图"></div>
+    <AmapRoutePreviewBubbles v-if="showRouteBubbles" :routes="previewRoutes" :placements="routeBubbles" :selected="previewSelected" :navigating="navigationOverview" @select="choosePreviewRoute" />
     <AmapNavigation3D v-if="show3D && viewActive" ref="map3D" :center="mapCenter" :position="mode === 'live' && !navigationFixValid ? undefined : displayedPosition || location" :heading="displayedHeading" :bearing="orientation === 'heading' ? displayedHeading : 0" :zoom="mapZoom" :route="current" :progress="progress" :traffic-runs="navigationCongestionRuns" :cameras="current?.speedCameras" :signal="upcomingSignal" :navigating="mode !== 'idle'" :following="following" :heading-up="mode !== 'idle' && orientation === 'heading'" :theme="mapAppearance.theme" @status="updateMapStatus($event, '3d')" @failed="fail3D" @pick="mode === 'idle' && !busy && setPoint($event, '地图选点')" @interaction="pauseMapFollowing" @viewcenter="move3DMapCenter" />
     <div v-if="severeOverSpeed" class="overspeed-halo" aria-hidden="true">
       <span class="overspeed-halo-side overspeed-halo-left"></span>
@@ -1241,7 +1438,12 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
     </div>
     <TmcLoginDialog :open="tmcLoginVisible && viewActive" @close="tmcLoginVisible = false" @logged-in="resumeAfterTmcLogin" />
     <div v-if="!mapReady"  class="map-loading">{{ error || '正在加载地图…' }}</div>
-    <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass" aria-label="路线搜索">
+    <header ref="topPanel" v-if="mode === 'idle'" class="route-search glass" :class="{ 'route-search-collapsed': searchCollapsed && routes.length }" aria-label="路线搜索">
+      <button v-if="searchCollapsed && routes.length" type="button" class="route-search-summary" aria-label="展开地点搜索" :aria-expanded="false" @click="searchCollapsed = false">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>
+        <span :title="destinationName">{{ destinationName }}</span><small>修改</small><span class="search-summary-chevron" aria-hidden="true"></span>
+      </button>
+      <template v-else>
       <div class="search-line"><div ref="pointPicker" class="point-picker" @keydown.esc="pointMenuOpen = false">
           <button type="button" class="point-picker-trigger" aria-label="选择起点或终点" :aria-expanded="pointMenuOpen" @click="pointMenuOpen = !pointMenuOpen">
             <span class="point-picker-dot" :class="picking"></span>{{ picking === 'destination' ? '终点' : '起点' }}<span class="point-picker-chevron" :class="{ open: pointMenuOpen }" aria-hidden="true"></span>
@@ -1252,7 +1454,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
           </div>
         </div>
         <input v-model="query" :aria-label="picking === 'destination' ? '搜索目的地' : '搜索起点'" placeholder="搜索地点、地址，或输入经纬度" maxlength="100" @keydown.enter="!$event.isComposing && search()" />
-        <button :disabled="!mapReady || busy || searching || !query.trim()" @click="search">{{ searching ? '搜索中' : '搜索' }}</button><button :disabled="!mapReady || busy" @click="locate(false)">定位</button></div>
+        <button :disabled="!mapReady || busy || searching || !query.trim()" @click="search">{{ searching ? '搜索中' : '搜索' }}</button><button :disabled="!mapReady || busy" @click="locate(false)">定位</button><button v-if="routes.length" type="button" class="route-search-fold" aria-label="折叠地点搜索" @click="searchCollapsed = true">收起</button></div>
       <p v-if="searchMessage" class="search-message" role="status">{{ searchMessage }}</p>
       <p v-if="favoriteLoading && !favoriteReady" class="favorite-status" role="status">正在加载收藏地点…</p>
       <div v-if="favoriteMessage" class="favorite-status" role="status"><span>{{ favoriteMessage }}</span><button type="button" :disabled="favoriteLoading || favoriteSaving" @click="refreshFavoritePlaces">重试</button></div>
@@ -1279,9 +1481,12 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
           <button type="button" class="favorite-toggle" :class="{ saved: favoriteIds.has(tip.id) }" :disabled="favoriteLoading || favoriteSaving || !favoriteReady" :aria-label="`${favoriteIds.has(tip.id) ? '取消收藏' : '收藏'} ${tip.name}`" :title="`${favoriteIds.has(tip.id) ? '取消收藏' : '收藏'} ${tip.name}`" :aria-pressed="favoriteIds.has(tip.id)" @click="togglePlaceFavorite(tip)">{{ favoriteIds.has(tip.id) ? '★' : '☆' }}</button>
         </div></div>
       </section>
+      </template>
     </header>
     <div v-else ref="topPanel" class="navigation-guidance">
-      <div v-if="next" class="turn-card glass" :class="{ 'has-junction': visibleJunction, 'has-lanes': visibleLane }" aria-live="polite">
+      <div v-if="navigationOverview" class="navigation-overview-heading glass"><button @click="followLocation">‹ 返回导航</button><strong>路线全览</strong><small>蓝色为当前路线</small></div>
+      <div v-else-if="next" class="turn-card glass" :class="{ 'has-junction': visibleJunction, 'has-lanes': visibleLane }" aria-live="polite"
+        role="button" tabindex="0" aria-label="查看路线全览并刷新备选路线" @click="overview" @keydown.enter.prevent="overview" @keydown.space.prevent="overview">
         <div class="turn-summary"><NavigationTurnIcon class="turn-arrow" :arrow="next.arrow" /><div><small>{{ mode === 'demo' ? '模拟导航' : '实时导航' }}</small><h2>{{ formatDistance(next.distance) }}后{{ next.text }}</h2><p>{{ next.road }}</p></div></div>
         <AmapLaneGuide v-if="visibleLane" :guide="visibleLane" />
         <AmapJunctionPreview v-if="visibleJunction" :road-jpeg="visibleJunction.roadJpeg" :arrow-png="visibleJunction.arrowPng" :width="visibleJunction.width" :height="visibleJunction.height" />
@@ -1290,18 +1495,21 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
           <span class="following-turn-text"><small>{{ afterNext.distance < 10 ? '紧接着' : '随后' }}</small>{{ afterNext.distance < 10 ? '' : `${formatDistance(afterNext.distance)}后` }}{{ afterNext.text }}</span>
         </div>
       </div>
-      <div v-if="!overviewActive && (upcomingSignal || nextRouteLight)" class="signal-card glass" role="status">
-        <span class="signal-icon" :class="upcomingSignal?.color" aria-hidden="true"><span class="signal-lamp red"></span><span class="signal-lamp yellow"></span><span class="signal-lamp green"></span></span><div><strong>{{ upcomingSignal ? `${signalLabel} ${upcomingSignal.seconds} 秒${signalAwaitingUpdate ? ' · 待更新' : ''}` : '前方红绿灯' }}</strong><small>前方 {{ Math.round(upcomingSignal?.distance ?? nextRouteLight!.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
+      <div v-if="!overviewActive && (upcomingSignal || nextRouteLight || congestionNotice)" class="navigation-road-info">
+        <div v-if="upcomingSignal || nextRouteLight" class="signal-card glass" role="status">
+          <span class="signal-icon" :class="upcomingSignal?.color" aria-hidden="true"><span class="signal-lamp red"></span><span class="signal-lamp yellow"></span><span class="signal-lamp green"></span></span><div><strong>{{ upcomingSignal ? `${signalLabel} ${upcomingSignal.seconds} 秒${signalAwaitingUpdate ? ' · 待更新' : ''}` : '前方红绿灯' }}</strong><small>前方 {{ Math.round(upcomingSignal?.distance ?? nextRouteLight!.distance) }} 米</small><small v-if="greenWave" class="green-wave">{{ greenWave.atCurrentSpeed ? '按当前车速预计绿灯通过' : `绿波参考 ${greenWave.min}–${greenWave.max} km/h` }} · 遵守道路限速</small></div>
+        </div>
+        <AmapCongestionNotice v-if="congestionNotice" :notice="congestionNotice" />
       </div>
     </div>
-    <div v-if="mode !== 'idle' && (liveSpeed !== null || speedLimit !== undefined || speedCamera || nextSpeedSign || nextSpeedLimit)" class="speed-badges" :aria-label="speedLimit === undefined ? '当前车速' : '当前车速与道路限速'">
+    <div v-if="mode !== 'idle' && !overviewActive && (liveSpeed !== null || speedLimit !== undefined || speedCamera || nextSpeedSign || nextSpeedLimit)" class="speed-badges" :aria-label="speedLimit === undefined ? '当前车速' : '当前车速与道路限速'">
       <div v-if="liveSpeed !== null" class="speed-current" :class="{ 'speed-over': overSpeed, 'speed-severe': severeOverSpeed }" :aria-label="severeOverSpeed ? `严重超速，当前 ${Math.round(liveSpeed)} 公里每小时` : undefined"><strong>{{ Math.round(liveSpeed) }}</strong><small>{{ mode === 'demo' ? '模拟 km/h' : speedEstimated ? '估 km/h' : 'km/h' }}</small></div>
       <div v-if="speedLimit !== undefined" class="speed-road"><strong>{{ speedLimit }}</strong><small>限速</small></div>
       <div v-if="speedCamera" class="speed-ahead glass">前方{{ speedCamera.type === 25 || speedCamera.type === 26 ? '区间测速' : '测速' }} {{ formatDistance(speedCamera.distance) }} <b>{{ speedCamera.limit }}</b> km/h</div>
       <div v-else-if="nextSpeedSign" class="speed-ahead glass">前方限速标志 {{ formatDistance(nextSpeedSign.distance) }} <b>{{ nextSpeedSign.sign.limit }}</b> km/h</div>
       <div v-else-if="nextSpeedLimit" class="speed-ahead glass">前方 {{ formatDistance(nextSpeedLimit.distance) }} <b>{{ nextSpeedLimit.section.limit }}</b> km/h</div>
     </div>
-    <aside v-if="mode !== 'idle' && serviceAreas.length" class="service-area-card glass" aria-label="前方服务区">
+    <aside v-if="mode !== 'idle' && !overviewActive && serviceAreas.length" class="service-area-card glass" aria-label="前方服务区">
       <strong>前方服务区</strong>
       <div v-for="area in serviceAreas" :key="area.key" class="service-area-item"><span>{{ area.name }}</span><b>{{ serviceAreaDistance(area) }}</b></div>
       <small>位置按路线区间估算，请留意道路标志</small>
@@ -1316,6 +1524,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
           <template v-else><circle cx="12" cy="12" r="9"/><path d="M9 16V8l6 8V8"/></template>
         </svg>
       </button>
+      <button v-for="target in roadSwitchTargets" :key="target" class="road-switch-direct" :disabled="busy || !lastGpsPoint" :aria-label="`切换至${roadKindLabels[target]}`" :title="`切换至${roadKindLabels[target]}`" @click="layerMenu = false; switchParallelRoad(target)"><img :src="`/amap/road-switch/${roadSwitchIcons[target]}`" alt="" width="26" height="26"/><span>{{ roadKindLabels[target] }}</span></button>
       <button aria-label="放大" @click="zoomMap(1)">＋</button>
       <button aria-label="缩小" @click="zoomMap(-1)">−</button>
     </div>
@@ -1339,25 +1548,35 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
         <div v-if="hasDestination" class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>
-        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><small v-if="route.trafficLightCount !== undefined" class="route-lights">红绿灯 {{ route.trafficLightCount }} 处</small><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small class="route-label">{{ route.labels.join(' · ') || `方案 ${index + 1}` }}</small></button></div>
+        <div v-if="routes.length" class="route-options"><button v-for="(route, index) in routes" :key="route.id" :class="{ selected: selected === index }" @click="choose(index)"><strong class="route-duration">{{ formatRouteDuration(route.duration) }}</strong><small v-if="route.trafficLightCount !== undefined" class="route-lights">红绿灯 {{ route.trafficLightCount }} 处</small><span class="route-cost">{{ formatDistance(route.distance) }} · {{ formatRouteTolls(route) }}</span><small class="route-label">方案 {{ index + 1 }}<template v-if="route.labels.length"> · {{ route.labels.join(' · ') }}</template></small></button></div>
         <p v-if="!muted && (localSpeechState.loading || localSpeechState.error)" class="status">语音：{{ localSpeechState.error || localSpeechState.status }}</p>
         <div class="footer-line"><span class="status">{{ status }}</span><template v-if="current && !arrived"><button :disabled="busy" @click="startDemo">模拟导航</button><button class="primary" :disabled="busy" @click="locate(true)">开始导航</button></template></div>
       </template>
-      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }} · {{ remainingDurationLabel }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button v-if="mode === 'live'" :disabled="busy || !lastGpsPoint" :aria-expanded="roadSwitchOpen" @click="roadSwitchOpen = !roadSwitchOpen">切换道路</button><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
-      <div v-if="mode === 'live' && roadSwitchOpen" class="road-switch" role="group" aria-label="道路切换">
-        <span>当前位置纠偏</span>
-        <button :disabled="busy" @click="switchParallelRoad('main')">主路</button><button :disabled="busy" @click="switchParallelRoad('side')">辅路</button>
-        <button :disabled="busy" @click="switchParallelRoad('elevated')">高架</button><button :disabled="busy" @click="switchParallelRoad('ground')">地面</button>
-      </div>
+      <template v-else-if="navigationOverview">
+        <div class="overview-summary"><span class="status" role="status">{{ overviewRefreshing ? '正在从当前位置刷新路线与路况…' : overviewUpdatedLabel ? `路况已刷新 ${overviewUpdatedLabel} · 点击方案切换路线` : '当前导航继续运行' }}</span><button :disabled="busy || overviewRefreshing" @click="refreshOverviewRoutes">{{ overviewRefreshing ? '刷新中…' : '刷新路线' }}</button></div>
+        <p v-if="overviewError" class="error" role="alert">{{ overviewError }}</p>
+        <div class="route-options navigation-route-options" aria-label="导航备选路线"><button v-for="(option, index) in navigationOptions" :key="`${option.token}:${option.routeIndex}`" :disabled="busy" :class="{ selected: option.current }" :aria-pressed="option.current" @click="choosePreviewRoute(index)"><strong class="route-duration">{{ formatRouteDuration(option.preview.duration) }}</strong><small class="route-lights">{{ option.current ? '当前路线' : `方案 ${index + 1}` }}</small><span class="route-cost">{{ formatDistance(option.preview.distance) }} · {{ formatRouteTolls(option.preview) }}</span><small class="route-label">{{ option.current ? '继续当前导航' : option.preview.labels.join(' · ') || '点击切换导航' }}</small></button></div>
+        <div class="footer-line"><button @click="endNavigation()">退出导航</button><span class="status">{{ mode === 'demo' ? '模拟导航继续播放' : '车辆定位与导航播报继续运行' }}</span><button class="primary" @click="followLocation">返回导航</button></div>
+      </template>
+      <div v-else class="footer-line"><button @click="endNavigation()">退出导航</button><div class="trip"><strong>剩余 {{ formatDistance(remaining) }} · {{ remainingDurationLabel }}</strong><small>{{ status }}<template v-if="liveSpeed !== null"> · {{ Math.round(liveSpeed) }} km/h</template></small></div><button @click="toggleVoice()">{{ muted ? '开启语音' : '关闭语音' }}</button></div>
     </footer>
   </section>
 </template>
 
 <style scoped>
+.turn-card[role=button]{cursor:pointer}.turn-card[role=button]:focus-visible{outline:3px solid #75d9c4;outline-offset:3px}
+.navigation-overview-heading{display:flex;align-items:center;gap:9px;padding:5px 10px;border-radius:14px;max-width:100%;flex-wrap:wrap}.navigation-app .navigation-overview-heading button{border:0;background:transparent;padding:4px;color:#126cbd}.navigation-overview-heading strong{font-size:14px}.navigation-overview-heading small{font-size:11px;color:#6e817f}
+.overview-summary{display:flex;align-items:center;gap:10px}.overview-summary button{flex:none}.route-options.navigation-route-options .selected{background:#eaf4ff;border-color:#1688ef;color:#126cbd}
 .route-search{max-height:calc(100% - 120px);overflow-y:auto;box-sizing:border-box;overscroll-behavior:contain}
+.route-search.route-search-collapsed{width:min(260px,calc(100% - 90px));padding:4px 8px;border-radius:14px;overflow:hidden}
+.navigation-app .route-search-summary{display:flex;align-items:center;gap:8px;width:100%;min-height:34px;padding:3px 4px;border:0;border-radius:9px;background:transparent;text-align:left;color:#35574d}
+.route-search-summary svg{width:18px;height:18px;flex:none;color:#099d77}.route-search-summary>span:first-of-type{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;font-weight:600}.route-search-summary small{font-size:11px;flex:none;color:#6d8b80}.search-summary-chevron{width:6px;height:6px;margin-right:4px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);flex:none}
+.navigation-app .route-search-fold{padding:5px 7px;font-size:11px;color:#6d8b80}
 .quick-place-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}.quick-place-tabs{display:flex;gap:4px;padding:3px;border-radius:10px;background:#edf4f1}.navigation-app .quick-place-tabs button{min-height:28px;padding:3px 14px;border:0;border-radius:8px;background:transparent;color:#6b8277;font-size:12px}.navigation-app .quick-place-tabs .selected{background:white;color:#078362;box-shadow:0 1px 4px #193a3214;font-weight:600}.navigation-app .quick-place-clear,.navigation-app .quick-place-more{min-height:30px;padding:3px 8px;border:0;background:transparent;color:#73877f;font-size:12px}.navigation-app .quick-place-more{width:100%;margin-top:3px;color:#087e61}.quick-place-empty{margin:8px;color:#7d9088;font-size:12px}
-.road-switch{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:10px}.road-switch span{font-size:12px;color:#5c746c;margin-right:4px}.navigation-app .road-switch button{min-width:64px;min-height:42px;background:#e4f8ef;border-color:#b6e7d6;color:#087b5d;font-weight:600}
+.map-controls{align-items:center;max-height:calc(100% - 130px);overflow-y:auto;overflow-x:hidden;scrollbar-width:none;overscroll-behavior:contain}.map-controls::-webkit-scrollbar{display:none}.map-controls>button{flex:none}.map-controls .road-switch-direct{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:44px;height:50px;min-height:50px;font-size:11px;line-height:1;font-weight:600}.road-switch-direct img{display:block;object-fit:contain;flex:none}
 .navigation-guidance{position:absolute;z-index:501;top:14px;left:16px;width:calc(100% - 90px);display:flex;align-items:flex-start;gap:8px}
+.navigation-road-info{display:flex;flex-direction:column;gap:8px;flex:0 1 235px;min-width:0}.navigation-road-info .signal-card{flex:none;width:100%}
+@media(max-width:520px){.navigation-road-info{flex-basis:145px;gap:6px}}
 @media(max-width:700px){.navigation-guidance{top:10px;left:10px;width:calc(100% - 76px)}}
 .layer-menu{position:absolute;z-index:600;right:64px;top:20px;padding:14px;display:grid;gap:12px;min-width:180px}.layer-menu label{display:flex;gap:9px;align-items:center}.map-themes{display:flex;gap:8px}.map-themes .active{background:#e4f8ef;border-color:#19b88b}.navigation-app{position:relative;width:100%;height:100%;min-height:360px;overflow:hidden;background:#e7ece8;color:#203a39}.navigation-map{position:absolute;inset:0;z-index:0}.route-search,.turn-card,.navigation-footer,.map-controls{z-index:500}.glass{background:rgba(255,255,255,.94);backdrop-filter:blur(18px);box-shadow:0 6px 24px #183c3420;border:1px solid #ffffffc9;border-radius:18px}.route-search{position:absolute;top:14px;left:16px;width:min(430px,calc(100% - 90px));padding:12px 16px}.search-line{display:flex;gap:8px}.search-line input{width:0;flex:1;border:0;background:transparent;outline:none;color:inherit}.search-line select{border:0;background:transparent;color:#6b817b}.search-tips{max-height:220px;overflow:auto}.search-tips button{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #e8edea;border-radius:0}.search-tips small{color:#87928f}.navigation-app button{min-height:38px;padding:7px 14px;border:1px solid #dbe6e0;border-radius:11px;background:white;color:#33504b;cursor:pointer;white-space:nowrap}.navigation-app button:disabled{opacity:.55;cursor:wait}.navigation-app .primary{background:#0eaa80;color:white;border-color:#0eaa80;font-weight:600}.map-controls{position:absolute;right:14px;top:20px;display:flex;flex-direction:column;gap:8px}.map-controls button{width:40px;height:40px;padding:0;font-size:23px;box-shadow:0 3px 10px #25453518}.navigation-footer{position:absolute;left:16px;right:16px;bottom:14px;padding:12px 16px}.destination-line,.footer-line{display:flex;align-items:center;gap:12px}.destination-line>span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.destination-line b{margin:0 10px;color:#899e96}.start-dot,.end-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;background:#14b88d}.end-dot{background:#f58d66}.footer-line{margin-top:8px}.status{flex:1;color:#73877f;font-size:12px}.route-options{display:flex;gap:8px;margin:10px 0;overflow:auto}.route-options button{flex:1;display:flex;align-items:center;justify-content:space-between;gap:8px}.route-options small{color:#7d8e85;font-size:11px}.route-options .selected{background:#e4f8ef;border-color:#19b88b;color:#078161}.turn-card{position:absolute;left:16px;top:14px;display:flex;align-items:center;gap:14px;max-width:calc(100% - 90px);padding:14px 20px;background:#123f38f2;color:white}.turn-arrow{width:50px;height:58px;flex-shrink:0;display:block}.turn-card h2{font-size:21px;margin:4px 0}.turn-card p{margin:0;opacity:.8}.turn-card small{color:#85dfbd}.trip{flex:1;display:flex;flex-direction:column;gap:4px}.trip small{color:#69827a;font-size:12px}.map-loading{pointer-events:none;position:absolute;inset:0;display:grid;place-items:center}.error{color:#b64d38;font-size:13px;margin:0 0 8px}@media(max-width:700px){.route-search{top:10px;left:10px;padding:10px}.navigation-footer{left:10px;right:10px;bottom:10px;padding:10px}.turn-card{padding:10px;gap:9px}.turn-card h2{font-size:18px}.status{font-size:11px}.navigation-app button{padding:7px 10px}.route-options button{flex-direction:column;gap:3px}.footer-line{gap:7px}}
 .search-line{align-items:center;min-width:0}.point-picker{position:relative;flex:none}.navigation-app .point-picker-trigger{display:flex;align-items:center;gap:5px;min-height:36px;padding:5px 8px;border:1px solid #cee7dc;border-radius:10px;background:#eef8f2;color:#176b4e;font-size:13px;font-weight:700;box-shadow:none}.point-picker-dot{width:8px;height:8px;flex:none;border-radius:50%}.point-picker-dot.destination{background:#f18662}.point-picker-dot.origin{background:#13b987}.point-picker-chevron{width:6px;height:6px;margin:-3px 1px 0 2px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(45deg);transition:transform .16s}.point-picker-chevron.open{margin-top:3px;transform:rotate(225deg)}
@@ -1443,4 +1662,5 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
 .route-options .route-duration{font-size:19px;line-height:1.25;font-variant-numeric:tabular-nums}
 .route-options .route-cost{font-size:12px;color:inherit;opacity:.85}
 .route-options small{white-space:normal}
+@media(max-width:600px){.route-options.navigation-route-options button{flex:1 0 122px;min-width:122px;padding:8px 9px}.navigation-route-options .route-duration{font-size:16px}.navigation-route-options .route-lights{grid-column:1/-1;justify-self:start}.navigation-route-options .route-cost{white-space:normal;line-height:1.4}.navigation-route-options .route-label{font-size:10px}}
 </style>

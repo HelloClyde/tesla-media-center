@@ -8,6 +8,7 @@ interpolated. Distances exposed here are measured along decoded geometry.
 """
 import math
 import struct
+from dynamic_route_links import decode_v51_link_deltas
 
 LIMIT = 16 * 1024 * 1024
 
@@ -79,12 +80,18 @@ def distance(a, b):
 
 def unpack(raw):
     import zstandard
-    if len(raw) < 74 or len(raw) > LIMIT:
+    if len(raw) < 64 or len(raw) > LIMIT:
         raise ValueError("response size")
-    status, size = struct.unpack_from("<HQ", raw)
-    if status != 200 or size > len(raw) - 10 or size < 64:
-        raise ValueError("response envelope")
-    body = raw[10:10 + size]
+    # APK transfer POST returns the codec body directly. The mapapi GET adds
+    # a 10-byte HTTP-status/length wrapper. Both still undergo every codec and
+    # record check below, including exact declared size and decompression limits.
+    if raw[:4] == struct.pack('<I', 31):
+        body, size = raw, len(raw)
+    else:
+        status, size = struct.unpack_from("<HQ", raw)
+        if status != 200 or size > len(raw) - 10 or size < 64:
+            raise ValueError("response envelope")
+        body = raw[10:10 + size]
     version, count, declared = struct.unpack_from("<IHI", body)
     if version != 31 or declared != size or not 1 <= count <= 64:
         raise ValueError("unsupported route envelope")
@@ -171,13 +178,21 @@ def decode(raw, origin=None, destination=None):
     if one(header, 1) != 51 or one(header, 3) != 0:
         raise ValueError("unsupported route version/status")
     message = fields(one(outer, 2, b""))
-    if one(message, 1) != 0:
-        raise ValueError("route failure")
+    # Native POST replies set this path metadata flag to 1. The assembler at
+    # 0xb88ec-0xb88f0 copies it into each DrivePathImpl +0x4ec; it is not the
+    # failure code. Header field 3 is checked above. Only observed 0/1 layouts
+    # are accepted, followed by full geometry/count/distance validation.
+    if one(message, 1) not in (0, 1):
+        raise ValueError("unsupported route metadata")
     names = one(message, 5, b"")
     routes = []
     for route_raw in message.get(7, []):
         route = fields(route_raw)
         path, steps, measured, breaks, traffic_lights, traffic_runs = [], [], 0.0, [], [], []
+        road_links, link_deltas = [], []
+        link_base = one(route, 9, None)
+        if link_base is not None and (not isinstance(link_base, bytes) or len(link_base) != 8):
+            raise ValueError("invalid route link base")
         current_road = "道路"
         for segment_raw in route.get(10, []):
             segment = fields(segment_raw)
@@ -194,6 +209,10 @@ def decode(raw, origin=None, destination=None):
             if path and distance(path[-1], points[0]) > 100:
                 raise ValueError("discontinuous route geometry")
             links = [fields(item) for item in segment.get(3, [])]
+            start_index = len(path) - 1 if path and path[-1] == points[0] else len(path)
+            # Native road records are inherited only inside a segment. A new
+            # record with no name must not inherit an earlier tunnel's name.
+            link_road, link_property, link_class, link_type = '', None, None, None
             offsets = [0.0]
             for a, b in zip(points, points[1:]):
                 offsets.append(offsets[-1] + distance(a, b))
@@ -204,6 +223,34 @@ def decode(raw, origin=None, destination=None):
                 if start != covered or count < 2 or start + count > len(points):
                     raise ValueError("link coordinate coverage")
                 covered = start + count - 1
+                if 7 in link:
+                    attributes = fields(one(link, 7))
+                    link_property, link_class, link_type = one(attributes, 2, 0), one(attributes, 1, 0), one(attributes, 3, 0)
+                    if any(type(value) is not int or not 0 <= value <= 0xFFFFFFFF
+                           for value in (link_property, link_class, link_type)):
+                        raise ValueError("invalid road attributes")
+                    # DriveLinkImpl +0xe8 returns the signed road-property word.
+                    if link_property >= 1 << 31:
+                        link_property -= 1 << 32
+                    # APK RouteLink.nativeGetLinkType -> virtual +0xe0 ->
+                    # DriveLinkImpl 0x944cc reads road-record +0, populated from
+                    # attribute field 3 at 0xbb8cc. Preserve the signed word.
+                    if link_type >= 1 << 31:
+                        link_type -= 1 << 32
+                    name_span = fields(one(attributes, 9, b""))
+                    name_start, name_length = one(name_span, 1, 0), one(name_span, 2, 0)
+                    if (type(name_start) is not int or type(name_length) is not int
+                            or name_start + name_length > len(names)):
+                        raise ValueError("road name bounds")
+                    link_road = names[name_start:name_start + name_length].decode('utf-8')
+                road_links.append({"start": start_index + start, "end": start_index + covered,
+                                   "road": link_road,
+                                   **({"roadProperty": link_property, "roadClass": link_class, "linkType": link_type}
+                                      if link_property is not None else {})})
+                if len(road_links) > 100000:
+                    raise ValueError("too many road links")
+                if link_base is not None:
+                    link_deltas.append(one(link, 1, None))
                 # Link flag 0x4 is a signalized crossing. Its count matches the
                 # App endpoint's independent JSON `trafficlights` summary across
                 # short urban and intercity routes. The crossing is at link end.
@@ -219,6 +266,9 @@ def decode(raw, origin=None, destination=None):
                 if type(status) is not int or status not in (0, 1, 2, 3, 4, 16):
                     raise ValueError("invalid link traffic status")
                 if status in (2, 3, 4):
+                    pass_time = one(link, 5, None)
+                    pass_time = (pass_time if type(pass_time) is int
+                                 and 0 < pass_time <= 30 * 86400 else None)
                     run_path = points[start:start + count]
                     run_start = round(measured + offsets[start], 1)
                     run_end = round(measured + offsets[covered], 1)
@@ -228,9 +278,17 @@ def decode(raw, origin=None, destination=None):
                                 and abs(traffic_runs[-1]["end"] - run_start) <= .2):
                             traffic_runs[-1]["path"].extend(run_path[1:])
                             traffic_runs[-1]["end"] = run_end
+                            traffic_runs[-1]["timings"].append(
+                                {"start": run_start, "end": run_end, "duration": pass_time})
+                            previous_time = traffic_runs[-1]["duration"]
+                            traffic_runs[-1]["duration"] = (previous_time + pass_time
+                                if previous_time is not None and pass_time is not None else None)
                         else:
                             traffic_runs.append({"status": status, "path": run_path,
-                                                 "start": run_start, "end": run_end})
+                                                 "start": run_start, "end": run_end,
+                                                 "duration": pass_time,
+                                                 "timings": [{"start": run_start, "end": run_end,
+                                                              "duration": pass_time}]})
             if links and covered != len(points) - 1:
                 raise ValueError("unused segment coordinates")
             for link in links:
@@ -269,6 +327,11 @@ def decode(raw, origin=None, destination=None):
             measured += length
         if not steps or len(path) > 100000:
             raise ValueError("missing/oversized geometry")
+        if link_base is not None:
+            ids = decode_v51_link_deltas(int.from_bytes(link_base, 'little'), link_deltas)
+            for link, link_id in zip(road_links, ids):
+                # JavaScript numbers cannot represent these uint64 IDs exactly.
+                link['id'] = str(link_id)
         if origin and distance(origin, path[0]) > 1000:
             raise ValueError("route origin mismatch")
         if destination and distance(destination, path[-1]) > 1000:
@@ -280,6 +343,7 @@ def decode(raw, origin=None, destination=None):
         routes.append({"id": len(routes), "labels": labels, "path": path, "steps": steps, "breaks": breaks,
                        "trafficLights": traffic_lights, "trafficLightCount": len(traffic_lights),
                        "trafficRuns": traffic_runs,
+                       "roadLinks": road_links,
                        **route_summary(route), "distance": round(measured), "roads": list(dict.fromkeys(step["road"] for step in steps))})
     if not 1 <= len(routes) <= 10:
         raise ValueError("route count")

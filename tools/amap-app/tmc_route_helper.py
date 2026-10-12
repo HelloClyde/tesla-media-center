@@ -115,6 +115,34 @@ def probe(payload):
             "routes": routes, "rawRoute": base64.b64encode(raw).decode("ascii")}
 
 
+def switch_road(payload):
+    from native_signer import load_material
+    from road_switch_route import request_route
+    from route_v51 import decode
+    from routeguide_speed import _project
+
+    encoded, index = payload.get('rawRoute'), payload.get('routeIndex')
+    if not isinstance(encoded, str) or len(encoded) > 6 * 1024 * 1024:
+        raise ValueError('invalid-route-session')
+    raw = base64.b64decode(encoded, validate=True)
+    if not 0 < len(raw) <= 4 * 1024 * 1024: raise ValueError('invalid-route-session')
+    routes = decode(raw)
+    if type(index) is not int or not 0 <= index < len(routes): raise ValueError('invalid-route-index')
+    original = routes[index]
+    source = next((link for link in original['roadLinks']
+                   if link.get('id') == payload.get('linkId') and link['start'] == payload.get('linkStart')), None)
+    if source is None: raise ValueError('unknown-current-link')
+    origin = list(map(float, point(payload.get('point'))))
+    points = original['path'][source['start']:source['end']+1]
+    if _project(points, [], origin)[0] > 60: raise ValueError('vehicle-outside-current-link')
+    answer = request_route(origin, original['path'][-1], points, load_material(ASSETS), ASSETS,
+                           accuracy=payload.get('accuracy'), speed=payload.get('speed'), heading=payload.get('heading'))
+    if answer is None: return {'state': 'absent', 'navigationAvailable': False}
+    candidates = decode(answer, origin, original['path'][-1])
+    return {'state': 'ready', 'navigationAvailable': True, 'coordinateSystem': 'GCJ-02',
+            'routes': candidates, 'rawRoute': base64.b64encode(answer).decode('ascii')}
+
+
 def traffic(payload):
     import requests
     from eta_live import ETA_URL, build_eta_body, decode_eta_lights, eta_query
@@ -262,11 +290,12 @@ def main():
             # A traffic token can only come from a previously verified route
             # response, so skip rehashing the ~400 MB APK on every poll.
             action = payload.get("action")
-            check_assets(validate_digest=action not in ("traffic", "junction", "navigation-events", "route-traffic"))
+            check_assets(validate_digest=action not in ("traffic", "junction", "navigation-events", "route-traffic", "switch-road"))
             result = (traffic(payload) if action == "traffic" else
                       junction(payload) if action == "junction" else
                       navigation_events(payload) if action == "navigation-events" else
-                      route_traffic(payload) if action == "route-traffic" else probe(payload))
+                      route_traffic(payload) if action == "route-traffic" else
+                      switch_road(payload) if action == "switch-road" else probe(payload))
     except Exception:
         # Exception messages from requests may contain signed URLs. Never emit them.
         result = {"state": "unavailable", "navigationAvailable": False,

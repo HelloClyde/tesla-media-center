@@ -96,6 +96,59 @@ class AmapAppTest(unittest.TestCase):
             self.assertEqual(self.app.test_client().post('/api/amap-app/route', json=self.payload).json['status'], 'need_login')
             helper.assert_not_called()
 
+    def test_native_road_links_keep_uint64_identity_and_allowlist_attributes(self):
+        link = {'start': 0, 'end': 1, 'road': '同名路', 'id': '18446744073709551615',
+                'roadProperty': 7, 'roadClass': 4, 'linkType': 2, 'private': 'hidden'}
+        route = {'path': [[116.4, 39.9], [116.401, 39.9], [116.402, 39.9]],
+                 'steps': [{'start': 0, 'end': 2, 'road': '同名路'}], 'distance': 170,
+                 'roadLinks': [link, {'start': 1, 'end': 2, 'road': ''}]}
+        result = {'state': 'ready', 'routes': [route]}
+        def clean():
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(result).encode())):
+                return amap_app.invoke_helper(self.payload)['routes'][0]
+        self.assertEqual(clean()['roadLinks'], [{key: value for key, value in link.items() if key != 'private'},
+                                                {'start': 1, 'end': 2, 'road': ''}])
+        for invalid in (9007199254740993, '18446744073709551616', '01', '-1', '', '١'):
+            with self.subTest(invalid=invalid):
+                link['id'] = invalid
+                with self.assertRaises(ValueError): clean()
+        link['id'] = '9007199254740993'
+        for invalid in (True, 1 << 31, -(1 << 31) - 1):
+            link['roadProperty'] = invalid
+            with self.assertRaises(ValueError): clean()
+        link['roadProperty'] = -1
+        self.assertEqual(clean()['roadLinks'][0]['roadProperty'], -1)
+        for invalid in (True, '2', 1 << 31, -(1 << 31) - 1):
+            with self.subTest(linkType=invalid):
+                link['linkType'] = invalid
+                with self.assertRaises(ValueError): clean()
+        link['linkType'] = -1
+        self.assertEqual(clean()['roadLinks'][0]['linkType'], -1)
+        route['breaks'] = [1]
+        with self.assertRaises(ValueError): clean()
+        route['breaks'] = []
+        route['roadLinks'][1]['start'] = 0
+        with self.assertRaises(ValueError): clean()
+
+    def test_switch_road_endpoint_requires_session_identity_and_valid_observation(self):
+        payload = {'routeToken': 'test', 'routeIndex': 1, 'linkId': '9007199254740993',
+                   'linkStart': 4, 'point': [120, 30], 'accuracy': 12, 'speed': 9, 'heading': 270}
+        with patch.object(amap_app, 'load_route_session', return_value='private-raw-session'), \
+             patch.object(amap_app, 'invoke_helper', return_value={'state': 'absent'}) as helper:
+            anonymous = self.app.test_client().post('/api/amap-app/switch-road', json=payload)
+            self.assertEqual(anonymous.json['status'], 'need_login')
+            helper.assert_not_called()
+            response = self.client.post('/api/amap-app/switch-road', json=payload)
+            self.assertEqual(response.json['data']['state'], 'absent')
+            self.assertEqual(helper.call_args.args[0], {'action': 'switch-road', 'rawRoute': 'private-raw-session',
+                'routeIndex': 1, 'linkId': '9007199254740993', 'linkStart': 4, 'point': [120, 30],
+                'accuracy': 12, 'speed': 9, 'heading': 270})
+            helper.reset_mock()
+            for change in ({'linkId': 9007199254740993}, {'linkId': '01'}, {'linkId': str(1 << 64)},
+                           {'linkStart': True}, {'routeIndex': 10}, {'speed': True}, {'heading': 360}):
+                self.assertEqual(self.client.post('/api/amap-app/switch-road', json={**payload, **change}).status_code, 400)
+            helper.assert_not_called()
+
     def test_route_actions_keep_uturn_sharp_and_straight_semantics(self):
         step = {'start': 0, 'end': 1, 'road': '回环匝道'}
         data = {'state': 'ready', 'routes': [{'path': [[116.4, 39.9], [116.401, 39.9]],
@@ -177,6 +230,29 @@ class AmapAppTest(unittest.TestCase):
                 response = self.client.post('/api/amap-app/probe', json={**self.payload, 'origin': origin})
                 self.assertEqual(response.status_code, 400, str(origin))
             helper.assert_not_called()
+
+    def test_congestion_time_allowlist_and_complete_link_coverage(self):
+        run = {'status': 3, 'start': 10, 'end': 100, 'path': [[120, 30], [120.001, 30]],
+               'duration': 999, 'private': 'hidden', 'timings': [
+                   {'start': 10, 'end': 50, 'duration': 30, 'private': 'hidden'},
+                   {'start': 50, 'end': 100, 'duration': 300}]}
+        data = {'state': 'ready', 'distance': 100, 'updatedAt': int(time.time()), 'trafficRuns': [run]}
+        def invoke():
+            with patch.object(amap_app.subprocess, 'run', return_value=SimpleNamespace(stdout=json.dumps(data).encode())):
+                return amap_app.invoke_helper({'action': 'route-traffic'})['trafficRuns'][0]
+        self.assertEqual(invoke()['duration'], 330)
+        self.assertNotIn('hidden', json.dumps(invoke()))
+        run['timings'][0]['duration'] = None
+        self.assertIsNone(invoke()['duration'])
+        for invalid in (True, -1, 0, '30', 30 * 86400 + 1):
+            run['timings'][0]['duration'] = invalid
+            with self.assertRaises(ValueError):
+                invoke()
+        run['timings'][0]['duration'] = 30
+        for start, end in ((51, 100), (50, 101), (50, 90), (40, 100)):
+            run['timings'][1].update(start=start, end=end)
+            with self.assertRaises(ValueError):
+                invoke()
 
     def test_identical_rounded_points(self):
         response = self.client.post('/api/amap-app/probe', json={'origin': [1, 2], 'destination': [1.00000001, 2]})

@@ -1,0 +1,25 @@
+{
+  "source": "AMap APK 17.00.0.2005 OAJX/SPX",
+  "icons": {
+    "main": {
+      "resource": "amap_bundle_framework/src/resource/svg/navigation/ic-lane-o-b.svg",
+      "file": "ic-lane-o-b.svg",
+      "sha256": "8ac59e1fcba574a5cb6955b90ecaa00d62cc1d0fa245cdf5992afaf302737d8c"
+    },
+    "side": {
+      "resource": "amap_bundle_framework/src/resource/svg/navigation/ic-siderode-o-b.svg",
+      "file": "ic-siderode-o-b.svg",
+      "sha256": "e9e5ae545d0349e7743aae0d5d3b807583861b2a0b1932d99df92f71cefce4da"
+    },
+    "ground": {
+      "resource": "amap_bundle_framework/src/resource/svg/navigation/ic-bridgedown-o-b.svg",
+      "file": "ic-bridgedown-o-b.svg",
+      "sha256": "533c013139caac931ee9eda2835c1d74616535ad94b5aa92b17a854a42764f84"
+    },
+    "elevated": {
+      "resource": "amap_bundle_framework/src/resource/svg/navigation/ic-bridgeup-o-b.svg",
+      "file": "ic-bridgeup-o-b.svg",
+      "sha256": "2257f2e741942a79f614ea66e42cb88089c7a2ce47fcd9fc3d7929eb255b13d8"
+    }
+  }
+}

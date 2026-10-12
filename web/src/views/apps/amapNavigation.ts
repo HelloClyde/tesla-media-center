@@ -1,7 +1,9 @@
 import {isNavigationManeuver, navigationManeuvers, type NavigationManeuver} from '@/components/navigationArrow';
 export type Point = [number, number];
+export const formatDistance = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)} 公里` : `${Math.round(n / 10) * 10} 米`;
 export interface RouteStep { start: number; end: number; road: string; serviceArea?: string; roundaboutExit?: number; maneuver?: NavigationManeuver }
-export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; trafficRuns?: import('./amapRouteTraffic').CongestionRun[]; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[]; laneGuides?: import('./amapLaneGuidance').LaneGuide[] }
+export interface RoadLink { start: number; end: number; road: string; id?: string; roadProperty?: number; roadClass?: number; linkType?: number }
+export interface AppRoute { id: number; path: Point[]; steps: RouteStep[]; roadLinks?: RoadLink[]; breaks: number[]; distance: number; labels: string[]; duration?: number | null; tolls?: number | null; tollCurrency?: string | null; trafficLights?: Point[]; trafficLightCount?: number; trafficRuns?: import('./amapRouteTraffic').CongestionRun[]; speedLimits?: import('./amapSpeedLimit').SpeedLimitSection[]; speedCameras?: import('./amapSpeedLimit').SpeedLimitCamera[]; laneGuides?: import('./amapLaneGuidance').LaneGuide[] }
 export const meters = (a: Point, b: Point) => {
   const rad = Math.PI / 180, lat = (a[1] + b[1]) * rad / 2;
   return Math.hypot((b[0] - a[0]) * Math.cos(lat), b[1] - a[1]) * rad * 6371000;

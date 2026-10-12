@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { congestionSegmentProgresses, remainingCongestionPath, type CongestionRun } from './amapRouteTraffic';
+import { congestionSegmentProgresses, remainingCongestionPath, upcomingCongestion, type CongestionRun } from './amapRouteTraffic';
 
 describe('APK route congestion', () => {
   const run: CongestionRun = {
@@ -25,5 +25,40 @@ describe('APK route congestion', () => {
     expect(nearlyFinished[0][0]).toBeGreaterThan(run.path[1][0]);
     expect(nearlyFinished[0][0]).toBeLessThan(run.path[2][0]);
     expect(remainingCongestionPath(run, 100)).toEqual([]);
+  });
+
+  const timed: CongestionRun = { ...run, duration: 330, timings: [
+    { start: 20, end: 60, duration: 30 }, { start: 60, end: 100, duration: 300 },
+  ] };
+
+  it('shows the pass time ahead and trims different link speeds independently', () => {
+    expect(upcomingCongestion([timed], 0)).toMatchObject({ active: false, distance: 20, length: 80, duration: 330 });
+    expect(upcomingCongestion([timed], 40)).toMatchObject({ active: true, distance: 0, length: 60, duration: 315 });
+    expect(upcomingCongestion([timed], 80)?.duration).toBe(150);
+    expect(upcomingCongestion([timed], 100)).toBeUndefined();
+  });
+
+  it('groups adjoining colours but leaves a clear road between jams separate', () => {
+    const next = { ...timed, status: 3 as const, start: 100, end: 200, duration: 120, timings: undefined };
+    const later = { ...next, start: 250, end: 350, duration: 90 };
+    expect(upcomingCongestion([timed, next, later], 0)).toMatchObject({ status: 4, length: 180, duration: 450 });
+    expect(upcomingCongestion([timed, next, later], 100)).toMatchObject({ status: 3, active: true, length: 100, duration: 120 });
+    expect(upcomingCongestion([timed, next, later], 220)).toMatchObject({ active: false, distance: 30, duration: 90 });
+  });
+
+  it('does not guess missing times, and can use known times after an unknown link is passed', () => {
+    const unknown = { ...timed, duration: null, timings: [
+      { start: 20, end: 60, duration: null }, { start: 60, end: 100, duration: 300 },
+    ] };
+    expect(upcomingCongestion([unknown], 20)?.duration).toBeNull();
+    expect(upcomingCongestion([unknown], 80)?.duration).toBe(150);
+    expect(upcomingCongestion([run], 20)?.duration).toBeNull();
+  });
+
+  it('hides distant or completed jams and keeps stopped-vehicle estimates stable', () => {
+    expect(upcomingCongestion([timed], -2000)).toBeUndefined();
+    expect(upcomingCongestion([], 0)).toBeUndefined();
+    expect(upcomingCongestion([timed], NaN)).toBeUndefined();
+    expect(upcomingCongestion([timed], 40)).toEqual(upcomingCongestion([timed], 40));
   });
 });

@@ -29,7 +29,7 @@ def extract(raw: bytes, route_index: int = 0) -> dict:
     envelope = fields(unpack(raw))
     header = fields(one(envelope, 1, b""))
     message = fields(one(envelope, 2, b""))
-    if one(header, 1) != 51 or one(header, 3) != 0 or one(message, 1) != 0:
+    if one(header, 1) != 51 or one(header, 3) != 0 or one(message, 1) not in (0, 1):
         raise ValueError("unsuccessful 5.1 route")
     data_vers = one(header, 2, None)
     if type(data_vers) is not int or not 0 <= data_vers <= 65535:
