@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import axios from 'axios';
-import { browserMapCacheStats, clearBrowserMapCache, updateBrowserMapCacheConfig } from '@/views/apps/amapBrowserTileCache';
+import { browserMapCacheStats, clearBrowserMapCache, updateBrowserMapCacheConfig, requestBrowserMapPersistence,
+  DEFAULT_BROWSER_MAP_CACHE_MB, MAX_BROWSER_MAP_CACHE_MB } from '@/views/apps/amapBrowserTileCache';
 const ttlHours = ref(168), maxMB = ref(512), usedBytes = ref(0), count = ref(0);
 const busy = ref(false), ready = ref(false), message = ref('');
-const device = ref<{available:boolean;count:number;usedBytes:number;ttlHours:number;maxMB:number}>();
-const deviceTtlHours=ref(168), deviceMaxMB=ref(96);
+const device = ref<Awaited<ReturnType<typeof browserMapCacheStats>>>();
+const deviceTtlHours=ref(168), deviceMaxMB=ref(DEFAULT_BROWSER_MAP_CACHE_MB);
 const deviceBusy=ref(false), deviceMessage=ref('');
 async function request(method: 'GET' | 'PUT' | 'DELETE') {
   busy.value = true; message.value = '';
@@ -36,6 +37,13 @@ async function clearDevice() {
   deviceMessage.value=success?'本机地图缓存已清空':'本机浏览器未提供持久缓存';
   deviceBusy.value=false;
 }
+async function persistDevice() {
+  deviceBusy.value = true; deviceMessage.value = '';
+  const granted = await requestBrowserMapPersistence();
+  await refreshDevice();
+  deviceMessage.value = granted ? '浏览器已允许长期保留地图缓存' : '浏览器未批准长期保留，现有缓存仍可使用';
+  deviceBusy.value = false;
+}
 onMounted(() => {void request('GET');void refreshDevice();});
 </script>
 <template>
@@ -54,16 +62,19 @@ onMounted(() => {void request('GET');void refreshDevice();});
     </div>
     <p role="status">{{ message }}</p>
     <h3>本机浏览器缓存</h3>
-    <p>当前车机保存已解码的 App 地图块和特色地标模型；3D 建筑瓦片也可供 2D 使用。浏览器不支持持久存储时继续使用服务器缓存。</p>
+    <p>地图块和特色地标模型保存在当前车机，重访先读取本机；2D 与 3D 共用缓存。默认 1 GB，最高可设为 8 GB，实际容量受浏览器配额和剩余空间限制。</p>
     <div class="cache-fields">
       <label>有效期（小时）<el-input-number v-model="deviceTtlHours" :min="1" :max="2160" :precision="0" :disabled="deviceBusy || !device?.available" /></label>
-      <label>容量上限（MB）<el-input-number v-model="deviceMaxMB" :min="16" :max="512" :precision="0" :disabled="deviceBusy || !device?.available" /></label>
+      <label>容量上限（MB）<el-input-number v-model="deviceMaxMB" :min="16" :max="MAX_BROWSER_MAP_CACHE_MB" :precision="0" :disabled="deviceBusy || !device?.available" /></label>
     </div>
     <p v-if="device">{{ device.available ? `本机已缓存 ${device.count} 个地图资源 · ${(device.usedBytes / 1048576).toFixed(2)} MB` : '本机浏览器不支持持久地图缓存' }}</p>
+    <p v-if="device?.available && device.quotaBytes !== null">浏览器配额 {{ (device.quotaBytes / 1073741824).toFixed(2) }} GB · 站点已用 {{ ((device.usageBytes || 0) / 1048576).toFixed(1) }} MB · 地图有效上限 {{ device.effectiveMaxMB.toFixed(0) }} MB</p>
+    <p v-if="device?.available && device.persistent !== null">{{ device.persistent ? '长期保留已启用' : '尚未获得长期保留权限，浏览器可能在空间不足时清理缓存' }}</p>
     <div class="cache-actions">
       <el-button type="primary" :disabled="deviceBusy || !device?.available" @click="saveDevice">保存本机设置</el-button>
       <el-button :disabled="deviceBusy" @click="refreshDevice">刷新本机用量</el-button>
       <el-button :disabled="deviceBusy || !device?.available" @click="clearDevice">清空本机缓存</el-button>
+      <el-button v-if="device?.persistent === false" :disabled="deviceBusy || !device?.available" @click="persistDevice">申请长期保留</el-button>
     </div>
     <p role="status">{{ deviceMessage }}</p>
   </section>

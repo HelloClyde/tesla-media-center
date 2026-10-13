@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {flushPromises} from '@vue/test-utils';
-const mocks = vi.hoisted(() => ({post: vi.fn(), saved: new Map<string, any>(), reads: vi.fn(), memoryReads: vi.fn(), buildings: vi.fn(), contexts: new Map<number, any>()}));
+const mocks = vi.hoisted(() => ({post: vi.fn(), viewport: vi.fn(), saved: new Map<string, any>(), reads: vi.fn(), memoryReads: vi.fn(), buildings: vi.fn(), contexts: new Map<number, any>()}));
 vi.mock('axios', () => ({default: {post: mocks.post}}));
-vi.mock('./amapViewport', () => ({viewportTiles: (zoom: number) => zoom <= 12 ? [[12, 1, 1], [3, 0, 0]] : [[14, 1, 1]], mapTileDistance: () => 0}));
+vi.mock('./amapViewport', () => ({viewportTiles: mocks.viewport, mapTileDistance: () => 0}));
 vi.mock('./amapBrowserTileCache', () => ({
   browserMapTileTtlMs: () => 7 * 24 * 3600000,
   readMapTiles: mocks.reads,
@@ -18,6 +18,7 @@ const road = {level: 14, x: 1, y: 1, collection: {features: [
   {properties: {}, geometry: {type: 'LineString', coordinates: [[120.2, 30.2], [120.201, 30.2]]}},
 ]}};
 beforeEach(() => {
+  mocks.viewport.mockReset(); mocks.viewport.mockImplementation((zoom: number) => zoom <= 12 ? [[12,1,1],[3,0,0]] : [[14,1,1]]);
   mocks.post.mockReset(); mocks.saved.clear(); mocks.reads.mockReset();
   mocks.memoryReads.mockReset(); mocks.memoryReads.mockReturnValue(new Map());
   mocks.buildings.mockReset(); mocks.buildings.mockReturnValue({count: 0, mesh: undefined});
@@ -191,5 +192,27 @@ it('applies theme and landmark changes to the latest uncommitted viewport', asyn
   expect(ground.group.visible).toBe(true);
   expect(mocks.buildings).toHaveBeenCalledWith([], [120.2, 30.2], 'night');
   expect(mocks.contexts.get(1024).strokeStyle).toBe('#536278');
+  ground.dispose();
+});
+
+it('publishes a dense initial tile while subsequent batches keep arriving instead of restarting forever', async () => {
+  vi.useFakeTimers();
+  const outside = {bbox: [121,31,121.01,31.01], properties: {}, geometry: {
+    type: 'LineString', coordinates: [[121,31],[121.01,31.01]],
+  }};
+  const dense = {...road, collection: {features: [...Array(10000).fill(outside), ...road.collection.features]}};
+  mocks.memoryReads.mockReturnValue(new Map([['14/1/1', {tile:dense,at:Date.now()}]]));
+  mocks.viewport.mockImplementation((zoom: number) => zoom <= 12 ? [] : Array.from({length:24},(_,x)=>[14,x+1,1]));
+  let delivered = 0;
+  mocks.post.mockImplementation((_path, batch) => new Promise(resolve => setTimeout(() => {
+    delivered++;
+    resolve({status:200,data:{status:'ok',data:{tiles:batch.tiles.map(([x,y]: number[])=>({level:batch.level,x,y}))}}});
+  },20)));
+  const ground = createTeslaMapGround(vi.fn());
+  ground.update([120.2,30.2],0,0);
+  await vi.advanceTimersByTimeAsync(96);
+  expect(delivered).toBeGreaterThan(1);
+  expect(ground.group.visible).toBe(true);
+  expect(ground.roadRevision()).toBe(1);
   ground.dispose();
 });

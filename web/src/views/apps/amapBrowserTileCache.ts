@@ -8,10 +8,11 @@ const NAME = 'tmc-amap-tiles-v1';
 const STORE = 'tiles';
 const SETTINGS = 'tmc-amap-browser-cache-settings-v1';
 const DEFAULT_TTL_HOURS = 168;
-const DEFAULT_MAX_MB = 96;
-const MAX_TILE_BYTES = 12 * 1024 * 1024;
+export const DEFAULT_BROWSER_MAP_CACHE_MB = 1024;
+export const MAX_BROWSER_MAP_CACHE_MB = 8192;
+const MAX_TILE_BYTES = 64 * 1024 * 1024;
 type Row = { key: string; fetchedAt: number; touchedAt: number; bytes: number; payload: string | Uint8Array; encoding: 'json' | 'gzip' | 'glb' };
-const MAX_MODEL_BYTES = 16 * 1024 * 1024;
+const MAX_MODEL_BYTES = 64 * 1024 * 1024;
 const modelKey = (name: string) => /^[0-9]{1,19}-[0-9a-f]{12}\.glb$/.test(name) ? `model/${name}` : undefined;
 let opening: Promise<IDBDatabase | undefined> | undefined;
 // Keep a small decoded window across 2D/3D switches. Disk writes are asynchronous;
@@ -30,12 +31,53 @@ function limits() {
     const stored=JSON.parse(localStorage.getItem(SETTINGS) || '{}');
     const ttlHours=Number.isInteger(stored.ttlHours) && stored.ttlHours>=1 && stored.ttlHours<=2160
       ? stored.ttlHours : DEFAULT_TTL_HOURS;
-    const maxMB=Number.isInteger(stored.maxMB) && stored.maxMB>=16 && stored.maxMB<=512
-      ? stored.maxMB : DEFAULT_MAX_MB;
+    // Upgrade the former default without overwriting other custom capacities.
+    const legacyDefault = stored.version !== 2 && stored.maxMB === 96;
+    const maxMB=!legacyDefault && Number.isInteger(stored.maxMB) && stored.maxMB>=16 && stored.maxMB<=MAX_BROWSER_MAP_CACHE_MB
+      ? stored.maxMB : DEFAULT_BROWSER_MAP_CACHE_MB;
     return {ttlHours,maxMB};
-  } catch {return {ttlHours:DEFAULT_TTL_HOURS,maxMB:DEFAULT_MAX_MB};}
+  } catch {return {ttlHours:DEFAULT_TTL_HOURS,maxMB:DEFAULT_BROWSER_MAP_CACHE_MB};}
 }
 export function browserMapTileTtlMs() {return limits().ttlHours*3600000;}
+
+type BrowserStorage = {quotaBytes: number | null; usageBytes: number | null; persistent: boolean | null};
+async function bounded<T>(work: Promise<T>, fallback: T, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { return await Promise.race([work, new Promise<T>(resolve => {timer = setTimeout(() => resolve(fallback), ms);})]); }
+  finally { if (timer !== undefined) clearTimeout(timer); }
+}
+let storageInfo: {at: number; value: Promise<BrowserStorage>} | undefined;
+async function browserStorage(refresh = false): Promise<BrowserStorage> {
+  if (!refresh && storageInfo && Date.now() - storageInfo.at < 10000) return storageInfo.value;
+  const value = (async () => {
+    const manager = typeof navigator !== 'undefined' ? navigator.storage : undefined;
+    const [estimate, persistent] = await Promise.all([
+      manager?.estimate ? bounded<StorageEstimate>(manager.estimate().catch(() => ({})), {}, 1000) : {} as StorageEstimate,
+      manager?.persisted ? bounded(manager.persisted().catch(() => null), null, 1000) : null,
+    ]);
+    const valid = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    return {quotaBytes: valid(estimate.quota) ? estimate.quota : null,
+      usageBytes: valid(estimate.usage) ? estimate.usage : null, persistent};
+  })();
+  storageInfo = {at: Date.now(), value};
+  return value;
+}
+function storageBudget(usedMapBytes: number, storage: BrowserStorage) {
+  const requested = limits().maxMB * 1048576;
+  if (storage.quotaBytes === null || storage.usageBytes === null) return requested;
+  // The origin also stores TTS, vehicle models and other app data. Leave room
+  // for them instead of treating the browser's quota as a map-only allocation.
+  const otherUsage = Math.max(0, storage.usageBytes - usedMapBytes);
+  return Math.min(requested, Math.max(0, Math.floor(storage.quotaBytes * .8) - otherUsage));
+}
+export async function requestBrowserMapPersistence() {
+  try {
+    if (!navigator.storage?.persist) return false;
+    const granted = await navigator.storage.persist();
+    storageInfo = undefined;
+    return granted;
+  } catch {return false;}
+}
 
 function key(kind: CacheKind, level: number, x: number, y: number) {
   return `${kind === 'full' && level === 15 ? 'full-buildings-v8' : kind === 'lanes' ? 'lanes-v2' : kind}/${level}/${x}/${y}`;
@@ -106,16 +148,14 @@ export async function readMapModel(name: string): Promise<ArrayBuffer | undefine
 }
 
 export async function storeMapModel(name: string, buffer: ArrayBuffer) {
+  const generation = cacheGeneration;
   const id = modelKey(name), db = await open();
   if (!id || !db || !(buffer instanceof ArrayBuffer) || buffer.byteLength < 20 ||
       buffer.byteLength > MAX_MODEL_BYTES) return;
   const now = Date.now(), payload = new Uint8Array(buffer).slice();
   try {
-    const tx = db.transaction(STORE, 'readwrite'), done = complete(tx);
-    tx.objectStore(STORE).put({key:id, fetchedAt:now, touchedAt:now,
-                              bytes:payload.byteLength, payload, encoding:'glb'} satisfies Row);
-    await done;
-    await prune(db);
+    await persistRows(db, [{key:id, fetchedAt:now, touchedAt:now,
+                              bytes:payload.byteLength, payload, encoding:'glb'}], generation);
   } catch { /* Model rendering remains available without persistent storage. */ }
 }
 
@@ -142,6 +182,12 @@ export function readMemoryMapTiles(kind: CacheKind, tiles: number[][]) {
 }
 
 export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
+  // Slow IDB/cache decompression is an optimization miss, never a prerequisite
+  // that prevents a visible tile from being requested. Late hits still warm RAM.
+  const result = await bounded(readMapTilesFromDisk(kind, tiles), undefined, 1800);
+  return result ?? readMemoryMapTiles(kind, tiles);
+}
+async function readMapTilesFromDisk(kind: CacheKind, tiles: number[][]) {
   const result = readMemoryMapTiles(kind, tiles);
   const generation = cacheGeneration;
   const missing = tiles.filter(tile => !result.has(tile.join('/')));
@@ -177,9 +223,10 @@ export async function readMapTiles(kind: CacheKind, tiles: number[][]) {
   return result;
 }
 
-async function prune(db: IDBDatabase) {
+async function prune(db: IDBDatabase, reserveBytes = 0, emergency = false) {
+  const generation = cacheGeneration;
   await waitForMapIdle();
-  const {ttlHours,maxMB}=limits(), ttl=ttlHours*3600000, maxBytes=maxMB*1048576;
+  const {ttlHours}=limits(), ttl=ttlHours*3600000;
   const metadata: {key:string;bytes:number;fetchedAt:number;touchedAt:number}[] = [];
   const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).index('metadata').openKeyCursor(), done=complete(tx);
   request.onsuccess=()=>{
@@ -193,54 +240,88 @@ async function prune(db: IDBDatabase) {
   const now=Date.now(), expired=metadata.filter(row=>now-row.fetchedAt>ttl);
   const live=metadata.filter(row=>now-row.fetchedAt<=ttl).sort((a,b)=>a.touchedAt-b.touchedAt);
   let bytes=live.reduce((sum,row)=>sum+row.bytes,0);
+  const allBytes = metadata.reduce((sum, row) => sum + row.bytes, 0);
+  const budget = storageBudget(allBytes, await browserStorage(emergency));
+  if (generation !== cacheGeneration) return 0;
+  if (reserveBytes > budget) return budget;
+  const maxBytes = Math.max(0, (emergency ? Math.min(budget, bytes / 2) : budget) - reserveBytes);
   const remove=expired.map(row=>row.key);
   for(const row of live) if(bytes>maxBytes) {remove.push(row.key);bytes-=row.bytes;}
-  if(!remove.length) return;
+  if(!remove.length) return budget;
   const deletion=db.transaction(STORE,'readwrite'), store=deletion.objectStore(STORE), finished=complete(deletion);
   remove.forEach(value=>store.delete(value));
   await finished;
+  return budget;
+}
+
+let writes = Promise.resolve();
+async function persistRows(db: IDBDatabase, rows: Row[], generation = cacheGeneration) {
+  const work = writes.then(() => persistRowsNow(db, rows, generation));
+  writes = work.catch(() => {});
+  await work;
+}
+async function persistRowsNow(db: IDBDatabase, rows: Row[], generation: number) {
+  if (generation !== cacheGeneration) return;
+  let bytes = rows.reduce((sum, row) => sum + row.bytes, 0);
+  const budget = await prune(db, bytes);
+  if (bytes > budget) {
+    bytes = 0;
+    rows = rows.filter(row => {if (bytes + row.bytes > budget) return false; bytes += row.bytes; return true;});
+    if (!rows.length) return;
+    await prune(db, bytes);
+  }
+  const write = async () => {
+    if (generation !== cacheGeneration) return;
+    const tx = db.transaction(STORE, 'readwrite'), done = complete(tx);
+    try { rows.forEach(row => tx.objectStore(STORE).put(row)); }
+    catch (error) { tx.abort(); await done.catch(() => {}); throw error; }
+    await done;
+  };
+  try { await write(); }
+  catch (error) {
+    if ((error as {name?: string})?.name !== 'QuotaExceededError') throw error;
+    await prune(db, bytes, true); await write();
+  }
 }
 
 export async function storeMapTiles(kind: CacheKind, tiles: CachedMapTile[]) {
   const generation = cacheGeneration;
   const now=Date.now();
   for (const tile of tiles) remember(kind, tile, now);
-  await waitForMapIdle();
-  const db=await open();
-  if(!db || !tiles.length || generation !== cacheGeneration) return;
-  const rows:Row[]=[];
-  for(const tile of tiles) {
-    if(tile.error || tile.missingLayers?.length || !Number.isInteger(tile.level) || !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) continue;
-    const encoded=await encodeBrowserMapTile(tile);
-    if(encoded.bytes>MAX_TILE_BYTES) continue;
-    rows.push({key:key(kind,tile.level,tile.x,tile.y),fetchedAt:now,touchedAt:now,...encoded});
-  }
-  if(!rows.length || generation !== cacheGeneration) return;
   try {
-    const tx=db.transaction(STORE,'readwrite'), store=tx.objectStore(STORE), done=complete(tx);
-    rows.forEach(row=>store.put(row));
-    await done;
-    await prune(db);
+    await waitForMapIdle();
+    const db=await open();
+    if(!db || !tiles.length || generation !== cacheGeneration) return;
+    const rows:Row[]=[];
+    for(const tile of tiles) {
+      if(tile.error || tile.missingLayers?.length || !Number.isInteger(tile.level) || !Number.isInteger(tile.x) || !Number.isInteger(tile.y)) continue;
+      const encoded=await encodeBrowserMapTile(tile);
+      if(encoded.bytes>MAX_TILE_BYTES) continue;
+      rows.push({key:key(kind,tile.level,tile.x,tile.y),fetchedAt:now,touchedAt:now,...encoded});
+    }
+    if(!rows.length || generation !== cacheGeneration) return;
+    await persistRows(db, rows, generation);
   } catch { /* Failed persistence must not interrupt live navigation. */ }
 }
 
 export async function browserMapCacheStats() {
   const {ttlHours,maxMB}=limits();
+  const storage = await browserStorage(true);
   const db=await open();
-  if(!db) return {available:false,count:0,usedBytes:0,ttlHours,maxMB};
+  if(!db) return {available:false,count:0,usedBytes:0,ttlHours,maxMB,...storage,effectiveMaxMB:storageBudget(0,storage)/1048576};
   let count=0,usedBytes=0;
   try {
     const tx=db.transaction(STORE,'readonly'), request=tx.objectStore(STORE).index('metadata').openKeyCursor(), done=complete(tx);
     request.onsuccess=()=>{const cursor=request.result;if(!cursor)return;count++;usedBytes+=(cursor.key as number[])[1];cursor.continue();};
     await done;
-    return {available:true,count,usedBytes,ttlHours,maxMB};
-  } catch {return {available:false,count:0,usedBytes:0,ttlHours,maxMB};}
+    return {available:true,count,usedBytes,ttlHours,maxMB,...storage,effectiveMaxMB:storageBudget(usedBytes,storage)/1048576};
+  } catch {return {available:false,count:0,usedBytes:0,ttlHours,maxMB,...storage,effectiveMaxMB:storageBudget(0,storage)/1048576};}
 }
 
 export async function updateBrowserMapCacheConfig(ttlHours:number,maxMB:number) {
   if(!Number.isInteger(ttlHours) || ttlHours<1 || ttlHours>2160 ||
-      !Number.isInteger(maxMB) || maxMB<16 || maxMB>512) return false;
-  try {localStorage.setItem(SETTINGS,JSON.stringify({ttlHours,maxMB}));}
+      !Number.isInteger(maxMB) || maxMB<16 || maxMB>MAX_BROWSER_MAP_CACHE_MB) return false;
+  try {localStorage.setItem(SETTINGS,JSON.stringify({ttlHours,maxMB,version:2}));}
   catch {return false;}
   const db=await open();
   if(db) try {await prune(db);} catch { /* A new limit still applies to future reads/writes. */ }

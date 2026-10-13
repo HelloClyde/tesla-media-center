@@ -455,17 +455,19 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     }
   }
   function presentTiles(tiles: Tile[], point: MapPoint, complete: boolean, partial = false,
-    buildingFailed = false, id = generation) {
+    buildingFailed = false, id = generation, force = false) {
     if (!tiles.some(tile => tile.collection?.features.length || tile.surfaces?.length)) return false;
     desiredPresentation = {tiles: [...tiles], point, complete, partial, buildingFailed, id};
     if (interacting) {
       pendingPresentation = () => !disposed && id === generation
-        && presentTiles(tiles, point, complete, partial, buildingFailed, id);
+        && presentTiles(tiles, point, complete, partial, buildingFailed, id, force);
       return true;
     }
     pendingPresentation = undefined;
-    // Capture one arrival snapshot. New arrivals replace its unfinished work,
-    // so a batch never synchronously rebuilds every previous tile again.
+    // Keep finishing the current snapshot while retaining only the newest
+    // arrival. Cancelling on each arrival can starve a dense tile indefinitely.
+    if (presentationPending && !force) return true;
+    const desired = desiredPresentation;
     const snapshot = [...tiles];
     const moved = !anchor || anchor[0] !== point[0] || anchor[1] !== point[1] || displayedAppearance !== appearance;
     const changed = (select: (tile: Tile) => boolean) => {
@@ -525,6 +527,9 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
             : displayedBuildingCount ? `App 立体建筑 · ${displayedBuildingCount} 栋` : '混合地图 · 此处暂无建筑数据') + detail;
           report(status, true);
         } else report('App 地图已显示 · 正在补充建筑与地表…', true);
+        if (desiredPresentation !== desired && desiredPresentation?.id === generation) {
+          presentLatest(); return;
+        }
         if (!request && !disposed) {
           if (latest && Math.hypot(...groundOffset(latest, anchor)) > 120 && Date.now() > retryAfter) void load(latest);
           else scheduleWarm();
@@ -537,11 +542,11 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
     renderQueue.start(prepare()); presentationPending = true;
     return true;
   }
-  function presentLatest() {
+  function presentLatest(force = false) {
     const desired = desiredPresentation;
     if (desired && desired.id === generation)
-      presentTiles(desired.tiles, desired.point, desired.complete, desired.partial, desired.buildingFailed, desired.id);
-    else if (anchor && displayedTiles.length) presentTiles(displayedTiles, anchor, true);
+      presentTiles(desired.tiles, desired.point, desired.complete, desired.partial, desired.buildingFailed, desired.id, force);
+    else if (anchor && displayedTiles.length) presentTiles(displayedTiles, anchor, true, false, false, generation, force);
   }
   async function load(point: MapPoint) {
     if (authRequired) return;
@@ -620,6 +625,7 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
           if (response.data.status!=='ok') throw new Error('map unavailable');
           let downloaded=response.data.data.tiles as Tile[];
           if (raw) {
+            if (!ready) report('地图已下载 · 正在处理地图…', false);
             try { downloaded=await decodeRaw(downloaded,response.data.data.paints || {}); transientDecodeFailures=0; }
             catch (error) {
               if (!rawBmdDecodeUnsupported(error) && ++transientDecodeFailures < 2) throw error;
@@ -644,7 +650,10 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
           void storeMapTiles('full',downloaded);
         }
         collect();
-        if(!disposed && id===generation) present(false);
+        if(!disposed && id===generation) {
+          if (!ready) report('地图已读取 · 正在绘制…', false);
+          present(false);
+        }
         } catch(error) {
           if(level===14 || authRequired) throw error;
           if(level===15) buildingFailed=true;
@@ -689,14 +698,14 @@ export function createTeslaMapGround(report: (text: string, ready: boolean) => v
       if (appearance===nextTheme) return;
       appearance=nextTheme;
       if (!desiredPresentation && (!anchor || !displayedTiles.length)) return;
-      presentLatest();
+      presentLatest(true);
       if (laneMesh) laneMesh.material.color.set(appearance === 'night' ? '#b8c9d7' : '#f8fbfa');
     },
     setLandmarkBounds(bounds: number[][]) {
       landmarkBounds = bounds.filter(box => box.length === 4 && box.every(Number.isFinite));
       pendingBuildings = true;
-      if (interacting || !desiredPresentation && (!anchor || !displayedTiles.length)) return;
-      presentLatest();
+      if (!desiredPresentation && (!anchor || !displayedTiles.length)) return;
+      presentLatest(true);
     },
     revision() { return revision; },
     roadRevision() { return roadRevision; },
