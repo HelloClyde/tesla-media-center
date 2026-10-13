@@ -10,7 +10,9 @@ import { layoutRouteBubbles, previewRouteBounds, routePreviewColor, routePreview
   ROUTE_BUBBLE_WIDTH, ROUTE_BUBBLE_HEIGHT, type RouteBubblePlacement } from './amapRoutePreview';
 import { directRoadSwitchTargets, findParallelRoute, matchRoadLink, roadKindLabels, type RoadKind } from './amapParallelRoad';
 import { matchOverviewRoute, navigationRouteOptions, type NavigationRouteOption } from './amapNavigationOverview';
-import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, watch, watchEffect, onActivated, onDeactivated, onBeforeUnmount, onMounted, ref, toRaw } from 'vue';
+import { clearNavigationSession, loadNavigationSession, saveNavigationCheckpoint, saveNavigationSession,
+  type NavigationCheckpoint } from './amapNavigationSession';
 import axios from 'axios';
 import { publishBackgroundNavigation, clearBackgroundNavigation } from '@/stores/backgroundNavigation';
 const viewActive = ref(true);
@@ -201,7 +203,7 @@ function followLocation() {
   }
   applyOrientation();
   if (map && (location.value || hasOrigin.value)) {
-    map.setView(latLng(location.value || current.value?.path[0] || origin.value),
+    map.setView(latLng(location.value || (current.value && pointAt(current.value, progress.value)) || origin.value),
       mode.value !== 'idle' ? navigationViewport(liveSpeed.value).zoom : 17, { animate: false });
     lastAutoZoomAt = performance.now();
   }
@@ -607,6 +609,7 @@ async function refreshNavigationEvents() {
       routes.value[index].speedCameras = data.speedCameras;
       routes.value[index].laneGuides = Array.isArray(data.laneGuides) ? data.laneGuides : [];
       speedSigns.value = data.speedSigns;
+      persistNavigation(true);
       drawMapSigns();
     }
   } catch { /* The signed route still works when optional sign data is unavailable. */ }
@@ -666,6 +669,7 @@ async function refreshRouteTraffic() {
     if (response.data?.status === 'ok' && data?.state === 'ready' && Array.isArray(data.trafficRuns)) {
       routes.value[index].trafficRuns = data.trafficRuns;
       trafficUpdatedAt.value = data.updatedAt * 1000;
+      persistNavigation(true);
       draw(false);
     }
   } catch { /* Preserve the last verified App route state when refresh fails. */ }
@@ -771,6 +775,61 @@ let resizeObserver: ResizeObserver | undefined;
 let locationTimeout: ReturnType<typeof setTimeout> | undefined;
 let simulation: ReturnType<typeof setInterval> | undefined;
 let controller: AbortController | undefined, disposed = false, generation = 0, locationGeneration = 0, offCount = 0, lastReplan = 0, spoken = '', lastTurnVoiceAttemptAt = 0, lastTurnVoiceAttemptKey = '';
+const navigationStorageNotice = ref('');
+let savedRoutes: AppRoute[] | undefined, savedToken = '', navigationSessionId = '';
+let checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+function persistNavigation(full = false) {
+  if (checkpointTimer !== undefined) clearTimeout(checkpointTimer);
+  checkpointTimer = undefined;
+  if (disposed || mode.value === 'idle' || !current.value) return;
+  const rawRoutes = toRaw(routes.value);
+  const changed = savedRoutes !== rawRoutes || savedToken !== routeToken.value || !navigationSessionId;
+  if (changed) navigationSessionId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const id = navigationSessionId;
+  const checkpoint: NavigationCheckpoint = { id, updatedAt: Date.now(), mode: mode.value,
+    selected: selected.value, progress: progress.value, use3D: use3D.value, muted: muted.value,
+    trafficEnabled: trafficEnabled.value, theme: mapAppearance.value.theme };
+  const saving = changed || full ? saveNavigationSession({ id, routes: rawRoutes, token: routeToken.value,
+    origin: origin.value, destination: destination.value, originName: originName.value, destinationName: destinationName.value }, checkpoint)
+    : saveNavigationCheckpoint(checkpoint);
+  savedRoutes = rawRoutes; savedToken = routeToken.value;
+  void saving.then(success => {
+    if (disposed || id !== navigationSessionId) return;
+    navigationStorageNotice.value = success ? '' : '本机无法保存导航，刷新后可能需要重新选择路线';
+    if (!success) savedRoutes = undefined; // Retry the complete snapshot, not just its checkpoint.
+  });
+}
+function forgetSavedNavigation() {
+  if (checkpointTimer !== undefined) clearTimeout(checkpointTimer);
+  checkpointTimer = undefined; savedRoutes = undefined; savedToken = ''; navigationSessionId = '';
+  navigationStorageNotice.value = ''; void clearNavigationSession();
+}
+watch([mode, routes, routeToken, selected, use3D, muted, trafficEnabled, () => mapAppearance.value.theme], () => persistNavigation());
+watch(progress, () => {
+  if (mode.value !== 'idle' && checkpointTimer === undefined) checkpointTimer = setTimeout(persistNavigation, 1000);
+});
+function saveHiddenNavigation() { if (document.visibilityState === 'hidden') persistNavigation(); }
+function saveOnPageHide() { persistNavigation(); }
+async function restoreNavigation() {
+  const initialGeneration = generation;
+  const saved = await loadNavigationSession();
+  if (disposed || generation !== initialGeneration) return;
+  if (!saved) { locate(false); return; }
+  const { route, checkpoint } = saved;
+  routes.value = route.routes; routeToken.value = route.token; selected.value = checkpoint.selected;
+  origin.value = route.origin; destination.value = route.destination;
+  originName.value = route.originName; destinationName.value = route.destinationName;
+  hasOrigin.value = hasDestination.value = true;
+  progress.value = checkpoint.progress; muted.value = checkpoint.muted; use3D.value = checkpoint.use3D;
+  trafficEnabled.value = checkpoint.trafficEnabled; mapAppearance.value.theme = checkpoint.theme;
+  searchCollapsed.value = true;
+  navigationSessionId = route.id; savedRoutes = toRaw(routes.value); savedToken = route.token;
+  map.setView(latLng(pointAt(current.value!, progress.value)), 17, { animate: false }); endpoints();
+  await nextTick();
+  if (disposed) return;
+  if (checkpoint.mode === 'demo') runDemo(checkpoint.progress);
+  else { locate(true, true); followLocation(); }
+}
 const announcedServiceAreas = new Set<string>();
 function speak(text: string, maxDelayMs = 15000, isRelevant?: () => boolean): Promise<boolean> {
   if (muted.value) return Promise.resolve(false);
@@ -791,6 +850,7 @@ watch([current, () => next.value?.key, mode, muted], () => {
 });
 
 function finishNavigationFollow(message: string) {
+  forgetSavedNavigation();
   const wasLive = mode.value === 'live';
   const vehiclePoint = lastGpsPoint.value ?? (wasLive ? location.value : undefined);
   stop(wasLive);
@@ -1022,7 +1082,7 @@ function trimDrivenRoute() {
   renderedLineProgress = progress.value;
 }
 function choose(index: number) { selected.value = index; progress.value = 0; arrived.value = false; announcedServiceAreas.clear(); draw(); }
-function clearRoute() { searchCollapsed.value = false; overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; routeToken.value = ''; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
+function clearRoute() { forgetSavedNavigation(); searchCollapsed.value = false; overviewActive.value = false; overviewGeneration++; stop(); controller?.abort(); generation++; busy.value = false; routes.value = []; routeToken.value = ''; heading.value = undefined; headingAnchor = undefined; applyOrientation(); draw(false); }
 function setPoint(point: Point, name: string) {
   cancelSearch();
   clearRoute();
@@ -1214,7 +1274,7 @@ function stopFusion() { clearInterval(fusionTimer); fusionTimer = undefined; rou
 function startFusion() {
   stopFusion();
   if (navigationEngine.value !== 'route-fusion' || mode.value !== 'live' || !current.value) return;
-  routeFusion = createRouteFusion(current.value);
+  routeFusion = createRouteFusion(current.value, progress.value);
   fusionTimer = setInterval(() => renderFusion(routeFusion?.tick(performance.now())), 250);
 }
 watch(current, () => {
@@ -1256,14 +1316,17 @@ function stop(keepLocation = false) {
   stopLocalSpeech();
 }
 function startDemo() {
+  runDemo(0);
+}
+function runDemo(from: number) {
   prepareVoice();
   if (!current.value) return;
-  stop(); orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = 0; following.value = true; arrived.value = false; spoken = '';
-  headingAnchor = current.value.path[0]; heading.value = bearingBetween(headingAnchor, pointAt(current.value, 25));
-  const initialSpeed = demoCruiseSpeed(current.value.speedLimits, 0);
+  stop(); orientation.value = 'heading'; overviewActive.value = false; overviewGeneration++; mode.value = 'demo'; progress.value = from; following.value = true; arrived.value = false; spoken = '';
+  headingAnchor = pointAt(current.value, from); heading.value = bearingBetween(headingAnchor, pointAt(current.value, from + 25));
+  const initialSpeed = demoCruiseSpeed(current.value.speedLimits, from);
   liveSpeed.value = initialSpeed; speedEstimated.value = false;
   map.setZoom(navigationViewport(liveSpeed.value).zoom); draw(false);
-  updatePosition(current.value.path[0], 0, heading.value, initialSpeed / 3.6);
+  updatePosition(headingAnchor, 0, heading.value, initialSpeed / 3.6);
   let lastTick = performance.now();
   simulation = setInterval(() => {
     const route = current.value;
@@ -1304,7 +1367,7 @@ function locate(navigate = false, preserveRoute = false, planOnFix = false) {
     navigationFixValid.value = false; marker?.remove();
     draw(false);
     // Use the route's initial direction until GPS supplies a usable vehicle heading.
-    if (heading.value === undefined && current.value) heading.value = bearingBetween(current.value.path[0], pointAt(current.value, 25));
+    if (heading.value === undefined && current.value) heading.value = bearingBetween(pointAt(current.value, progress.value), pointAt(current.value, progress.value + 25));
     applyOrientation(); map.setZoom(navigationViewport(liveSpeed.value).zoom);
     startFusion();
   }
@@ -1393,6 +1456,8 @@ function beginMapTouch(event: TouchEvent) {
 }
 onMounted(() => {
   document.addEventListener('pointerdown', closePointMenuOnOutsideClick);
+  window.addEventListener('pagehide', saveOnPageHide);
+  document.addEventListener('visibilitychange', saveHiddenNavigation);
   void refreshFavoritePlaces();
   void refreshRecentPlaces();
   if (!mapElement.value) return;
@@ -1414,13 +1479,13 @@ onMounted(() => {
   resizeObserver.observe(mapElement.value);
   if (footerPanel.value) resizeObserver.observe(footerPanel.value);
   if (topPanel.value) resizeObserver.observe(topPanel.value);
-  mapReady.value = true; endpoints(); locate(false);
+  mapReady.value = true; endpoints(); void restoreNavigation();
 });
 watch(topPanel, (panel, previous) => {
   if (previous) resizeObserver?.unobserve(previous);
   if (panel) resizeObserver?.observe(panel);
 }, { flush: 'post' });
-onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMenuOnOutsideClick); clearJunctionRetry(); cancelPositionAnimation(); if (routeBubbleFrame !== undefined) cancelAnimationFrame(routeBubbleFrame); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
+onBeforeUnmount(() => { persistNavigation(); window.removeEventListener('pagehide', saveOnPageHide); document.removeEventListener('visibilitychange', saveHiddenNavigation); document.removeEventListener('pointerdown', closePointMenuOnOutsideClick); clearJunctionRetry(); cancelPositionAnimation(); if (routeBubbleFrame !== undefined) cancelAnimationFrame(routeBubbleFrame); clearBackgroundNavigation(); mapElement.value?.removeEventListener('touchstart', beginMapTouch, true); disposed = true; generation++; cancelSearch(); controller?.abort(); stop(); resizeObserver?.disconnect(); appMap?.dispose(); map?.remove(); });
 </script>
 
 <template>
@@ -1545,6 +1610,7 @@ onBeforeUnmount(() => { document.removeEventListener('pointerdown', closePointMe
     <footer ref="footerPanel" class="navigation-footer glass" :class="{ 'following-navigation': mode !== 'idle' && following && !overviewActive }">
       <p v-if="show3D ? map3DStatus : mapStatus" class="map-notice">{{ show3D ? map3DStatus : mapStatus }} <button v-if="!(show3D ? map3DStatus : mapStatus).startsWith('路线总览') && !(show3D ? map3DStatus : mapStatus).startsWith('正在加载')" @click="retryActiveMap">{{ (show3D ? map3DStatus : mapStatus).startsWith('TMC 登录已失效') ? '登录 TMC' : '重试' }}</button></p>
       <p v-if="error" class="error" role="alert">{{ error }}</p>
+      <p v-if="navigationStorageNotice" class="error" role="status">{{ navigationStorageNotice }}</p>
       <p v-if="navigationEngine !== 'browser'" class="status" role="status">{{ navigationEngineNotice }}</p>
       <template v-if="mode === 'idle'">
         <div v-if="hasDestination" class="destination-line"><span><i class="start-dot"></i>{{ originName }} <b>→</b> <i class="end-dot"></i>{{ destinationName }}</span><button class="primary" :disabled="busy || !mapReady || !hasOrigin || !hasDestination" @click="plan()">{{ busy ? '规划中…' : '规划路线' }}</button></div>

@@ -5,6 +5,21 @@ import { bearingBetween } from './amapHeading';
 const route: AppRoute = { id: 1, path: [[120,30],[120.02,30]], breaks: [], steps: [{start:0,end:1,road:'测试路'}], distance: 1900, labels: [] };
 const fix = (x: number, timestamp: number, accuracy = 5, speed = 10) => ({point: [120+x/96300,30] as [number,number], timestamp, accuracy, speed, heading:90});
 describe('route fusion', () => {
+ it('uses saved progress to choose the current arm of an overlapping loop after reload', () => {
+  const xy = (x:number,y:number): [number,number] => [120+x/96300,30+y/111195];
+  const loop = {...route,path:[xy(0,0),xy(100,0),xy(100,100),xy(0,100),xy(0,0),xy(100,0)],
+   steps:[{start:0,end:5,road:'回环道路'}]};
+  const at = cumulative(loop)[4]+50;
+  const fresh = {point:pointAt(loop,at),timestamp:1,accuracy:1,speed:10,heading:90};
+  expect(createRouteFusion(loop).accept(fresh,0)!.progress).toBeLessThan(100);
+  expect(createRouteFusion(loop,at).accept(fresh,0)!.progress).toBeCloseTo(at,0);
+ });
+ it('does not turn a saved progress hint into trusted GPS or inertial motion', () => {
+  const engine = createRouteFusion(route,500);
+  expect(engine.tick(1000)).toBeUndefined();
+  expect(engine.accept(fix(500,1,800),1000)).toBeUndefined();
+  expect(engine.tick(2000)).toBeUndefined();
+ });
  it('follows a looping exit ramp when GPS heading lags through the turn', () => {
   const xy = (x: number, y: number): [number,number] => [120+x/96300,30+y/111195];
   const path = [xy(0,0),xy(100,0)];

@@ -4,11 +4,13 @@ import { bearingBetween } from './amapHeading';
 export interface FusionFix { point: Point; accuracy: number; speed?: number | null; heading?: number | null; timestamp: number }
 export interface FusionPosition { point: Point; progress?: number; guidanceProgress?: number; heading?: number; speed: number; estimated: boolean; estimationSeconds?: number; state: 'tracking' | 'estimating' | 'recovering' | 'waiting' | 'off-route' }
 /** Route-constrained positioning, not an IMU engine. All elapsed times are monotonic milliseconds. */
-export function createRouteFusion(route: AppRoute) {
+export function createRouteFusion(route: AppRoute, resumeProgress?: number) {
   const speedGraceMs = 12000;
   const speedFadeMs = 5000;
   const staleDistanceLimit = 120;
   const lengths = cumulative(route), total = lengths[lengths.length - 1];
+  const resumeHint = typeof resumeProgress === 'number' && Number.isFinite(resumeProgress)
+    ? Math.max(0, Math.min(total, resumeProgress)) : undefined;
   let progress: number | undefined, target: number | undefined;
   let clock = 0, trustedAt = -Infinity, speedAt = -Infinity, speed = 0, travelled = 0;
   let confirmedProgress: number | undefined;
@@ -101,7 +103,7 @@ export function createRouteFusion(route: AppRoute) {
     const movementReliable = previousInput && fix.accuracy <= 25 && previousInput.accuracy <= 25
       && now - previousInputAt <= 2500 && inputMovement >= Math.max(4, (fix.accuracy + previousInput.accuracy) * .75);
     const matchHeading = movementReliable ? bearingBetween(previousInput.point, fix.point) : fix.heading;
-    const match = matchPosition(route, fix.point, target ?? progress ?? 0, progress === undefined,
+    const match = matchPosition(route, fix.point, target ?? progress ?? resumeHint ?? 0, progress === undefined && resumeHint === undefined,
       { heading: matchHeading, speed: fix.speed, accuracy: fix.accuracy });
     const elapsed = lastFix ? Math.max(.1, (now - lastFixNow) / 1000) : 1;
     const plausible = !lastFix || meters(lastFix.point, fix.point) <= 60 * elapsed + lastFix.accuracy + fix.accuracy;

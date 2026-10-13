@@ -6,6 +6,8 @@ import View from './AmapAppView.vue';
 import { backgroundNavigation } from '@/stores/backgroundNavigation';
 import { navigationEngine } from '@/functions/navigationEngine';
 import type { AppRoute, Point } from './amapNavigation';
+import { navigationSessionTestDb } from './navigationSessionTestDb';
+import { loadNavigationSession } from './amapNavigationSession';
 
 const gps = vi.hoisted(() => ({ point: [120.2, 30.28], listeners: new Map<string, (fix: any) => void>() }));
 vi.mock('@/functions/navigationCoordinates', () => ({ browserNavigationPoint: (x: number, y: number) => [x, y] }));
@@ -29,6 +31,7 @@ let view: VueWrapper | undefined;
 let calls: { url: string; payload: any }[];
 let routeReply: ((origin: Point) => any) | undefined;
 let switchReply: ((payload: any) => any) | undefined;
+const navigationDb = navigationSessionTestDb();
 const lastCall = (url: string) => calls.filter(call => call.url === url).slice(-1)[0];
 const end: Point = [120.24, 30.32];
 function routesFrom(origin: Point): AppRoute[] {
@@ -41,6 +44,7 @@ beforeEach(() => {
   gps.point = [120.2, 30.28]; gps.listeners.clear(); calls = []; routeReply = undefined; switchReply = undefined;
   navigationEngine.value = 'browser';
   localStorage.clear();
+  navigationDb.reset(); vi.stubGlobal('indexedDB', navigationDb.indexedDB);
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('isSecureContext', true);
   vi.stubGlobal('requestAnimationFrame', () => 1); vi.stubGlobal('cancelAnimationFrame', () => {});
@@ -75,6 +79,76 @@ async function correctRoad(wrapper: VueWrapper, target: string) {
   await wrapper.get(`button[aria-label="切换至${target}"]`).trigger('click');
   await flushPromises();
 }
+
+async function remountNavigation() {
+  view!.unmount(); view = undefined;
+  await loadNavigationSession(); // Wait for the pagehide/unmount checkpoint transaction.
+  view = mount(View, {attachTo:document.body}); await flushPromises();
+  return view;
+}
+
+it('resumes simulated progress, 3D and voice settings after a page reload without replanning', async () => {
+  const wrapper = await navigate();
+  await wrapper.get('button[aria-label="切换为 3D 地图"]').trigger('click');
+  await wrapper.findAll('button').find(button => button.text() === '关闭语音')!.trigger('click');
+  await flushPromises();
+  const before = (await loadNavigationSession())!;
+  expect(before.checkpoint.progress).toBeGreaterThan(0);
+  const plans = calls.filter(call => call.url === '/api/amap-app/route').length;
+  const restored = await remountNavigation();
+  expect(restored.find('.test-3d').exists()).toBe(true);
+  expect(backgroundNavigation.active).toBe(true);
+  expect(backgroundNavigation.simulated).toBe(true);
+  expect(backgroundNavigation.muted).toBe(true);
+  expect((await loadNavigationSession())!.checkpoint.progress).toBeCloseTo(before.checkpoint.progress);
+  expect(calls.filter(call => call.url === '/api/amap-app/route')).toHaveLength(plans);
+  await vi.advanceTimersByTimeAsync(1500); await flushPromises();
+  expect((await loadNavigationSession())!.checkpoint.progress).toBeGreaterThan(before.checkpoint.progress);
+});
+
+it('restores the selected native route and reacquires fresh GPS rather than replaying the saved location', async () => {
+  const wrapper = await navigate(true);
+  // Switch within the same native session without touching GPS tracking.
+  await wrapper.get('.turn-card').trigger('click'); await flushPromises();
+  await wrapper.get('.navigation-overview-heading button').trigger('click'); await flushPromises();
+  gps.point = [120.2,30.281];
+  gps.listeners.forEach(fn => fn({longitude:120.2,latitude:30.281,accuracy:1,heading:0,speed:10,
+    timestamp:Date.now(),source:'gps'}));
+  await flushPromises();
+  await vi.advanceTimersByTimeAsync(1200); await flushPromises();
+  const before = (await loadNavigationSession())!;
+  expect(before.checkpoint.progress).toBeGreaterThan(0);
+  gps.point = [120.2,30.282];
+  const plans = calls.filter(call => call.url === '/api/amap-app/route').length;
+  const restored = await remountNavigation();
+  expect(restored.find('.turn-card').exists()).toBe(true);
+  expect(backgroundNavigation.active).toBe(true);
+  expect(backgroundNavigation.simulated).toBe(false);
+  expect(lastCall('/api/amap-app/navigation-events').payload).toEqual({routeToken:before.route.token,routeIndex:before.checkpoint.selected});
+  expect((await loadNavigationSession())!.checkpoint.progress).toBeGreaterThan(before.checkpoint.progress);
+  expect(calls.filter(call => call.url === '/api/amap-app/route')).toHaveLength(plans);
+});
+
+it('remembers an alternative native route index when that route was selected before starting', async () => {
+  view = mount(View, {attachTo:document.body}); await flushPromises();
+  await view.get('.place-select').trigger('click'); await flushPromises();
+  await view.findAll('.route-options button')[2].trigger('click');
+  await view.findAll('button').find(button => button.text() === '开始导航')!.trigger('click'); await flushPromises();
+  await remountNavigation();
+  expect(lastCall('/api/amap-app/navigation-events').payload).toEqual({routeToken:'initial',routeIndex:2});
+  expect(backgroundNavigation.road).toContain('测试道路 2');
+});
+
+it('clears the saved trip on exit so a later refresh only follows the car', async () => {
+  const wrapper = await navigate();
+  expect(await loadNavigationSession()).toBeDefined();
+  await wrapper.findAll('button').find(button => button.text() === '退出导航')!.trigger('click'); await flushPromises();
+  expect(await loadNavigationSession()).toBeUndefined();
+  const restored = await remountNavigation();
+  expect(backgroundNavigation.active).toBe(false);
+  expect(restored.find('.turn-card').exists()).toBe(false);
+  expect(restored.find('.route-options').exists()).toBe(false);
+});
 
 it('refreshes from the moving car, keeps the running session, and switches using the native index', async () => {
   const wrapper = await navigate();
