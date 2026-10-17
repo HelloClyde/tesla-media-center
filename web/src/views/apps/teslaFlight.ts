@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { vehicleLocalBounds } from './teslaModelBounds';
 
 export type VehicleFlightPhase = 'idle' | 'ignition' | 'ascent' | 'hover' | 'landing';
 const FLIGHT_HEIGHT = 1.35;
@@ -85,35 +86,6 @@ export function createFlightTimeline() {
       return { phase, height, power, time };
     },
   };
-}
-
-function vehicleLocalBounds(model: THREE.Group) {
-  model.updateWorldMatrix(true, true);
-  const inverseModel = model.matrixWorld.clone().invert();
-  const bounds = new THREE.Box3();
-  const box = new THREE.Box3();
-  const transform = new THREE.Matrix4();
-  const include = (object: THREE.Object3D) => {
-    const mesh = object as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
-    const materials = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
-    if (!materials.some(material => material.visible)) return;
-    if (mesh instanceof THREE.InstancedMesh) {
-      if (!mesh.boundingBox) mesh.computeBoundingBox();
-      box.copy(mesh.boundingBox!);
-    } else {
-      if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox();
-      box.copy(mesh.geometry.boundingBox!);
-    }
-    transform.multiplyMatrices(inverseModel, mesh.matrixWorld);
-    bounds.union(box.applyMatrix4(transform));
-  };
-  // Transform each geometry's bounds into vehicle coordinates before unioning.
-  // Inverting a world-aligned box after a parent rotates inflates the result;
-  // hidden wheel/body variants can also extend beyond the displayed vehicle.
-  model.traverseVisible(include);
-  if (bounds.isEmpty()) model.traverse(include);
-  return bounds;
 }
 
 /** Four cold-gas jets, road-level spray and a separate rig preserve the model's authored transforms. */

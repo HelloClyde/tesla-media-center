@@ -1,5 +1,6 @@
 import * as T from 'three';
 import { isOfficialVehicle } from './teslaOfficialModel';
+import { vehicleLocalBounds } from './teslaModelBounds';
 
 function createOfficialVehicleLights(model: T.Object3D) {
   const group = new T.Group(); group.name = 'Vehicle_display_lights'; model.add(group);
@@ -22,23 +23,28 @@ function createOfficialVehicleLights(model: T.Object3D) {
   });
   // Combined light meshes span both ends. Derive anchors from the selected
   // model's body bounds so a Cybertruck or Semi does not keep Model Y anchors.
-  const bounds = new T.Box3().setFromObject(model);
+  // Lamps are children of the car. World-space bounds would apply its recenter,
+  // scale and rotation twice, putting grounded headlamps below the road.
+  const bounds = vehicleLocalBounds(model);
   const width = bounds.max.x - bounds.min.x;
   const height = bounds.max.y - bounds.min.y;
   const length = bounds.max.z - bounds.min.z;
-  const front = new T.Vector3(0, bounds.min.y + height * .35, bounds.min.z + length * .04);
-  const rear = new T.Vector3(0, bounds.min.y + height * .46, bounds.max.z - length * .04);
+  const centerX = (bounds.min.x + bounds.max.x) / 2;
+  // Start just outside the bumper so the car cannot occlude its own road beam.
+  const front = new T.Vector3(centerX, bounds.min.y + height * .35, bounds.min.z - length * .008);
+  const rear = new T.Vector3(centerX, bounds.min.y + height * .46, bounds.max.z - length * .04);
   const frontSign = -1;
   const beams: T.SpotLight[] = [], markers: T.PointLight[] = [];
   for (const side of [-1, 1]) {
     const beam = new T.SpotLight('#e5efff', 0, 42, .3, .65, 2);
-    beam.position.set(side * width * .34, front.y, front.z);
-    beam.target.position.set(side * width * .7, front.y - 1, front.z + frontSign * 20);
+    beam.position.set(centerX + side * width * .34, front.y, front.z);
+    beam.target.position.set(centerX + side * width * .7, bounds.min.y, front.z + frontSign * length * 4.2);
     beam.castShadow = side === -1;
     beam.shadow.mapSize.set(1024, 1024); beam.shadow.bias = -.00015; beam.shadow.normalBias = .025;
+    beam.shadow.camera.near = .15;
     group.add(beam, beam.target); beams.push(beam);
     const marker = new T.PointLight('#ff1525', 0, 1.5, 2);
-    marker.position.set(side * width * .35, rear.y, rear.z); group.add(marker); markers.push(marker);
+    marker.position.set(centerX + side * width * .35, rear.y, rear.z); group.add(marker); markers.push(marker);
   }
   return {
     setEnabled(enabled: boolean) {
