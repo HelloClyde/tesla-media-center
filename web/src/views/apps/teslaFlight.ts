@@ -73,73 +73,92 @@ export function createVehicleFlight(model: THREE.Group, groundY: number) {
   const anchors = [-1, 1].flatMap(x => [-1, 1].map(z => new THREE.Vector3(
     center.x + x * size.x * .31, bounds.min.y + size.y * .17, center.z + z * size.z * .3,
   )));
-  const uniforms = { time: { value: 0 }, power: { value: 0 } };
-  const plumeGeometry = new THREE.CylinderGeometry(.055, .24, 1, 18, 1, true);
-  const plumeMaterial = new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, side: THREE.DoubleSide,
-    blending: THREE.AdditiveBlending, toneMapped: false,
-    vertexShader: `varying vec2 vUv;
-      void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*instanceMatrix*vec4(position,1.);}`,
-    fragmentShader: `uniform float time;uniform float power;varying vec2 vUv;
-      void main(){
-        float downstream=1.-vUv.y;
-        float streak=.7+.3*sin(vUv.x*75.+sin(downstream*16.-time*22.)*1.5);
-        float pulse=.86+.14*sin(time*47.+downstream*25.);
-        float fade=smoothstep(0.,.14,vUv.y)*(.7+.3*vUv.y);
-        vec3 color=mix(vec3(.36,.73,1.),vec3(.85,.96,1.),vUv.y);
-        gl_FragColor=vec4(color,fade*streak*pulse*power*.46);
-      }`,
-  });
-  const jets = new THREE.InstancedMesh(plumeGeometry, plumeMaterial, 4);
-  const cores = new THREE.InstancedMesh(plumeGeometry, plumeMaterial, 4);
+  const uniforms = {
+    time: { value: 0 }, power: { value: 0 }, lift: { value: 0 },
+    rigMatrix: { value: new THREE.Matrix4() }, groundY: { value: groundY },
+  };
   const nozzleGeometry = new THREE.CylinderGeometry(.085, .065, .09, 16, 1, true);
   const nozzleMaterial = new THREE.MeshStandardMaterial({ color: '#2b3f48', metalness: .8, roughness: .3, side: THREE.DoubleSide });
   const nozzles = new THREE.InstancedMesh(nozzleGeometry, nozzleMaterial, 4);
-  const glowGeometry = new THREE.PlaneGeometry(1, 1);
-  const glowMaterial = new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
-    vertexShader: `varying vec2 vUv;
-      void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*instanceMatrix*vec4(position,1.);}`,
-    fragmentShader: `uniform float time;uniform float power;varying vec2 vUv;
-      void main(){float r=length(vUv*2.-1.);
-        float band=(r-.55-.035*sin(time*12.))*9.;float ring=exp(-band*band);
-        float center=exp(-r*r*12.);
-        gl_FragColor=vec4(.42,.72,.87,(ring*.12+center*.23)*power*(1.-smoothstep(.8,1.,r)));
-      }`,
-  });
-  const glows = new THREE.InstancedMesh(glowGeometry, glowMaterial, 4);
-  for (const mesh of [jets, cores, nozzles, glows]) {
-    mesh.frustumCulled = false;
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    exhaust.add(mesh);
-  }
-  const count = 160;
-  const positions = new Float32Array(count * 3);
-  const seeds = new Float32Array(count * 3);
+  nozzles.frustumCulled = false;
+  nozzles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  exhaust.add(nozzles);
+
+  // Soft billboards overlap into a turbulent white gas jet. They use ordinary
+  // alpha blending, so the exhaust has no luminous core or projected light pool.
+  // All particles move on the GPU; no textures or per-frame particle uploads.
+  const jetCount = 448;
+  const count = jetCount + 320;
+  const nozzleAnchors = new Float32Array(count * 3);
+  const seeds = new Float32Array(count * 4);
+  const groundClouds = new Float32Array(count);
   for (let i = 0; i < count; i++) {
     const anchor = anchors[i % 4];
-    positions.set([anchor.x, groundY + .025, anchor.z], i * 3);
-    seeds.set([i * 2.39996, .6 + (i % 11) / 20, (i * .618034) % 1], i * 3);
+    nozzleAnchors.set([anchor.x, anchor.y, anchor.z], i * 3);
+    seeds.set([(i * .618034) % 1, i * 2.39996, (i * .414214) % 1, (i * .732051) % 1], i * 4);
+    groundClouds[i] = i >= jetCount ? 1 : 0;
   }
-  const sprayGeometry = new THREE.BufferGeometry();
-  sprayGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  sprayGeometry.setAttribute('seed', new THREE.BufferAttribute(seeds, 3));
-  const sprayMaterial = new THREE.ShaderMaterial({
-    uniforms, transparent: true, depthWrite: false, toneMapped: false,
-    vertexShader: `attribute vec3 seed;uniform float time;uniform float power;varying float alpha;
-      void main(){float age=fract(time*.8+seed.z);float radius=age*1.9*seed.y;
-        vec3 p=position+vec3(cos(seed.x)*radius,sin(age*3.14159)*.22,sin(seed.x)*radius);
-        vec4 view=modelViewMatrix*vec4(p,1.);gl_Position=projectionMatrix*view;
-        gl_PointSize=clamp((18.+age*34.)/max(1.,-view.z),1.,13.);
-        alpha=sin(age*3.14159)*(1.-age)*power*.34;
+  const quad = new THREE.PlaneGeometry(1, 1);
+  const gasGeometry = new THREE.InstancedBufferGeometry();
+  gasGeometry.setIndex(quad.index!.clone());
+  gasGeometry.setAttribute('position', quad.getAttribute('position').clone());
+  gasGeometry.setAttribute('uv', quad.getAttribute('uv').clone());
+  quad.dispose();
+  gasGeometry.setAttribute('nozzleAnchor', new THREE.InstancedBufferAttribute(nozzleAnchors, 3));
+  gasGeometry.setAttribute('particleSeed', new THREE.InstancedBufferAttribute(seeds, 4));
+  gasGeometry.setAttribute('groundCloud', new THREE.InstancedBufferAttribute(groundClouds, 1));
+  gasGeometry.instanceCount = count;
+  const gasMaterial = new THREE.ShaderMaterial({
+    uniforms, transparent: true, depthWrite: false, blending: THREE.NormalBlending, toneMapped: false,
+    vertexShader: `
+      attribute vec3 nozzleAnchor;attribute vec4 particleSeed;attribute float groundCloud;
+      uniform float time;uniform float power;uniform float lift;uniform float groundY;uniform mat4 rigMatrix;
+      varying vec2 vUv;varying float vAlpha;varying float vAge;varying vec2 vNoiseOffset;
+      void main(){
+        float age=fract(time*mix(2.6,.75,groundCloud)+particleSeed.x);
+        vec3 nozzle=(rigMatrix*vec4(nozzleAnchor,1.)).xyz;
+        float distanceToRoad=max(.04,nozzle.y-groundY-.025);
+        float spread=.035+age*age*(.2+lift*.13);
+        float swirl=particleSeed.y+age*8.+time*1.4;
+        vec3 jet=nozzle+vec3(cos(swirl)*spread,-age*distanceToRoad,sin(swirl)*spread);
+        jet.y=max(groundY+.025,jet.y);
+        float radius=age*(1.45+lift*.55)*(.65+particleSeed.z*.5);
+        float angle=particleSeed.y+age*.8;
+        vec3 mist=vec3(nozzle.x+cos(angle)*radius,
+          groundY+.06+sin(age*3.14159)*(.18+particleSeed.w*.12)
+          +sin(age*14.+particleSeed.y)*.025,nozzle.z+sin(angle)*radius);
+        vec3 center=mix(jet,mist,groundCloud);
+        float size=mix(.14+age*.68,.5+age*1.3,groundCloud)*(.8+particleSeed.w*.4);
+        size*=.5+.5*power;
+        vec4 view=modelViewMatrix*vec4(center,1.);
+        view.xy+=position.xy*size;
+        gl_Position=projectionMatrix*view;
+        vUv=uv;vAge=age;vNoiseOffset=particleSeed.zw*23.;
+        float fade=smoothstep(0.,.08,age)*(1.-smoothstep(.68,1.,age));
+        vAlpha=fade*power*mix(.25,.12,groundCloud);
       }`,
-    fragmentShader: `varying float alpha;
-      void main(){float r=length(gl_PointCoord*2.-1.);if(r>1.)discard;
-        gl_FragColor=vec4(.74,.83,.87,alpha*(1.-smoothstep(.15,1.,r)));}`,
+    fragmentShader: `
+      varying vec2 vUv;varying float vAlpha;varying float vAge;varying vec2 vNoiseOffset;
+      float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+      float noise(vec2 p){
+        vec2 cell=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+        return mix(mix(hash(cell),hash(cell+vec2(1.,0.)),f.x),
+          mix(hash(cell+vec2(0.,1.)),hash(cell+vec2(1.,1.)),f.x),f.y);
+      }
+      void main(){
+        vec2 p=vUv*2.-1.;float r=length(p);
+        if(r>1.)discard;
+        vec2 flow=vUv*3.6+vNoiseOffset+vec2(vAge*.8,-vAge*1.5);
+        float billow=.65*noise(flow)+.35*noise(flow*2.1);
+        float edge=1.-smoothstep(.22+billow*.18,.86+billow*.14,r);
+        float alpha=edge*(.5+billow*.5)*vAlpha;
+        gl_FragColor=vec4(vec3(.88+billow*.12),alpha);
+      }`,
   });
-  const spray = new THREE.Points(sprayGeometry, sprayMaterial);
-  spray.frustumCulled = false;
-  exhaust.add(spray);
+  const gas = new THREE.Mesh(gasGeometry, gasMaterial);
+  gas.name = 'Vehicle_white_gas';
+  gas.frustumCulled = false;
+  exhaust.add(gas);
   const transform = new THREE.Object3D();
   const nozzle = new THREE.Vector3();
   function update(dt: number) {
@@ -152,30 +171,17 @@ export function createVehicleFlight(model: THREE.Group, groundY: number) {
     exhaust.visible = timeline.active;
     uniforms.time.value = state.time;
     uniforms.power.value = state.power;
+    uniforms.lift.value = state.height;
+    uniforms.rigMatrix.value.copy(rig.matrix);
     if (exhaust.visible) anchors.forEach((anchor, i) => {
       nozzle.copy(anchor).applyMatrix4(rig.matrix);
-      const length = Math.max(.04, nozzle.y - groundY - .025);
-      const spread = (.65 + state.height * .42) * Math.max(.1, state.power);
       transform.rotation.set(0, 0, 0);
       transform.position.copy(nozzle);
       transform.scale.setScalar(1);
       transform.updateMatrix();
       nozzles.setMatrixAt(i, transform.matrix);
-      transform.position.y -= length * .5;
-      transform.scale.set(spread, length, spread);
-      transform.updateMatrix();
-      jets.setMatrixAt(i, transform.matrix);
-      transform.position.y = nozzle.y - length * .36;
-      transform.scale.set(spread * .33, length * .72, spread * .33);
-      transform.updateMatrix();
-      cores.setMatrixAt(i, transform.matrix);
-      transform.position.set(nozzle.x, groundY + .018, nozzle.z);
-      transform.rotation.x = -Math.PI / 2;
-      transform.scale.setScalar(1.1 + state.height * .65);
-      transform.updateMatrix();
-      glows.setMatrixAt(i, transform.matrix);
     });
-    for (const mesh of [jets, cores, nozzles, glows]) mesh.instanceMatrix.needsUpdate = true;
+    nozzles.instanceMatrix.needsUpdate = true;
     return state;
   }
   return {
@@ -189,11 +195,9 @@ export function createVehicleFlight(model: THREE.Group, groundY: number) {
       parent.add(model);
       rig.removeFromParent();
       exhaust.removeFromParent();
-      plumeGeometry.dispose(); plumeMaterial.dispose();
       nozzleGeometry.dispose(); nozzleMaterial.dispose();
-      glowGeometry.dispose(); glowMaterial.dispose();
-      sprayGeometry.dispose(); sprayMaterial.dispose();
-      for (const mesh of [jets, cores, nozzles, glows]) mesh.dispose();
+      gasGeometry.dispose(); gasMaterial.dispose();
+      nozzles.dispose();
     },
   };
 }

@@ -412,8 +412,6 @@ const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
 const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
-const FLIGHT_CAMERA_POSITION = new THREE.Vector3(-3.4, 3.8, 8.8);
-const FLIGHT_CAMERA_TARGET = new THREE.Vector3(0, 1.9, 0);
 const VEHICLE_MAX_RENDER_PIXELS = 1_400_000;
 
 function vehiclePixelRatio(width: number, height: number) {
@@ -736,15 +734,6 @@ function getVehicleCameraPresetByShift(shiftState: string) {
   return {
     position: PARK_VEHICLE_CAMERA_POSITION,
     target: PARK_VEHICLE_CAMERA_TARGET,
-  };
-}
-
-function getVehicleFlightCameraPreset() {
-  // The whole street rotates with the gear preset. Keep the camera over the road,
-  // rather than moving it into a pavement tree when the parked scene faces sideways.
-  return {
-    position: FLIGHT_CAMERA_POSITION.clone().applyAxisAngle(THREE.Object3D.DEFAULT_UP, getVehicleOrientationByShift(currentShiftState.value)),
-    target: FLIGHT_CAMERA_TARGET,
   };
 }
 
@@ -1763,7 +1752,6 @@ function startVehicleRenderLoop() {
       flightPhase.value = vehicleFlight!.update(deltaSec).phase;
       if (!vehicleFlight!.active) {
         vehicleRenderer.shadowMap.needsUpdate = true;
-        resetVehicleView();
       }
     }
     const cameraUpdated = vehicleControls?.update();
@@ -1836,9 +1824,7 @@ function updateVehicleVisualState(immediate = false) {
     return;
   }
   const targetRotationY = getVehicleOrientationByShift(currentShiftState.value);
-  const preset = vehicleFlight?.active
-    ? getVehicleFlightCameraPreset()
-    : getVehicleCameraPresetByShift(currentShiftState.value);
+  const preset = getVehicleCameraPresetByShift(currentShiftState.value);
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
     vehicleResetViewTimer = null;
@@ -1859,6 +1845,7 @@ function updateVehicleVisualState(immediate = false) {
 }
 
 function scheduleVehicleViewReset() {
+  if (vehicleFlight?.active) return;
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
   }
@@ -1915,11 +1902,6 @@ function animateVehicleView(toPosition: THREE.Vector3, toTarget: THREE.Vector3, 
 }
 
 function resetVehicleView() {
-  if (vehicleFlight?.active) {
-    const preset = getVehicleFlightCameraPreset();
-    animateVehicleView(preset.position, preset.target);
-    return;
-  }
   const preset = getVehicleCameraPresetByShift(currentShiftState.value);
   animateVehicleView(preset.position, preset.target);
 }
@@ -1932,11 +1914,11 @@ function toggleVehicleFlight() {
     return;
   }
   if (vehicleFlight.start()) {
+    stopVehicleViewTween();
     flightPhase.value = 'ignition';
     vehicleMotionState.lastFrameTime = 0;
     if (vehicleResetViewTimer !== null) window.clearTimeout(vehicleResetViewTimer);
     vehicleResetViewTimer = null;
-    resetVehicleView();
   }
 }
 
