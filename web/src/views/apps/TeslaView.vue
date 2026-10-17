@@ -7,6 +7,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { configureStreetSun, applyStreetLighting, VEHICLE_SUN_DIRECTION } from './teslaSceneLighting';
 import { captureStreetReflections } from './teslaReflections';
 import { createVehicleWipers } from './teslaWipers';
+import { createVehicleFlight, type VehicleFlightPhase } from './teslaFlight';
 import { createOfficialDoorController, isOfficialVehicle, loadVehicleModel, prepareOfficialVehicle, vehicleModelVariant, resolvedVehicleModelVariant, MANUAL_MODEL_STORAGE_KEY, type VehicleModelVariant } from './teslaOfficialModel';
 import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
 import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
@@ -366,6 +367,12 @@ let vehicleModelRoot: THREE.Group | null = null;
 let vehicleModelPivot: THREE.Group | null = null;
 let vehicleRoadMesh: THREE.Mesh | null = null;
 let vehicleModelBasePositionY = 0;
+let vehicleFlight: ReturnType<typeof createVehicleFlight> | undefined;
+const flightPhase = ref<VehicleFlightPhase>('idle');
+const flightLabels: Record<VehicleFlightPhase, string> = {
+  idle: '喷气飞行', ignition: '喷气启动', ascent: '正在升空',
+  hover: '提前降落', landing: '正在降落',
+};
 let vehicleControls: OrbitControls | null = null;
 let vehicleCameraDirty = false;
 let resizeHandler: (() => void) | null = null;
@@ -405,6 +412,8 @@ const REVERSE_VEHICLE_CAMERA_POSITION = new THREE.Vector3(3.6, 2.9, 7.2);
 const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
+const FLIGHT_CAMERA_POSITION = new THREE.Vector3(-3.4, 3.8, 8.8);
+const FLIGHT_CAMERA_TARGET = new THREE.Vector3(0, 1.9, 0);
 const VEHICLE_MAX_RENDER_PIXELS = 1_400_000;
 
 function vehiclePixelRatio(width: number, height: number) {
@@ -727,6 +736,15 @@ function getVehicleCameraPresetByShift(shiftState: string) {
   return {
     position: PARK_VEHICLE_CAMERA_POSITION,
     target: PARK_VEHICLE_CAMERA_TARGET,
+  };
+}
+
+function getVehicleFlightCameraPreset() {
+  // The whole street rotates with the gear preset. Keep the camera over the road,
+  // rather than moving it into a pavement tree when the parked scene faces sideways.
+  return {
+    position: FLIGHT_CAMERA_POSITION.clone().applyAxisAngle(THREE.Object3D.DEFAULT_UP, getVehicleOrientationByShift(currentShiftState.value)),
+    target: FLIGHT_CAMERA_TARGET,
   };
 }
 
@@ -1609,6 +1627,7 @@ function initVehicleViewer() {
     vehicleModelPivot?.add(model);
     vehicleModelPivot?.updateMatrixWorld(true);
     detectVehicleWheelMeshes(model, new THREE.Box3().setFromObject(model));
+    vehicleFlight = createVehicleFlight(model, vehicleRoadMesh?.position.y ?? 0);
     updateVehicleVisualState(true);
     vehicleWeather?.setImpactSurface(model);
     resizeVehicleViewer();
@@ -1693,7 +1712,7 @@ function updateVehicleMotion(now: number) {
     if (vehicleModelRoot) {
       vehicleModelRoot.position.y = vehicleModelBasePositionY;
     }
-    return;
+    return deltaSec;
   }
 
   if (vehicleRoadMesh) {
@@ -1714,7 +1733,7 @@ function updateVehicleMotion(now: number) {
   }
 
   if (!profile.moving) {
-    return;
+    return deltaSec;
   }
 
   // Road texture repeats once per street block; scenery uses that same physical displacement.
@@ -1723,6 +1742,7 @@ function updateVehicleMotion(now: number) {
   vehicleWheelMeshes.forEach(({ mesh, axis, direction }) => {
     mesh.rotation[axis] += deltaSec * profile.wheelSpeed * profile.direction * direction;
   });
+  return deltaSec;
 }
 
 function startVehicleRenderLoop() {
@@ -1737,12 +1757,20 @@ function startVehicleRenderLoop() {
     if (!state.documentVisible || state.activeTab !== 'status') return;
     const now = performance.now();
     updateVehiclePoseTween(now);
-    updateVehicleMotion(now);
+    const deltaSec = updateVehicleMotion(now);
+    const wasFlying = !!vehicleFlight?.active;
+    if (wasFlying) {
+      flightPhase.value = vehicleFlight!.update(deltaSec).phase;
+      if (!vehicleFlight!.active) {
+        vehicleRenderer.shadowMap.needsUpdate = true;
+        resetVehicleView();
+      }
+    }
     const cameraUpdated = vehicleControls?.update();
     const cameraChanged = cameraUpdated || vehicleCameraDirty;
     vehicleCameraDirty = false;
     const doorsMoving = officialDoorController?.moving(modelDoorsOpen.value) || vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
-    const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween;
+    const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween || wasFlying;
     const weatherMoving = activeWeather.value === 'rain' || activeWeather.value === 'snow' || wipersMoving;
     if (!moving && !weatherMoving && !cameraChanged && !vehicleViewTween && !streetReflectionsDirty) return;
     if (moving && now - lastShadowUpdate >= 80) {
@@ -1808,7 +1836,9 @@ function updateVehicleVisualState(immediate = false) {
     return;
   }
   const targetRotationY = getVehicleOrientationByShift(currentShiftState.value);
-  const preset = getVehicleCameraPresetByShift(currentShiftState.value);
+  const preset = vehicleFlight?.active
+    ? getVehicleFlightCameraPreset()
+    : getVehicleCameraPresetByShift(currentShiftState.value);
   if (vehicleResetViewTimer !== null) {
     window.clearTimeout(vehicleResetViewTimer);
     vehicleResetViewTimer = null;
@@ -1885,11 +1915,41 @@ function animateVehicleView(toPosition: THREE.Vector3, toTarget: THREE.Vector3, 
 }
 
 function resetVehicleView() {
+  if (vehicleFlight?.active) {
+    const preset = getVehicleFlightCameraPreset();
+    animateVehicleView(preset.position, preset.target);
+    return;
+  }
   const preset = getVehicleCameraPresetByShift(currentShiftState.value);
   animateVehicleView(preset.position, preset.target);
 }
 
+function toggleVehicleFlight() {
+  if (!vehicleFlight || state.visualLoading) return;
+  if (vehicleFlight.active) {
+    vehicleFlight.land();
+    flightPhase.value = 'landing';
+    return;
+  }
+  if (vehicleFlight.start()) {
+    flightPhase.value = 'ignition';
+    vehicleMotionState.lastFrameTime = 0;
+    if (vehicleResetViewTimer !== null) window.clearTimeout(vehicleResetViewTimer);
+    vehicleResetViewTimer = null;
+    resetVehicleView();
+  }
+}
+
+function resetVehicleFlight() {
+  stopVehicleViewTween();
+  vehicleFlight?.reset();
+  flightPhase.value = 'idle';
+  vehicleMotionState.lastFrameTime = 0;
+}
+
 function disposeVehicleViewer() {
+  resetVehicleFlight();
+  vehicleFlight?.dispose(); vehicleFlight = undefined;
   vehicleCameraDirty = false;
   vehicleLights?.dispose(); vehicleLights = undefined;
   vehicleWeather?.dispose();vehicleWeather=undefined;
@@ -2167,6 +2227,12 @@ onBeforeUnmount(() => {
 });
 
 watch(()=>[state.documentVisible,state.pageExposed,state.activeTab],()=>void refreshWeather());
+watch(() => [state.documentVisible, state.pageExposed, state.activeTab], () => {
+  if (flightPhase.value !== 'idle' && (!state.documentVisible || !state.pageExposed || state.activeTab !== 'status')) {
+    resetVehicleFlight();
+    updateVehicleVisualState(true);
+  }
+});
 watch(weatherMode,()=>{queueSceneSave();void refreshWeather();});
 watch(activeWeather,()=>updateSceneLighting());
 watch(()=>[state.latestSample?.latitude==null?'':Number(state.latestSample.latitude).toFixed(1),state.latestSample?.longitude==null?'':Number(state.latestSample.longitude).toFixed(1)].join(','),()=>void refreshWeather());
@@ -2271,6 +2337,11 @@ watch(activeModelVariant, (variant, previous) => {
                   title="仅演示模型，不控制真实车辆" @click="modelDoorsOpen = !modelDoorsOpen">
                   {{ modelDoorsOpen ? '收起车门' : '展开车门' }}
                 </button>
+                  <button class="vehicle-flight-trigger" type="button" :aria-pressed="flightPhase !== 'idle'"
+                    :disabled="state.visualLoading || flightPhase === 'landing'" title="3D 场景飞行特效；飞行时可点击提前降落"
+                    @click="toggleVehicleFlight">
+                    <span class="vehicle-flight-icon" aria-hidden="true"></span>{{ flightLabels[flightPhase] }}
+                  </button>
                   <button :aria-pressed="headlights" aria-label="切换车辆灯光" @click="headlights = !headlights">{{ headlights ? '车灯 · 开' : '车灯 · 关' }}</button>
                   <button :aria-pressed="sceneNight" aria-label="切换昼夜场景" @click="sceneNight = !sceneNight">{{ sceneNight ? '夜间' : '白天' }}</button>
                   <el-popover v-model:visible="weatherMenuOpen" trigger="click" placement="top-end" :width="188" :offset="12" :show-arrow="false" popper-class="vehicle-weather-popper">
@@ -3238,6 +3309,19 @@ watch(activeModelVariant, (variant, previous) => {
 }
 .vehicle-map-controls button:focus-visible {
   outline: 2px solid #89c7ff; outline-offset: -2px;
+}
+.vehicle-map-controls .vehicle-flight-trigger { display: inline-flex; align-items: center; gap: 8px; color: #bcefff; }
+.vehicle-map-controls .vehicle-flight-trigger[aria-pressed=true] {
+  color: #e4faff; border-color: #7adfff66; background: #338ca138;
+}
+.vehicle-map-controls button:disabled { cursor: default; opacity: .65; }
+.vehicle-flight-icon {
+  display: inline-block; width: 12px; height: 13px; box-sizing: border-box; position: relative;
+  border: 1.5px solid currentColor; border-radius: 7px 7px 3px 3px;
+}
+.vehicle-flight-icon::after {
+  content: ''; position: absolute; width: 6px; height: 5px; left: 1.5px; top: 13px;
+  border-left: 1.5px solid currentColor; border-right: 1.5px solid currentColor;
 }
 .vehicle-map-controls .vehicle-weather-trigger { min-height: 48px; padding: 10px 16px; font-size: 14px; background: #ffffff20; border-color: #ffffff30; }
 .vehicle-weather-caret {
