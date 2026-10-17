@@ -55,7 +55,10 @@ describe('vehicle flight lifecycle', () => {
     const rig = parent.getObjectByName('Vehicle_flight_rig')!;
     expect(exhaust.visible).toBe(false);
     flight.start();
-    for (let i = 0; i < 200; i++) flight.update(1 / 60);
+    for (let i = 0; i < 200; i++) {
+      flight.update(1 / 60);
+      expect(rig.rotation.toArray().slice(0, 3)).toEqual([0, 0, 0]);
+    }
     expect(rig.position.y).toBeGreaterThan(1.3);
     expect(exhaust.position.y).toBe(0);
     expect(model.position.equals(original)).toBe(true);
@@ -72,5 +75,50 @@ describe('vehicle flight lifecycle', () => {
     expect(parent.children).toEqual([model]);
     body.geometry.dispose();
     body.material.dispose();
+  });
+
+  it('keeps nozzle mounts and gas attached under rotated parents and changing model transforms', () => {
+    const parent = new THREE.Group();
+    parent.position.set(3, .85, -2);
+    parent.rotation.y = .63;
+    const model = new THREE.Group();
+    const geometry = new THREE.BoxGeometry(1.8, 1.6, 4.8);
+    const material = new THREE.MeshBasicMaterial();
+    model.add(new THREE.Mesh(geometry, material));
+    const hidden = new THREE.Mesh(new THREE.BoxGeometry(100, 100, 100), material);
+    hidden.visible = false;
+    model.add(hidden);
+    model.position.set(.2, -.1, .4);
+    model.rotation.y = Math.PI;
+    model.scale.setScalar(.9);
+    parent.add(model);
+    const flight = createVehicleFlight(model, -.9);
+    const exhaust = parent.getObjectByName('Vehicle_flight_exhaust')!;
+    const nozzles = exhaust.children.find(child => child instanceof THREE.InstancedMesh) as THREE.InstancedMesh;
+    const gas = parent.getObjectByName('Vehicle_white_gas') as THREE.Mesh<THREE.InstancedBufferGeometry, THREE.ShaderMaterial>;
+    const anchors = gas.geometry.getAttribute('nozzleAnchor');
+    const matrix = new THREE.Matrix4();
+    flight.start();
+    for (const scale of [.9, .7, 1.1]) {
+      model.position.x += .2;
+      model.scale.setScalar(scale);
+      model.rotation.y += .2;
+      flight.update(.1);
+      for (const root of flight.matrixRoots) root.updateWorldMatrix(true, true);
+      const expectedLocal = [-1, 1].flatMap(x => [-1, 1].map(z => new THREE.Vector3(x * 1.8 * .31, -.8 + 1.6 * .17, z * 4.8 * .3)));
+      expectedLocal.forEach((anchor, i) => {
+        const expected = model.localToWorld(anchor);
+        nozzles.getMatrixAt(i, matrix);
+        const mount = new THREE.Vector3().setFromMatrixPosition(matrix).applyMatrix4(nozzles.matrixWorld);
+        expect(mount.distanceTo(expected)).toBeLessThan(.00001);
+        const vehicleMatrix = gas.material.uniforms.vehicleMatrix?.value || new THREE.Matrix4();
+        const source = new THREE.Vector3().fromBufferAttribute(anchors, i).applyMatrix4(vehicleMatrix);
+        source.y += gas.material.uniforms.lift.value;
+        source.applyMatrix4(gas.matrixWorld);
+        expect(source.distanceTo(expected)).toBeLessThan(.00001);
+      });
+    }
+    flight.dispose();
+    geometry.dispose(); hidden.geometry.dispose(); material.dispose();
   });
 });

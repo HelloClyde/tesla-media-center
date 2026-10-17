@@ -8,6 +8,8 @@ import { configureStreetSun, applyStreetLighting, VEHICLE_SUN_DIRECTION } from '
 import { captureStreetReflections } from './teslaReflections';
 import { createVehicleWipers } from './teslaWipers';
 import { createVehicleFlight, type VehicleFlightPhase } from './teslaFlight';
+import { createSceneMatrixCache } from './teslaSceneMatrices';
+import { createFlightRenderBudget } from './teslaFlightRenderBudget';
 import { createOfficialDoorController, isOfficialVehicle, loadVehicleModel, prepareOfficialVehicle, vehicleModelVariant, resolvedVehicleModelVariant, MANUAL_MODEL_STORAGE_KEY, type VehicleModelVariant } from './teslaOfficialModel';
 import { createVehicleWeather, applyWeatherLighting } from './teslaWeather';
 import { fetchVehicleWeather, weatherLabels, type SceneWeather } from './teslaWeatherData';
@@ -247,6 +249,7 @@ let lastForcedSyncAt = 0;
 let tabPollInFlight = false;
 let pendingTabRefreshOptions: { allowForceSync?: boolean; immediate?: boolean; includeMeta?: boolean } | null = null;
 let vehicleScene: THREE.Scene | null = null;
+let vehicleSceneMatrices: ReturnType<typeof createSceneMatrixCache> | undefined;
 let streetReflectionsReady = false;
 let streetReflectionsDirty = true;
 let vehicleEnvironment: THREE.WebGLRenderTarget | null = null;
@@ -298,6 +301,7 @@ headlights.value = sceneNight.value;
 function updateSceneLighting() {
   if (!vehicleScene || !vehicleSky || !vehicleRenderer || !sunLight || !skyLight) return;
   const night = sceneNight.value;
+  vehicleSceneMatrices?.invalidate();
   vehicleLights?.setEnabled(headlights.value);
   vehicleSky.visible = !night;
   vehicleScene.background = new THREE.Color(night ? '#070e20' : '#c6d9e5');
@@ -413,9 +417,10 @@ const REVERSE_VEHICLE_CAMERA_TARGET = new THREE.Vector3(0, 1.2, 0);
 const PARK_VEHICLE_CAMERA_POSITION = DEFAULT_VEHICLE_CAMERA_POSITION.clone();
 const PARK_VEHICLE_CAMERA_TARGET = DEFAULT_VEHICLE_CAMERA_TARGET.clone();
 const VEHICLE_MAX_RENDER_PIXELS = 1_400_000;
+const vehicleFlightBudget = createFlightRenderBudget();
 
 function vehiclePixelRatio(width: number, height: number) {
-  return Math.min(window.devicePixelRatio || 1, 1, Math.sqrt(VEHICLE_MAX_RENDER_PIXELS / Math.max(1, width * height)));
+  return vehicleFlightBudget.scale * Math.min(window.devicePixelRatio || 1, 1, Math.sqrt(VEHICLE_MAX_RENDER_PIXELS / Math.max(1, width * height)));
 }
 
 type TeslaTabName = 'status' | 'track' | 'trip' | 'raw' | 'settings';
@@ -1444,6 +1449,7 @@ function initVehicleViewer() {
 
   const container = vehicleVisualRef.value;
   vehicleScene = new THREE.Scene();
+  vehicleSceneMatrices = createSceneMatrixCache(vehicleScene);
   vehicleScene.background = new THREE.Color('#c6d9e5');
   vehicleScene.fog = new THREE.Fog('#c6d9e5', 65, 220);
 
@@ -1637,7 +1643,7 @@ function initVehicleViewer() {
   startVehicleRenderLoop();
 }
 
-function resizeVehicleViewer() {
+function resizeVehicleViewer(render = true) {
   if (!vehicleVisualRef.value || !vehicleRenderer || !vehicleCamera) {
     return;
   }
@@ -1649,18 +1655,20 @@ function resizeVehicleViewer() {
   vehicleCamera.aspect = width / height;
   vehicleCamera.zoom = appearanceOpen.value ? Math.min(1, width / height / 1.1) : 1;
   vehicleCamera.updateProjectionMatrix();
-  renderVehicleViewer();
+  if (render) renderVehicleViewer();
 }
 
 let lastShadowUpdate = 0;
+let lastFlightShadowHeight = 0;
 function renderVehicleViewer(refreshShadows = true) {
   if (!vehicleRenderer || !vehicleScene || !vehicleCamera) {
     return;
   }
   if (refreshShadows) vehicleRenderer.shadowMap.needsUpdate = true;
+  if (refreshShadows || streetReflectionsDirty) vehicleSceneMatrices?.invalidate();
+  vehicleSceneMatrices?.update(vehicleFlight?.matrixRoots);
   if (streetReflectionsReady && streetReflectionsDirty && vehicleModelRoot) {
     streetReflectionsDirty=false;
-    vehicleScene.updateMatrixWorld(true);
     const position=vehicleModelRoot.getWorldPosition(new THREE.Vector3());position.y+=1.3;
     const reflection=captureStreetReflections(vehicleRenderer,vehicleScene,vehicleModelRoot,position);
     vehicleScene.environment=reflection.texture;
@@ -1669,8 +1677,7 @@ function renderVehicleViewer(refreshShadows = true) {
   vehicleRenderer.render(vehicleScene, vehicleCamera);
 }
 
-function updateVehicleMotion(now: number) {
-  const profile = getVehicleMotionProfile();
+function updateVehicleMotion(now: number, profile: ReturnType<typeof getVehicleMotionProfile>) {
   vehicleStreet?.setParked(!profile.moving);
   const deltaSec = vehicleMotionState.lastFrameTime ? Math.min((now - vehicleMotionState.lastFrameTime) / 1000, 0.05) : 0;
   vehicleMotionState.lastFrameTime = now;
@@ -1727,6 +1734,7 @@ function updateVehicleMotion(now: number) {
 
   // Road texture repeats once per street block; scenery uses that same physical displacement.
   vehicleStreet?.advance(deltaSec * profile.roadSpeed * ROAD_TEXTURE_LENGTH * profile.direction);
+  vehicleSceneMatrices?.invalidate();
 
   vehicleWheelMeshes.forEach(({ mesh, axis, direction }) => {
     mesh.rotation[axis] += deltaSec * profile.wheelSpeed * profile.direction * direction;
@@ -1746,24 +1754,39 @@ function startVehicleRenderLoop() {
     if (!state.documentVisible || state.activeTab !== 'status') return;
     const now = performance.now();
     updateVehiclePoseTween(now);
-    const deltaSec = updateVehicleMotion(now);
+    const frameElapsed = vehicleMotionState.lastFrameTime ? now - vehicleMotionState.lastFrameTime : 0;
+    const profile = getVehicleMotionProfile();
+    const deltaSec = updateVehicleMotion(now, profile);
     const wasFlying = !!vehicleFlight?.active;
+    let flightHeight = lastFlightShadowHeight;
     if (wasFlying) {
-      flightPhase.value = vehicleFlight!.update(deltaSec).phase;
+      const previousScale = vehicleFlightBudget.scale;
+      vehicleFlightBudget.sample(frameElapsed);
+      const flight = vehicleFlight!.update(deltaSec);
+      flightPhase.value = flight.phase;
+      flightHeight = flight.height;
       if (!vehicleFlight!.active) {
         vehicleRenderer.shadowMap.needsUpdate = true;
+        lastFlightShadowHeight = 0;
+        vehicleFlightBudget.reset();
       }
+      if (vehicleFlightBudget.scale !== previousScale) resizeVehicleViewer(false);
     }
     const cameraUpdated = vehicleControls?.update();
     const cameraChanged = cameraUpdated || vehicleCameraDirty;
     vehicleCameraDirty = false;
     const doorsMoving = officialDoorController?.moving(modelDoorsOpen.value) || vehicleDoorNodes.some(door => Math.abs(door.rotation.y - (modelDoorsOpen.value ? Number(door.userData.openAngle) || 0 : 0)) > .002);
-    const moving = getVehicleMotionProfile().moving || doorsMoving || !!vehiclePoseTween || wasFlying;
+    const sceneMoving = profile.moving || doorsMoving || !!vehiclePoseTween;
+    const moving = sceneMoving || wasFlying;
     const weatherMoving = activeWeather.value === 'rain' || activeWeather.value === 'snow' || wipersMoving;
     if (!moving && !weatherMoving && !cameraChanged && !vehicleViewTween && !streetReflectionsDirty) return;
-    if (moving && now - lastShadowUpdate >= 80) {
+    // Static hover particles do not change the street's shadows. Update only
+    // for meaningful height changes, while driving/doors retain their cadence.
+    const flightShadowChanged = wasFlying && Math.abs(flightHeight - lastFlightShadowHeight) >= .12;
+    if ((sceneMoving && now - lastShadowUpdate >= 80) || (flightShadowChanged && now - lastShadowUpdate >= 160)) {
       vehicleRenderer.shadowMap.needsUpdate = true;
       lastShadowUpdate = now;
+      lastFlightShadowHeight = flightHeight;
     }
     renderVehicleViewer(false);
   };
@@ -1800,6 +1823,7 @@ function updateVehiclePoseTween(now: number) {
   const eased = easeInOutCubic(progress);
   const delta = normalizeAngleDelta(vehiclePoseTween.toRotationY - vehiclePoseTween.fromRotationY);
   vehicleModelPivot.rotation.y = vehiclePoseTween.fromRotationY + delta * eased;
+  vehicleSceneMatrices?.invalidate();
   if (progress >= 1) {
     vehicleModelPivot.rotation.y = vehiclePoseTween.toRotationY;
     stopVehiclePoseTween();
@@ -1915,6 +1939,8 @@ function toggleVehicleFlight() {
   }
   if (vehicleFlight.start()) {
     stopVehicleViewTween();
+    lastFlightShadowHeight = 0;
+    vehicleFlightBudget.reset();
     flightPhase.value = 'ignition';
     vehicleMotionState.lastFrameTime = 0;
     if (vehicleResetViewTimer !== null) window.clearTimeout(vehicleResetViewTimer);
@@ -1922,15 +1948,20 @@ function toggleVehicleFlight() {
   }
 }
 
-function resetVehicleFlight() {
+function resetVehicleFlight(resize = true) {
   stopVehicleViewTween();
   vehicleFlight?.reset();
   flightPhase.value = 'idle';
+  lastFlightShadowHeight = 0;
+  const previousScale = vehicleFlightBudget.scale;
+  vehicleFlightBudget.reset();
+  if (resize && previousScale !== 1) resizeVehicleViewer(false);
   vehicleMotionState.lastFrameTime = 0;
 }
 
 function disposeVehicleViewer() {
-  resetVehicleFlight();
+  vehicleSceneMatrices?.dispose(); vehicleSceneMatrices = undefined;
+  resetVehicleFlight(false);
   vehicleFlight?.dispose(); vehicleFlight = undefined;
   vehicleCameraDirty = false;
   vehicleLights?.dispose(); vehicleLights = undefined;

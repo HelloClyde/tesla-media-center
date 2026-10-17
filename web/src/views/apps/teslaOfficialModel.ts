@@ -89,10 +89,12 @@ export function prepareOfficialVehicle(model: THREE.Object3D) {
   model.updateWorldMatrix(true, true);
   const defrost = model.getObjectByName('Defrost_Front');
   if (defrost) model.userData.windshieldBounds = new THREE.Box3().setFromObject(defrost);
-  // These are the phone app's studio floor and projected light quads, not car parts.
-  for (const name of ['Floor', 'Headlights_Projections', 'Taillights_Projection', 'Defrost_Front', 'Defrost_Rear']) {
-    model.getObjectByName(name)?.removeFromParent();
-  }
+  // Studio quads vary by model and may carry numeric export suffixes. Exclude
+  // them before fitting the car and calculating chassis-mounted flight nozzles.
+  const studioNode = /^(?:Floor(?:_LongRange)?|Ground_Shadow|Headlights_Projections?|Taillights_Projections?|Stoplights_Projections?(?:_LongRange)?|Parking_Light_Projection|BrakeLightProjection|HeadLightProjection|Defrost_(?:Front|Rear))\d*$/;
+  const remove: THREE.Object3D[] = [];
+  model.traverse(node => { if (studioNode.test(node.name)) remove.push(node); });
+  for (const node of remove) node.removeFromParent();
   return true;
 }
 
