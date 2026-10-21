@@ -1,6 +1,6 @@
 from flask import Flask, request, Response, jsonify, stream_with_context, redirect, send_from_directory, abort, send_file, make_response
 import requests
-from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass, login_v2, user, favorite_list
+from bilibili_api import video, Credential, HEADERS, bangumi, sync, homepage, hot, rank, search, ass, user, favorite_list
 from loguru import logger
 import imageio_ffmpeg
 import subprocess
@@ -15,7 +15,7 @@ import re
 import shutil
 from bilibili_api.exceptions import ResponseCodeException
 from bilibili_api import utils as bilibili_utils
-import base64
+from ffvideo.bili_auth import BilibiliQrLogin, BilibiliAuthError
 from ffvideo.bili_source import build_direct_source
 from ffvideo.bili_relay import relay_source, media_range
 
@@ -156,6 +156,8 @@ def get_bilibili_credential():
 
 
 def save_bilibili_credential(credential: Credential):
+    if not all((credential.sessdata, credential.bili_jct, credential.dedeuserid)):
+        raise BilibiliAuthError('未获取完整的B站登录凭据，请重新扫码')
     put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['sessdata'], credential.sessdata or '')
     put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['bili_jct'], credential.bili_jct or '')
     put_config_by_key(BILIBILI_CREDENTIAL_CONFIG_KEYS['buvid3'], credential.buvid3 or '')
@@ -189,11 +191,16 @@ def get_bilibili_auth_status():
             },
         }
     except Exception as e:
-        logger.warning(f'failed to read bilibili auth status: {e}')
-        clear_bilibili_credential()
+        code = getattr(e, 'code', None)
+        logger.warning('failed to read bilibili auth status: type={} code={}', type(e).__name__, code)
+        # A timeout or risk-control response does not invalidate saved cookies.
+        expired = isinstance(e, ResponseCodeException) and code == -101
+        if expired:
+            clear_bilibili_credential()
         return {
-            'loggedIn': False,
+            'loggedIn': not expired,
             'profile': None,
+            'verificationPending': not expired,
         }
 
 
@@ -515,13 +522,19 @@ def add_bv_route(app):
     def create_bilibili_login_qrcode():
         global qr_login
         with qr_login_lock:
-            qr_login = login_v2.QrCodeLogin()
-            sync(qr_login.generate_qrcode())
-            pic = qr_login.get_qrcode_picture()
-            qrcode_data_url = f'data:image/{pic.imageType};base64,{base64.b64encode(pic.content).decode("ascii")}'
+            pending = BilibiliQrLogin()
+            try:
+                qrcode_data_url = pending.generate_qrcode()
+            except Exception as e:
+                pending.close()
+                logger.warning('generate bilibili qrcode failed: {}', type(e).__name__)
+                message = str(e) if isinstance(e, BilibiliAuthError) else '生成B站登录二维码失败，请稍后重试'
+                return json_fail('qrcode_generate_failed', message=message), 502
+            if qr_login is not None:
+                qr_login.close()
+            qr_login = pending
             return json_ok({
                 'qrcode': qrcode_data_url,
-                'terminal': qr_login.get_qrcode_terminal(),
                 'status': 'pending',
             })
 
@@ -534,30 +547,36 @@ def add_bv_route(app):
                 return json_fail('qrcode_not_found', message='请先生成二维码'), 404
 
             try:
-                event = sync(qr_login.check_state())
-                status = event.value
-                if event == login_v2.QrCodeLoginEvents.DONE:
+                status = qr_login.check_state()
+                if status == 'done':
                     credential = qr_login.get_credential()
                     save_bilibili_credential(credential)
+                    qr_login.close()
                     qr_login = None
                     auth_status = get_bilibili_auth_status()
                     auth_status['status'] = status
                     return json_ok(auth_status)
-                if event == login_v2.QrCodeLoginEvents.TIMEOUT:
+                if status == 'timeout':
+                    qr_login.close()
                     qr_login = None
                 return json_ok({
                     'status': status,
                 })
             except Exception as e:
-                logger.exception('poll bilibili qrcode failed')
+                logger.warning('poll bilibili qrcode failed: {}', type(e).__name__)
+                if qr_login is not None:
+                    qr_login.close()
                 qr_login = None
-                return json_fail('qrcode_poll_failed', message=str(e)), 500
+                message = str(e) if isinstance(e, BilibiliAuthError) else '获取B站扫码状态失败，请重新扫码'
+                return json_fail('qrcode_poll_failed', message=message), 502
 
     @app.route('/api/bilibili/auth/logout', methods=['POST'])
     @login_check
     def logout_bilibili_auth():
         global qr_login
         with qr_login_lock:
+            if qr_login is not None:
+                qr_login.close()
             qr_login = None
         clear_bilibili_credential()
         return json_ok({
