@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Compress each large asset family independently from application source.
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS asset-compressor
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS asset-compressor
 COPY web/scripts/precompress-dist.mjs /precompress-dist.mjs
 
 FROM asset-compressor AS model-assets
@@ -22,7 +22,7 @@ COPY web/public/amap/ /assets/amap/
 COPY web/public/monitor/ /assets/monitor/
 RUN node /precompress-dist.mjs /assets
 
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS web-builder
+FROM --platform=$BUILDPLATFORM node:24-bookworm-slim AS web-builder
 WORKDIR /build/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
@@ -59,7 +59,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /root/tesla-media-center
 COPY requirement.txt ./
 COPY tools/amap-app/requirements.txt ./amap-requirements.txt
-RUN python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
+RUN python -m pip install --no-cache-dir --upgrade 'pip>=26.2.2' 'setuptools>=84.1.0' && \
+    python -m pip install --no-cache-dir --upgrade -r requirement.txt -r amap-requirements.txt
 
 # Linked COPY layers do not depend on earlier code/dependency layers.
 COPY --link docker_build/amap-assets/libserverkey.so docker_build/amap-assets/libamapr.so docker_build/amap-assets/style-day.data docker_build/amap-assets/style-night.data docker_build/amap-assets/style-navigation-day.data docker_build/amap-assets/style-navigation-night.data docker_build/amap-assets/signing-certificate.rsa /opt/tmc/amap-app/

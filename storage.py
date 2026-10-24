@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+from contextlib import closing
 
 ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get('TMC_DATA_DIR', ROOT / 'data')).resolve()
@@ -68,7 +69,8 @@ def initialize_storage():
         if source.is_file() and not destination.exists():
             destination.parent.mkdir(parents=True, exist_ok=True)
             temporary = destination.with_suffix('.migrating')
-            with sqlite3.connect(f'{source.resolve().as_uri()}?mode=ro', uri=True) as src, sqlite3.connect(temporary) as dst:
-                src.backup(dst)
+            with closing(sqlite3.connect(f'{source.resolve().as_uri()}?mode=ro', uri=True)) as src, closing(sqlite3.connect(temporary)) as dst:
+                with dst:
+                    src.backup(dst)
             temporary.replace(destination)
     marker.write_text('Legacy data copied; originals retained.\n', encoding='utf-8')

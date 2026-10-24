@@ -56,8 +56,10 @@ const coverUrl = computed(() => {
     return props.video?.pic || props.video?.cover || props.video?.upic || props.video?.face || props.video?.uface || '';
 });
 
-const titleHtml = computed(() => {
-    return props.video?.title || props.video?.uname || props.video?.name || props.video?.season_name || '未命名';
+const titleText = computed(() => {
+    const value = props.video?.title || props.video?.uname || props.video?.name || props.video?.season_name || '未命名';
+    // Search highlights are markup, while titles remain untrusted display text.
+    return String(value).replace(/<\/?em\b[^>]*>/gi, '');
 });
 
 const subtitleText = computed(() => {
@@ -110,7 +112,7 @@ const clickId = computed(() => {
             </div>
         </template>
         <el-text line-clamp="2" class="video-title">
-            <div v-html="titleHtml"></div>
+            <div>{{ titleText }}</div>
         </el-text>
         <el-row>
             <el-col :span="20">

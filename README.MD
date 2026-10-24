@@ -47,7 +47,7 @@ docker run -d --name tmc --restart unless-stopped \
 
 ## 本地运行
 
-建议使用 Python 3.11 和 Node.js 20。先准备后端依赖和前端产物：
+建议使用 Python 3.11 和 Node.js 24。先准备后端依赖和前端产物：
 
 ```bash
 git clone https://github.com/HelloClyde/tesla-media-center.git

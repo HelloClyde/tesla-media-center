@@ -71,7 +71,7 @@ it('paints roads beyond the local 600 m patch before a stalled building response
   await vi.waitFor(() => expect(mocks.post.mock.calls.some(call => call[1].level === 15)).toBe(true));
   const backdrop = mocks.contexts.get(1024), detail = mocks.contexts.get(2048);
   const outerX = 512 + 700 * 1024 / 6000;
-  expect(backdrop.moveTo.mock.calls.some(([x]: number[]) => Math.abs(x-outerX) < .01)).toBe(true);
+  await vi.waitFor(() => expect(backdrop.moveTo.mock.calls.some(([x]: number[]) => Math.abs(x-outerX) < .01)).toBe(true));
   expect(detail.moveTo.mock.calls.every(([x]: number[]) => x >= 0 && x <= 2048)).toBe(true);
   expect(ground.group.visible).toBe(true);
   ground.dispose();
@@ -91,7 +91,7 @@ it('shows a disk-cached road while decoding the other cached layers is blocked',
   const ground = createTeslaMapGround(vi.fn());
   ground.update([120.2,30.2],0,0);
   await vi.waitFor(() => expect(mocks.reads).toHaveBeenCalledTimes(2));
-  expect(ground.group.visible).toBe(true);
+  await vi.waitFor(() => expect(ground.group.visible).toBe(true));
   expect(mocks.post).not.toHaveBeenCalled();
   ground.dispose();
 });

@@ -42,7 +42,10 @@ class LibraryTest(unittest.TestCase):
         self.assertEqual(self.client.get('/api/gam4980/list?path=../').status_code, 403)
         outside = Path(self.temp.name) / 'outside.gam'
         outside.write_bytes(bytes(100))
-        (self.root / 'link.gam').symlink_to(outside)
+        try:
+            (self.root / 'link.gam').symlink_to(outside)
+        except OSError:
+            self.skipTest('Creating symlinks is not available on this host')
         self.assertEqual(self.client.get('/api/gam4980/files/link.gam').status_code, 403)
         self.assertNotIn('link.gam', [i['name'] for i in self.client.get('/api/gam4980/list').json['data']['items']])
 

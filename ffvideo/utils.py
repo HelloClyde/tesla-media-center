@@ -1,8 +1,23 @@
 from loguru import logger
 import requests
 from bilibili_api import HEADERS
-from flask import jsonify, session
+from flask import abort, jsonify, session
 from functools import wraps
+from pathlib import Path
+
+
+def confined_path(root, relative):
+    """Resolve links and traversal before allowing a path inside a served root."""
+    if not root:
+        abort(404)
+    try:
+        base = Path(root).resolve()
+        target = (base / str(relative or '').lstrip('/')).resolve()
+    except (OSError, ValueError):
+        abort(403)
+    if not target.is_relative_to(base):
+        abort(403)
+    return target
 
 
 def download_stream( url, pipe_path, headers=HEADERS, chunk_size=10240):

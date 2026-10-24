@@ -40,6 +40,7 @@ class PersistenceTest(unittest.TestCase):
             with sqlite3.connect(cache / 'map.sqlite3') as db:
                 db.execute('CREATE TABLE example (value TEXT)')
                 db.execute("INSERT INTO example VALUES ('retained')")
+            db.close()
             with patch.object(storage, 'ROOT', root), patch.object(storage, 'DATA_ROOT', dest), patch.dict('os.environ', {'TMC_AMAP_CACHE_DIR': str(cache)}):
                 storage.initialize_storage()
                 self.assertEqual(json.loads((dest / 'config.json').read_text()), config)
@@ -47,6 +48,7 @@ class PersistenceTest(unittest.TestCase):
                     self.assertEqual((dest / name).read_bytes(), b'legacy')
                 with sqlite3.connect(dest / 'amap-cache/map.sqlite3') as db:
                     self.assertEqual(db.execute('SELECT value FROM example').fetchone()[0], 'retained')
+                db.close()
                 (dest / 'gba/game.gba').write_bytes(b'new')
                 storage.initialize_storage()
                 self.assertEqual((dest / 'gba/game.gba').read_bytes(), b'new')

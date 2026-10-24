@@ -26,19 +26,26 @@ class FakeDownloadURLDataDetecter:
 
 class BilibiliStreamSelectionTest(unittest.TestCase):
     def setUp(self):
+        stream_fields = dict(backup_url=[], bandwidth=128000, codecs='avc1.64001f',
+                             mime_type='video/mp4', segment_base_initialization='0-99',
+                             segment_base_index_range='100-199')
+        video_fields = dict(stream_fields, frame_rate=30, scale=(640, 360), sar=(1, 1))
         self.unknown_codec_video = video.VideoStreamDownloadURL(
             url='https://example.test/hevc.m4s',
             video_quality=video.VideoQuality._480P,
             video_codecs=None,
+            **video_fields,
         )
         self.avc_video = video.VideoStreamDownloadURL(
             url='https://example.test/avc.m4s',
             video_quality=video.VideoQuality._480P,
             video_codecs=video.VideoCodecs.AVC,
+            **video_fields,
         )
         self.audio = video.AudioStreamDownloadURL(
             url='https://example.test/audio.m4s',
             audio_quality=video.AudioQuality._192K,
+            **dict(stream_fields, codecs='mp4a.40.2', mime_type='audio/mp4'),
         )
 
     @patch('ffvideo.bv.get_bilibili_max_quality', return_value=video.VideoQuality._720P)

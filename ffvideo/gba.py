@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 
 from config import get_config_by_key
-from ffvideo.utils import json_ok, json_fail, login_check
+from ffvideo.utils import json_ok, json_fail, login_check, confined_path
 
 
 from storage import data_path
@@ -41,9 +41,7 @@ def get_gba_state_root_path():
 
 def safe_join(root_path: str, current_path: str):
     normalized = (current_path or '').lstrip('/')
-    abs_path = os.path.abspath(os.path.join(root_path, normalized))
-    if abs_path != root_path and not abs_path.startswith(f'{root_path}{os.sep}'):
-        abort(403)
+    abs_path = str(confined_path(root_path, normalized))
     return abs_path, normalized
 
 
@@ -61,7 +59,7 @@ def get_save_file_path(save_key: str):
     if not normalized:
         abort(400)
     root_path = get_gba_save_root_path()
-    return os.path.join(root_path, f'{normalized}.sav')
+    return str(confined_path(root_path, f'{normalized}.sav'))
 
 
 def normalize_state_key(save_key: str):
@@ -76,7 +74,7 @@ def get_state_file_path(save_key: str, slot: int):
         abort(400)
     root_path = get_gba_state_root_path()
     normalized = normalize_state_key(save_key)
-    return os.path.join(root_path, f'{normalized}.slot{slot}.state')
+    return str(confined_path(root_path, f'{normalized}.slot{slot}.state'))
 
 
 def infer_remote_file_size(headers):
@@ -130,6 +128,7 @@ def add_gba_route(app):
         return json_ok({'name': name, 'size': len(data)})
 
     @app.route('/api/gba/list', methods=['GET'])
+    @login_check
     def gba_list():
         root_path = get_gba_root_path()
         save_root_path = get_gba_save_root_path()
@@ -181,6 +180,7 @@ def add_gba_route(app):
         })
 
     @app.route('/api/gba/files/<path:filepath>', methods=['GET'])
+    @login_check
     def gba_files(filepath):
         root_path = get_gba_root_path()
         save_root_path = get_gba_save_root_path()
@@ -198,6 +198,7 @@ def add_gba_route(app):
         return send_file(abs_path)
 
     @app.route('/api/gba/remote/<slug>', methods=['GET', 'HEAD'])
+    @login_check
     def gba_remote_file(slug):
         item = get_remote_gba_catalog().get(slug)
         if not item:
@@ -260,6 +261,7 @@ def add_gba_route(app):
         )
 
     @app.route('/api/gba/saves/<save_key>', methods=['GET'])
+    @login_check
     def gba_save_get(save_key):
         save_path = get_save_file_path(save_key)
         if not os.path.exists(save_path) or not os.path.isfile(save_path):
@@ -267,9 +269,12 @@ def add_gba_route(app):
         return send_file(save_path, mimetype='application/octet-stream', download_name=os.path.basename(save_path))
 
     @app.route('/api/gba/saves/<save_key>', methods=['PUT'])
+    @login_check
     def gba_save_put(save_key):
         save_path = get_save_file_path(save_key)
-        data = request.get_data()
+        data = request.stream.read(2 * 1024 * 1024 + 1)
+        if len(data) > 2 * 1024 * 1024:
+            abort(413)
         if not data:
             abort(400)
         with open(save_path, 'wb') as wf:
@@ -280,6 +285,7 @@ def add_gba_route(app):
         })
 
     @app.route('/api/gba/saves/<save_key>', methods=['DELETE'])
+    @login_check
     def gba_save_delete(save_key):
         save_path = get_save_file_path(save_key)
         if os.path.exists(save_path) and os.path.isfile(save_path):
@@ -290,6 +296,7 @@ def add_gba_route(app):
         })
 
     @app.route('/api/gba/states/<save_key>', methods=['GET'])
+    @login_check
     def gba_state_list(save_key):
         normalize_state_key(save_key)
         slots = []
@@ -308,6 +315,7 @@ def add_gba_route(app):
         })
 
     @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['GET'])
+    @login_check
     def gba_state_get(save_key, slot):
         state_path = get_state_file_path(save_key, slot)
         if not os.path.exists(state_path) or not os.path.isfile(state_path):
@@ -319,9 +327,12 @@ def add_gba_route(app):
         )
 
     @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['PUT'])
+    @login_check
     def gba_state_put(save_key, slot):
         state_path = get_state_file_path(save_key, slot)
-        data = request.get_data()
+        data = request.stream.read(16 * 1024 * 1024 + 1)
+        if len(data) > 16 * 1024 * 1024:
+            abort(413)
         if not data:
             abort(400)
         with open(state_path, 'wb') as wf:
@@ -333,6 +344,7 @@ def add_gba_route(app):
         })
 
     @app.route('/api/gba/states/<save_key>/<int:slot>', methods=['DELETE'])
+    @login_check
     def gba_state_delete(save_key, slot):
         state_path = get_state_file_path(save_key, slot)
         if os.path.exists(state_path) and os.path.isfile(state_path):

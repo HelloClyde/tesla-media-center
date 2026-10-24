@@ -6,15 +6,18 @@ import imageio_ffmpeg
 import subprocess
 import threading
 from ffvideo import utils as futils
-from ffvideo.utils import login_check
+from ffvideo.utils import login_check, confined_path
 from config import put_config_by_key, get_config_by_key, get_all_config_safe
 import os
 from ffvideo import bv, gba, gam4980, local_video, tesla, qqmusic, amap_app, amap_favorites, amap_recent_places, tencent_video, monitor
 from ffvideo.tesla_skins import add_tesla_skin_routes
 from ffvideo.tesla_appearance import add_routes as add_tesla_appearance_routes
+from ffvideo.security import install_security
 import time
 from cryptography import fernet
 import mimetypes
+import secrets
+import json
 
 app = Flask(__name__)
 mimetypes.add_type('model/gltf-binary', '.glb')
@@ -22,6 +25,7 @@ mimetypes.add_type('model/gltf+json', '.gltf')
 secret_key = get_config_by_key('secret_key', default_value=fernet.Fernet.generate_key().decode('utf-8'))
 put_config_by_key('secret_key', secret_key)
 app.secret_key = secret_key 
+install_security(app)
 
 @app.route('/')
 def home():
@@ -29,11 +33,38 @@ def home():
 
 @app.route('/api/login', methods=['POST'])
 def login():
-    data = request.json
-    password = data.get('password')
-    if get_config_by_key('password') == password:
+    limiter = app.extensions['login_throttle']
+    client = request.remote_addr or 'unknown'
+    retry = limiter.retry_after(client)
+    if retry:
+        response = futils.json_fail('rate_limited', message='登录尝试过于频繁，请稍后重试')
+        response.headers['Retry-After'] = str(retry)
+        return response, 429
+    if request.content_length is not None and request.content_length > 2048:
+        return futils.json_fail('invalid_request'), 413
+    if not request.is_json:
+        return futils.json_fail('invalid_request'), 400
+    body = request.stream.read(2049)
+    if len(body) > 2048:
+        return futils.json_fail('invalid_request'), 413
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeError):
+        return futils.json_fail('invalid_request'), 400
+    if not isinstance(data, dict) or not isinstance(data.get('password'), str):
+        return futils.json_fail('invalid_request'), 400
+    password = data['password']
+    expected = get_config_by_key('password')
+    try:
+        matches = isinstance(expected, str) and expected and secrets.compare_digest(expected.encode(), password.encode())
+    except UnicodeError:
+        return futils.json_fail('invalid_request'), 400
+    if matches:
+        limiter.clear(client)
+        session.clear()
         session['last_visit'] = int(time.time())
         return futils.json_ok({})
+    limiter.failed(client)
     return futils.json_fail(), 401
 
 # 登出接口
@@ -91,7 +122,8 @@ def static_web(name):
         
     logger.info(f'static file request:{name}')
     
-    fpath = os.path.join('./web/dist', name)
+    web_root = os.path.join(app.root_path, 'web', 'dist')
+    fpath = str(confined_path(web_root, name))
     if os.path.exists(fpath):
         accept_encoding = request.headers.get('Accept-Encoding', '')
         preferred_suffix = None
@@ -102,7 +134,8 @@ def static_web(name):
 
         if preferred_suffix:
             mimetype, _ = mimetypes.guess_type(fpath)
-            response = send_file(f'{fpath}{preferred_suffix}', mimetype=mimetype or 'application/octet-stream')
+            compressed = confined_path(web_root, name + preferred_suffix)
+            response = send_file(compressed, mimetype=mimetype or 'application/octet-stream')
             response.headers['Content-Encoding'] = 'br' if preferred_suffix == '.br' else 'gzip'
             response.headers['Vary'] = 'Accept-Encoding'
             # The HTML chooses the hashed app bundle and versioned player workers.
@@ -110,7 +143,7 @@ def static_web(name):
             response.headers['Cache-Control'] = 'no-cache' if name == 'index.html' else 'public, max-age=86400'
             return response
 
-        return send_from_directory('./web/dist', name)
+        return send_from_directory(web_root, name)
     else:
         return abort(404)
 
